@@ -120,7 +120,7 @@ export class BookingsService {
   }
 
   async getBookingsByParent(parentId: string) {
-    return this.prisma.bookings.findMany({
+    const bookings = await this.prisma.bookings.findMany({
       where: { parent_id: parentId },
       include: {
         users_bookings_nanny_idTousers: {
@@ -133,6 +133,14 @@ export class BookingsService {
       },
       orderBy: { created_at: "desc" },
     });
+
+    return bookings.map((booking) => ({
+      ...booking,
+      nanny_name: booking.users_bookings_nanny_idTousers?.profiles
+        ? `${booking.users_bookings_nanny_idTousers.profiles.first_name} ${booking.users_bookings_nanny_idTousers.profiles.last_name}`
+        : "Nanny",
+      nanny_profile: booking.users_bookings_nanny_idTousers?.profiles,
+    }));
   }
 
   async getBookingsByNanny(nannyId: string) {
@@ -210,11 +218,15 @@ export class BookingsService {
     });
 
     // Create Payment Record (Pending Release)
+    // In a real flow, checking out triggers the Razorpay Order. 
+    // Here we create a placeholder record that will be updated or replaced when the parent initiates payment.
     await this.prisma.payments.create({
       data: {
         booking_id: id,
         amount: totalAmount,
         status: "pending_release",
+        order_id: `pending_${id}_${Date.now()}`, // Placeholder until parent initiates actual payment flow
+        provider: "manual_pending", 
       },
     });
 
@@ -302,7 +314,7 @@ export class BookingsService {
   async getActiveBookings(userId: string, role: "parent" | "nanny") {
     const whereClause =
       role === "parent" ? { parent_id: userId } : { nanny_id: userId };
-    return this.prisma.bookings.findMany({
+    const bookings = await this.prisma.bookings.findMany({
       where: {
         ...whereClause,
         status: {
@@ -316,6 +328,21 @@ export class BookingsService {
         users_bookings_parent_idTousers:
           role === "nanny" ? { select: { profiles: true } } : undefined,
       },
+    });
+
+    return bookings.map((b) => {
+      const nannyProfile = b.users_bookings_nanny_idTousers?.profiles;
+      const parentProfile = b.users_bookings_parent_idTousers?.profiles;
+
+      return {
+        ...b,
+        nanny_name: nannyProfile
+          ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
+          : role === "parent" ? "Nanny" : undefined,
+        parent_name: parentProfile
+          ? `${parentProfile.first_name} ${parentProfile.last_name}`
+          : role === "nanny" ? "Parent" : undefined,
+      };
     });
   }
 }

@@ -27,6 +27,8 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
   ): Promise<any> {
     const { id, name, emails, photos } = profile;
 
+
+
     // Extract role from state if present
     let role = "parent"; // Default role
     if (req.query.state) {

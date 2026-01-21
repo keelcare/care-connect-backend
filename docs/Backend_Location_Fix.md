@@ -74,8 +74,8 @@ async findNearbyNannies(lat: string, lng: string, radius: string = '10') {
                     sin(radians(${latNum})) * sin(radians(p.lat))
                 )
             ) AS distance
-        FROM "Profile" p
-        JOIN "User" u ON p."userId" = u.id
+        FROM users p
+        JOIN users u ON p.user_id = u.id
         WHERE
             p.lat IS NOT NULL
             AND p.lng IS NOT NULL

@@ -202,9 +202,9 @@ export class LocationService {
           nd.hourly_rate,
           nd.bio,
           (6371 * acos(cos(radians(${latNum})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${lngNum})) + sin(radians(${latNum})) * sin(radians(p.lat)))) AS distance
-        FROM "User" u
-        JOIN "Profile" p ON u.id = p."userId"
-        LEFT JOIN "NannyDetails" nd ON u.id = nd."userId"
+        FROM users u
+        JOIN profiles p ON u.id = p.user_id
+        LEFT JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
         AND p.lat IS NOT NULL
         AND p.lng IS NOT NULL

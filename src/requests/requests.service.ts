@@ -257,6 +257,14 @@ export class RequestsService {
         "info"
       );
 
+      // Notify Parent about the match
+      await this.notificationsService.createNotification(
+        request.parent_id,
+        "Nanny Matched!",
+        `We found a matching nanny! Waiting for their confirmation.`,
+        "info"
+      );
+
       return assignment;
     } else {
       console.log(`No nannies found for request ${requestId}`);

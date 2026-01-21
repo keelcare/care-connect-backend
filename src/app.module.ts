@@ -21,6 +21,7 @@ import { AiModule } from "./ai/ai.module";
 import { RecurringBookingsModule } from "./recurring-bookings/recurring-bookings.module";
 import { AvailabilityModule } from "./availability/availability.module";
 import { VerificationModule } from "./verification/verification.module";
+import { PaymentsModule } from "./payments/payments.module";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import * as Joi from "joi";
@@ -78,6 +79,7 @@ import { LoggerModule } from "nestjs-pino";
     RecurringBookingsModule,
     AvailabilityModule,
     VerificationModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [
