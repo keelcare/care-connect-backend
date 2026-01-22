@@ -60,7 +60,10 @@ describe("RequestsService", () => {
         assignments: [{ id: "assign1", status: "pending" }],
       });
 
-      mockPrisma.service_requests.update.mockResolvedValue({ id: requestId, status: "CANCELLED" });
+      mockPrisma.service_requests.update.mockResolvedValue({
+        id: requestId,
+        status: "CANCELLED",
+      });
 
       await service.cancelRequest(requestId);
 
@@ -81,7 +84,9 @@ describe("RequestsService", () => {
         assignments: [],
       });
 
-      await expect(service.cancelRequest("req2")).rejects.toThrow(BadRequestException);
+      await expect(service.cancelRequest("req2")).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -94,15 +99,27 @@ describe("RequestsService", () => {
         id: requestId,
         parent_id: "parent1",
         location_lat: 40.7128,
-        location_lng: -74.0060,
+        location_lng: -74.006,
         required_skills: requiredSkills,
         assignments: [],
       });
 
       // Mock raw query return
       mockPrisma.$queryRawUnsafe.mockResolvedValue([
-        { id: "nanny1", skills: ["CPR", "First Aid"], distance: 5, acceptance_rate: 90, hourly_rate: 20 },
-        { id: "nanny2", skills: ["CPR"], distance: 2, acceptance_rate: 95, hourly_rate: 18 }, // Missing First Aid
+        {
+          id: "nanny1",
+          skills: ["CPR", "First Aid"],
+          distance: 5,
+          acceptance_rate: 90,
+          hourly_rate: 20,
+        },
+        {
+          id: "nanny2",
+          skills: ["CPR"],
+          distance: 2,
+          acceptance_rate: 95,
+          hourly_rate: 18,
+        }, // Missing First Aid
       ]);
 
       mockPrisma.assignments.create.mockResolvedValue({ id: "assign2" });
@@ -113,7 +130,7 @@ describe("RequestsService", () => {
       expect(mockPrisma.assignments.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ nanny_id: "nanny1" }),
-        })
+        }),
       );
     });
   });

@@ -13,7 +13,7 @@ export class BookingsService {
     private prisma: PrismaService,
     private chatService: ChatService,
     private notificationsService: NotificationsService,
-  ) { }
+  ) {}
 
   async createBooking(
     jobId: string | undefined,
@@ -77,7 +77,7 @@ export class BookingsService {
       nannyId,
       "New Booking",
       `You have a new booking confirmed for ${finalStartTime.toDateString()}.`,
-      "success"
+      "success",
     );
 
     // Notify Parent
@@ -85,7 +85,7 @@ export class BookingsService {
       parentId,
       "Booking Confirmed",
       `Your booking has been successfully created.`,
-      "success"
+      "success",
     );
 
     return booking;
@@ -179,7 +179,7 @@ export class BookingsService {
       booking.parent_id,
       "Booking Started",
       `The nanny has started the booking.`,
-      "info"
+      "info",
     );
 
     return updatedBooking;
@@ -218,7 +218,7 @@ export class BookingsService {
     });
 
     // Create Payment Record (Pending Release)
-    // In a real flow, checking out triggers the Razorpay Order. 
+    // In a real flow, checking out triggers the Razorpay Order.
     // Here we create a placeholder record that will be updated or replaced when the parent initiates payment.
     await this.prisma.payments.create({
       data: {
@@ -226,7 +226,7 @@ export class BookingsService {
         amount: totalAmount,
         status: "pending_release",
         order_id: `pending_${id}_${Date.now()}`, // Placeholder until parent initiates actual payment flow
-        provider: "manual_pending", 
+        provider: "manual_pending",
       },
     });
 
@@ -338,10 +338,14 @@ export class BookingsService {
         ...b,
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-          : role === "parent" ? "Nanny" : undefined,
+          : role === "parent"
+            ? "Nanny"
+            : undefined,
         parent_name: parentProfile
           ? `${parentProfile.first_name} ${parentProfile.last_name}`
-          : role === "nanny" ? "Parent" : undefined,
+          : role === "nanny"
+            ? "Parent"
+            : undefined,
       };
     });
   }

@@ -39,7 +39,9 @@ export class PaymentsService {
 
     // Calculate Amount
     const hourlyRate =
-      Number(booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate) || 0;
+      Number(
+        booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate,
+      ) || 0;
     const durationHours =
       (booking.end_time.getTime() - booking.start_time.getTime()) /
       (1000 * 60 * 60);
@@ -96,19 +98,18 @@ export class PaymentsService {
   }
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)
-  async verifyPayment(
-    orderId: string,
-    paymentId: string,
-    signature: string,
-  ) {
-    const secret = this.configService.get("RAZORPAY_KEY_SECRET") || "secret_123";
+  async verifyPayment(orderId: string, paymentId: string, signature: string) {
+    const secret =
+      this.configService.get("RAZORPAY_KEY_SECRET") || "secret_123";
     const generatedSignature = crypto
       .createHmac("sha256", secret)
       .update(orderId + "|" + paymentId)
       .digest("hex");
 
     if (generatedSignature !== signature) {
-      throw new BadRequestException("Invalid payment signature (Potential Fraud)");
+      throw new BadRequestException(
+        "Invalid payment signature (Potential Fraud)",
+      );
     }
 
     // Update DB
@@ -119,8 +120,9 @@ export class PaymentsService {
 
   // 3. Webhook Handler (Source of Truth)
   async handleWebhook(signature: string, payload: any) {
-    const secret = this.configService.get("RAZORPAY_WEBHOOK_SECRET") || "webhook_secret";
-    
+    const secret =
+      this.configService.get("RAZORPAY_WEBHOOK_SECRET") || "webhook_secret";
+
     // Validate Webhook Signature
     const shasum = crypto.createHmac("sha256", secret);
     shasum.update(JSON.stringify(payload));
@@ -154,7 +156,11 @@ export class PaymentsService {
   }
 
   // Helper: Atomically Successful Update
-  private async capturePaymentSuccess(orderId: string, paymentId: string, signature: string) {
+  private async capturePaymentSuccess(
+    orderId: string,
+    paymentId: string,
+    signature: string,
+  ) {
     // START TRANSACTION to prevent double-confirming
     await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payments.findUnique({

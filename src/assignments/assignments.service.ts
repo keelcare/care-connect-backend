@@ -14,7 +14,7 @@ export class AssignmentsService {
     private prisma: PrismaService,
     private requestsService: RequestsService,
     private notificationsService: NotificationsService,
-  ) { }
+  ) {}
 
   async findAllByNanny(nannyId: string) {
     return this.prisma.assignments.findMany({
@@ -94,19 +94,19 @@ export class AssignmentsService {
         status: "CONFIRMED",
         start_time: new Date(
           assignment.service_requests.date.toISOString().split("T")[0] +
-          "T" +
-          assignment.service_requests.start_time.toISOString().split("T")[1],
+            "T" +
+            assignment.service_requests.start_time.toISOString().split("T")[1],
         ),
         // Calculate end time based on duration
         end_time: new Date(
           new Date(
             assignment.service_requests.date.toISOString().split("T")[0] +
-            "T" +
-            assignment.service_requests.start_time
-              .toISOString()
-              .split("T")[1],
+              "T" +
+              assignment.service_requests.start_time
+                .toISOString()
+                .split("T")[1],
           ).getTime() +
-          Number(assignment.service_requests.duration_hours) * 60 * 60 * 1000,
+            Number(assignment.service_requests.duration_hours) * 60 * 60 * 1000,
         ),
       },
     });
@@ -119,7 +119,7 @@ export class AssignmentsService {
       assignment.service_requests.parent_id,
       "Booking Confirmed!",
       `A nanny has accepted your request. Tap to view booking details.`,
-      "success"
+      "success",
     );
 
     return { assignment: updatedAssignment, booking };

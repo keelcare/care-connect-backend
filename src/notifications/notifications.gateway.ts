@@ -15,13 +15,14 @@ import { JwtService } from "@nestjs/jwt";
   namespace: "notifications",
 })
 export class NotificationsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect {
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   private readonly logger = new Logger(NotificationsGateway.name);
 
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly jwtService: JwtService) { }
+  constructor(private readonly jwtService: JwtService) {}
 
   async handleConnection(client: Socket) {
     try {
@@ -56,7 +57,9 @@ export class NotificationsGateway
     if (this.server) {
       this.server.to(`user_${userId}`).emit("notification", payload);
     } else {
-      this.logger.warn("WebSocket server not initialized. Skipping real-time update.");
+      this.logger.warn(
+        "WebSocket server not initialized. Skipping real-time update.",
+      );
     }
   }
 
@@ -64,7 +67,9 @@ export class NotificationsGateway
     if (this.server) {
       this.server.emit("notification", payload);
     } else {
-      this.logger.warn("WebSocket server not initialized. Skipping real-time update.");
+      this.logger.warn(
+        "WebSocket server not initialized. Skipping real-time update.",
+      );
     }
   }
 }

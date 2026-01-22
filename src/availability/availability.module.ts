@@ -4,9 +4,9 @@ import { AvailabilityController } from "./availability.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 
 @Module({
-    imports: [PrismaModule],
-    controllers: [AvailabilityController],
-    providers: [AvailabilityService],
-    exports: [AvailabilityService],
+  imports: [PrismaModule],
+  controllers: [AvailabilityController],
+  providers: [AvailabilityService],
+  exports: [AvailabilityService],
 })
-export class AvailabilityModule { }
+export class AvailabilityModule {}

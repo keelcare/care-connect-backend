@@ -9,9 +9,16 @@ import { AiModule } from "../ai/ai.module";
 import { AvailabilityModule } from "../availability/availability.module";
 
 @Module({
-  imports: [PrismaModule, UsersModule, NotificationsModule, FavoritesModule, AiModule, AvailabilityModule],
+  imports: [
+    PrismaModule,
+    UsersModule,
+    NotificationsModule,
+    FavoritesModule,
+    AiModule,
+    AvailabilityModule,
+  ],
   controllers: [RequestsController],
   providers: [RequestsService],
   exports: [RequestsService],
 })
-export class RequestsModule { }
+export class RequestsModule {}

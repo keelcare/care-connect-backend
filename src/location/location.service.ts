@@ -115,14 +115,19 @@ export class LocationService {
       });
 
       if (response.data.results.length === 0) {
-        this.logger.warn(`No reverse geocoding results found for: ${lat}, ${lng}`);
+        this.logger.warn(
+          `No reverse geocoding results found for: ${lat}, ${lng}`,
+        );
         return null;
       }
 
       // Return the formatted address from the first result
       return response.data.results[0].formatted_address;
     } catch (error) {
-      this.logger.error(`Reverse geocoding error: ${error.message}`, error.stack);
+      this.logger.error(
+        `Reverse geocoding error: ${error.message}`,
+        error.stack,
+      );
       return null;
     }
   }
@@ -144,9 +149,9 @@ export class LocationService {
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(this.toRadians(lat1)) *
-      Math.cos(this.toRadians(lat2)) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
+        Math.cos(this.toRadians(lat2)) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
 
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     const distance = R * c;
@@ -225,12 +230,16 @@ export class LocationService {
           lng: new Decimal(nanny.lng),
           profile_image_url: nanny.profile_image_url,
         },
-        nanny_details: nanny.skills ? {
-          skills: nanny.skills,
-          experience_years: nanny.experience_years,
-          hourly_rate: nanny.hourly_rate ? new Decimal(nanny.hourly_rate) : null,
-          bio: nanny.bio,
-        } : null,
+        nanny_details: nanny.skills
+          ? {
+              skills: nanny.skills,
+              experience_years: nanny.experience_years,
+              hourly_rate: nanny.hourly_rate
+                ? new Decimal(nanny.hourly_rate)
+                : null,
+              bio: nanny.bio,
+            }
+          : null,
         distance: Math.round(nanny.distance * 100) / 100,
       }));
     } catch (error) {
