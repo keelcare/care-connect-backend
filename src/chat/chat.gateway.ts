@@ -14,7 +14,8 @@ import { JwtService } from "@nestjs/jwt";
 
 @WebSocketGateway({
   cors: {
-    origin: "*", // Configure this properly in production
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
   },
 })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -30,15 +31,20 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   async handleConnection(client: Socket) {
     try {
-      const token =
-        client.handshake.auth.token || client.handshake.headers.authorization;
+      // Try to get token from cookies first (primary method)
+      let token = this.extractTokenFromCookies(client.handshake.headers.cookie);
+
+      // Fallback to auth.token or authorization header for backwards compatibility
       if (!token) {
+        token = client.handshake.auth.token || client.handshake.headers.authorization;
+      }
+
+      if (!token) {
+        this.logger.warn('No authentication token found in cookies or headers');
         client.disconnect();
         return;
       }
 
-      // Verify token (simple check, you might want to use a proper guard or strategy)
-      // Assuming Bearer token if in headers
       const cleanToken = token.replace("Bearer ", "");
       const payload = this.jwtService.verify(cleanToken);
 
@@ -49,6 +55,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.warn(`WebSocket connection unauthorized: ${error.message}`);
       client.disconnect();
     }
+  }
+
+  private extractTokenFromCookies(cookieHeader: string | undefined): string | null {
+    if (!cookieHeader) return null;
+
+    const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
+      const [name, value] = cookie.trim().split('=');
+      acc[name] = value;
+      return acc;
+    }, {} as Record<string, string>);
+
+    return cookies['access_token'] || null;
   }
 
   handleDisconnect(client: Socket) {

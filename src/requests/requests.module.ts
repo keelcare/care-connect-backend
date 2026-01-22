@@ -1,4 +1,6 @@
 import { Module } from "@nestjs/common";
+import { PassportModule } from "@nestjs/passport";
+import { JwtModule } from "@nestjs/jwt";
 import { RequestsService } from "./requests.service";
 import { RequestsController } from "./requests.controller";
 import { PrismaModule } from "../prisma/prisma.module";
@@ -9,7 +11,16 @@ import { AiModule } from "../ai/ai.module";
 import { AvailabilityModule } from "../availability/availability.module";
 
 @Module({
-  imports: [PrismaModule, UsersModule, NotificationsModule, FavoritesModule, AiModule, AvailabilityModule],
+  imports: [
+    PrismaModule,
+    UsersModule,
+    NotificationsModule,
+    FavoritesModule,
+    AiModule,
+    AvailabilityModule,
+    PassportModule,
+    JwtModule.register({}),
+  ],
   controllers: [RequestsController],
   providers: [RequestsService],
   exports: [RequestsService],

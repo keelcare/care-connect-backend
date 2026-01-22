@@ -10,7 +10,8 @@ import { JwtService } from "@nestjs/jwt";
 
 @WebSocketGateway({
   cors: {
-    origin: "*",
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
   },
   namespace: "notifications",
 })
@@ -25,9 +26,16 @@ export class NotificationsGateway
 
   async handleConnection(client: Socket) {
     try {
-      const token =
-        client.handshake.auth.token || client.handshake.headers.authorization;
+      // Try to get token from cookies first (primary method)
+      let token = this.extractTokenFromCookies(client.handshake.headers.cookie);
+
+      // Fallback to auth.token or authorization header for backwards compatibility
       if (!token) {
+        token = client.handshake.auth.token || client.handshake.headers.authorization;
+      }
+
+      if (!token) {
+        this.logger.warn('No authentication token found in cookies or headers');
         client.disconnect();
         return;
       }
@@ -46,6 +54,18 @@ export class NotificationsGateway
       this.logger.warn(`Notification WebSocket unauthorized: ${error.message}`);
       client.disconnect();
     }
+  }
+
+  private extractTokenFromCookies(cookieHeader: string | undefined): string | null {
+    if (!cookieHeader) return null;
+
+    const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
+      const [name, value] = cookie.trim().split('=');
+      acc[name] = value;
+      return acc;
+    }, {} as Record<string, string>);
+
+    return cookies['access_token'] || null;
   }
 
   handleDisconnect(client: Socket) {

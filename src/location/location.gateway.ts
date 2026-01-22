@@ -9,7 +9,13 @@ import { Server, Socket } from "socket.io";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
-@WebSocketGateway({ namespace: "/location", cors: true })
+@WebSocketGateway({
+    namespace: "/location",
+    cors: {
+        origin: process.env.FRONTEND_URL || "http://localhost:3000",
+        credentials: true,
+    },
+})
 export class LocationGateway {
     @WebSocketServer()
     server: Server;
