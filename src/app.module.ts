@@ -1,8 +1,8 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
-import { ServeStaticModule } from '@nestjs/serve-static';
-import { join } from 'path';
+import { ServeStaticModule } from "@nestjs/serve-static";
+import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { AuthModule } from "./auth/auth.module";
@@ -44,11 +44,11 @@ import { LoggerModule } from "nestjs-pino";
         transport:
           process.env.NODE_ENV !== "production"
             ? {
-              target: "pino-pretty",
-              options: {
-                singleLine: true,
-              },
-            }
+                target: "pino-pretty",
+                options: {
+                  singleLine: true,
+                },
+              }
             : undefined,
       },
     }),
@@ -59,8 +59,8 @@ import { LoggerModule } from "nestjs-pino";
       },
     ]),
     ServeStaticModule.forRoot({
-      rootPath: join(process.cwd(), 'uploads'),
-      serveRoot: '/uploads',
+      rootPath: join(process.cwd(), "uploads"),
+      serveRoot: "/uploads",
     }),
     ScheduleModule.forRoot(),
     AuthModule,
@@ -90,5 +90,4 @@ import { LoggerModule } from "nestjs-pino";
     },
   ],
 })
-export class AppModule { }
-
+export class AppModule {}

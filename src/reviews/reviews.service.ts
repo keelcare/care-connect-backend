@@ -10,12 +10,9 @@ import { UpdateReviewDto } from "./dto/update-review.dto";
 
 @Injectable()
 export class ReviewsService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async createReview(
-    createReviewDto: CreateReviewDto,
-    reviewerId: string,
-  ) {
+  async createReview(createReviewDto: CreateReviewDto, reviewerId: string) {
     const { bookingId, rating, comment } = createReviewDto;
 
     // 1. Validate booking exists
@@ -311,7 +308,10 @@ export class ReviewsService {
       };
     }
 
-    const totalRating = reviews.reduce((sum, review) => sum + (review.rating || 0), 0);
+    const totalRating = reviews.reduce(
+      (sum, review) => sum + (review.rating || 0),
+      0,
+    );
     const averageRating = totalRating / reviews.length;
 
     return {

@@ -9,7 +9,7 @@ export class NotificationsService {
     private configService: ConfigService,
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
-  ) { }
+  ) {}
 
   async createNotification(
     userId: string,
@@ -102,19 +102,23 @@ export class NotificationsService {
     nannyEmail: string,
     bookingId: string,
   ) {
-    // We need user IDs to create persistent notifications. 
+    // We need user IDs to create persistent notifications.
     // Assuming the caller might provide IDs or we fetch them.
     // For now, let's look up users by email if possible, or just log if not found.
 
-    const parent = await this.prisma.users.findUnique({ where: { email: parentEmail } });
-    const nanny = await this.prisma.users.findUnique({ where: { email: nannyEmail } });
+    const parent = await this.prisma.users.findUnique({
+      where: { email: parentEmail },
+    });
+    const nanny = await this.prisma.users.findUnique({
+      where: { email: nannyEmail },
+    });
 
     if (parent) {
       await this.createNotification(
         parent.id,
         "Booking Confirmed",
         `Your booking has been confirmed.`,
-        "success"
+        "success",
       );
     }
 
@@ -123,7 +127,7 @@ export class NotificationsService {
         nanny.id,
         "Booking Confirmed",
         `You have a new confirmed booking.`,
-        "success"
+        "success",
       );
     }
   }
@@ -133,7 +137,7 @@ export class NotificationsService {
       recipientId,
       "New Message",
       `You have a new message from ${senderName}`,
-      "info"
+      "info",
     );
   }
 }

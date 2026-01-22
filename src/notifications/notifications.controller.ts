@@ -1,11 +1,20 @@
-import { Controller, Post, Body, UseGuards, Get, Patch, Param, Request } from "@nestjs/common";
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Get,
+  Patch,
+  Param,
+  Request,
+} from "@nestjs/common";
 import { NotificationsService } from "./notifications.service";
 import { AuthGuard } from "@nestjs/passport";
 
 @Controller("notifications")
 @UseGuards(AuthGuard("jwt"))
 export class NotificationsController {
-  constructor(private readonly notificationsService: NotificationsService) { }
+  constructor(private readonly notificationsService: NotificationsService) {}
 
   @Post("send")
   async sendNotification(
@@ -19,9 +28,15 @@ export class NotificationsController {
     },
   ) {
     if (body.target === "parents") {
-      return this.notificationsService.sendToAllParents(body.title, body.message);
+      return this.notificationsService.sendToAllParents(
+        body.title,
+        body.message,
+      );
     } else if (body.target === "nannies") {
-      return this.notificationsService.sendToAllNannies(body.title, body.message);
+      return this.notificationsService.sendToAllNannies(
+        body.title,
+        body.message,
+      );
     } else if (body.target === "user" && body.userId) {
       return this.notificationsService.createNotification(
         body.userId,

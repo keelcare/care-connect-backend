@@ -25,4 +25,4 @@ import { AvailabilityModule } from "../availability/availability.module";
   providers: [RequestsService],
   exports: [RequestsService],
 })
-export class RequestsModule { }
+export class RequestsModule {}

@@ -1,4 +1,9 @@
-import { Injectable, UnauthorizedException, BadRequestException, ForbiddenException } from "@nestjs/common";
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
@@ -9,7 +14,7 @@ export class AuthService {
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
-  ) { }
+  ) {}
 
   async validateUser(email: string, pass: string): Promise<any> {
     const user = await this.usersService.findUserForAuth(email);
@@ -26,13 +31,20 @@ export class AuthService {
   }
 
   async login(user: any) {
-    const payload = { email: user.email, sub: user.id, role: user.role, is_active: user.is_active };
-    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
-    const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
+    const payload = {
+      email: user.email,
+      sub: user.id,
+      role: user.role,
+      is_active: user.is_active,
+    };
+    const accessToken = this.jwtService.sign(payload, { expiresIn: "15m" });
+    const refreshToken = this.jwtService.sign(payload, { expiresIn: "7d" });
 
     // Hash and store refresh token
     const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
-    await this.usersService.update(user.id, { refresh_token_hash: refreshTokenHash });
+    await this.usersService.update(user.id, {
+      refresh_token_hash: refreshTokenHash,
+    });
 
     return {
       access_token: accessToken,
@@ -45,7 +57,9 @@ export class AuthService {
         is_active: user.is_active,
         ban_reason: user.ban_reason,
         oauth_provider: user.oauth_provider,
-        profiles: user.profiles && (Array.isArray(user.profiles) ? user.profiles[0] : user.profiles),
+        profiles:
+          user.profiles &&
+          (Array.isArray(user.profiles) ? user.profiles[0] : user.profiles),
       },
     };
   }
@@ -56,18 +70,21 @@ export class AuthService {
       const user = await this.usersService.findOne(payload.sub);
 
       if (!user || !user.refresh_token_hash) {
-        throw new UnauthorizedException('Invalid refresh token');
+        throw new UnauthorizedException("Invalid refresh token");
       }
 
-      const isValid = await bcrypt.compare(refreshToken, user.refresh_token_hash);
+      const isValid = await bcrypt.compare(
+        refreshToken,
+        user.refresh_token_hash,
+      );
       if (!isValid) {
-        throw new UnauthorizedException('Invalid refresh token');
+        throw new UnauthorizedException("Invalid refresh token");
       }
 
       // Generate new tokens
       return this.login(user);
     } catch (error) {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new UnauthorizedException("Invalid refresh token");
     }
   }
 
@@ -75,10 +92,10 @@ export class AuthService {
     const user = await this.usersService.findUserForAuth(email);
     if (!user) {
       // Don't reveal if user exists
-      return { message: 'If the email exists, a reset link has been sent' };
+      return { message: "If the email exists, a reset link has been sent" };
     }
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetToken = crypto.randomBytes(32).toString("hex");
     const resetTokenExpires = new Date(Date.now() + 3600000); // 1 hour
 
     await this.usersService.update(user.id, {
@@ -87,16 +104,22 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
-    console.log(`Password reset link: http://localhost:3000/reset-password?token=${resetToken}`);
+    console.log(
+      `Password reset link: http://localhost:3000/reset-password?token=${resetToken}`,
+    );
 
-    return { message: 'If the email exists, a reset link has been sent' };
+    return { message: "If the email exists, a reset link has been sent" };
   }
 
   async resetPassword(token: string, newPassword: string) {
     const user = await this.usersService.findByResetToken(token);
 
-    if (!user || !user.reset_password_token_expires || user.reset_password_token_expires < new Date()) {
-      throw new BadRequestException('Invalid or expired reset token');
+    if (
+      !user ||
+      !user.reset_password_token_expires ||
+      user.reset_password_token_expires < new Date()
+    ) {
+      throw new BadRequestException("Invalid or expired reset token");
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
@@ -106,20 +129,20 @@ export class AuthService {
       reset_password_token_expires: null,
     });
 
-    return { message: 'Password reset successful' };
+    return { message: "Password reset successful" };
   }
 
   async sendVerificationEmail(userId: string) {
     const user = await this.usersService.findOne(userId);
     if (!user) {
-      throw new BadRequestException('User not found');
+      throw new BadRequestException("User not found");
     }
 
     if (user.is_verified) {
-      return { message: 'Email already verified' };
+      return { message: "Email already verified" };
     }
 
-    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationToken = crypto.randomBytes(32).toString("hex");
     const verificationTokenExpires = new Date(Date.now() + 86400000); // 24 hours
 
     await this.usersService.update(user.id, {
@@ -128,16 +151,22 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
-    console.log(`Verification link: http://localhost:3000/verify?token=${verificationToken}`);
+    console.log(
+      `Verification link: http://localhost:3000/verify?token=${verificationToken}`,
+    );
 
-    return { message: 'Verification email sent' };
+    return { message: "Verification email sent" };
   }
 
   async verifyEmail(token: string) {
     const user = await this.usersService.findByVerificationToken(token);
 
-    if (!user || !user.verification_token_expires || user.verification_token_expires < new Date()) {
-      throw new BadRequestException('Invalid or expired verification token');
+    if (
+      !user ||
+      !user.verification_token_expires ||
+      user.verification_token_expires < new Date()
+    ) {
+      throw new BadRequestException("Invalid or expired verification token");
     }
 
     await this.usersService.update(user.id, {
@@ -146,7 +175,7 @@ export class AuthService {
       verification_token_expires: null,
     });
 
-    return { message: 'Email verified successfully' };
+    return { message: "Email verified successfully" };
   }
 
   async register(userDto: any) {
