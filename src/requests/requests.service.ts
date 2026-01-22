@@ -287,7 +287,7 @@ export class RequestsService {
           include: { profiles: true },
         },
         assignments: {
-          include: { users: { include: { profiles: true } } },
+          include: { users: { include: { profiles: true, nanny_details: true } } },
         },
       },
     });
@@ -306,7 +306,7 @@ export class RequestsService {
       include: {
         assignments: {
           where: { status: "pending" },
-          include: { users: { include: { profiles: true } } },
+          include: { users: { include: { profiles: true, nanny_details: true } } },
         },
       },
     });

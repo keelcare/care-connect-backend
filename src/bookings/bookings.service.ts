@@ -109,6 +109,7 @@ export class BookingsService {
             nanny_details: true,
           },
         },
+        service_requests: true,
       },
     });
 
@@ -116,7 +117,19 @@ export class BookingsService {
       throw new NotFoundException("Booking not found");
     }
 
-    return booking;
+    const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
+    const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
+
+    return {
+      ...booking,
+      title: (booking.jobs?.title || (booking.service_requests ? `Care for ${booking.service_requests.num_children} ${Number(booking.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (nannyProfile ? ` with ${nannyProfile.first_name} ${nannyProfile.last_name}` : ''),
+      nanny_name: nannyProfile
+        ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
+        : "Pending Assignment",
+      parent_name: parentProfile
+        ? `${parentProfile.first_name} ${parentProfile.last_name}`
+        : "Parent",
+    };
   }
 
   async getBookingsByParent(parentId: string) {
@@ -127,20 +140,26 @@ export class BookingsService {
           select: {
             id: true,
             profiles: true,
+            nanny_details: true,
           },
         },
         jobs: true,
+        service_requests: true,
       },
       orderBy: { created_at: "desc" },
     });
 
-    return bookings.map((booking) => ({
-      ...booking,
-      nanny_name: booking.users_bookings_nanny_idTousers?.profiles
-        ? `${booking.users_bookings_nanny_idTousers.profiles.first_name} ${booking.users_bookings_nanny_idTousers.profiles.last_name}`
-        : "Nanny",
-      nanny_profile: booking.users_bookings_nanny_idTousers?.profiles,
-    }));
+    return bookings.map((booking) => {
+      const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
+      return {
+        ...booking,
+        title: (booking.jobs?.title || (booking.service_requests ? `Care for ${booking.service_requests.num_children} ${Number(booking.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (nannyProfile ? ` with ${nannyProfile.first_name} ${nannyProfile.last_name}` : ''),
+        nanny_name: nannyProfile
+          ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
+          : "Pending Assignment",
+        nanny_profile: nannyProfile,
+      };
+    });
   }
 
   async getBookingsByNanny(nannyId: string) {
@@ -195,14 +214,30 @@ export class BookingsService {
       },
     });
     if (!booking) throw new NotFoundException("Booking not found");
+
+    // Handle idempotency/double-clicks gracefully
+    if (booking.status === "COMPLETED") {
+      return booking;
+    }
+
     if (booking.status !== "IN_PROGRESS") {
-      throw new BadRequestException("Booking must be IN_PROGRESS to complete");
+      throw new BadRequestException(`Booking must be IN_PROGRESS to complete. Current status: ${booking.status}`);
+    }
+
+    // Safety checks to prevent 500 errors
+    if (!booking.start_time) {
+      throw new BadRequestException("Booking has no start time recorded.");
+    }
+
+    if (!booking.users_bookings_nanny_idTousers) {
+      throw new BadRequestException("Booking has no assigned nanny.");
     }
 
     const endTime = new Date();
     const startTime = booking.start_time;
     const durationHours =
       (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+
     const hourlyRate = Number(
       booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate || 0,
     );
@@ -226,7 +261,7 @@ export class BookingsService {
         amount: totalAmount,
         status: "pending_release",
         order_id: `pending_${id}_${Date.now()}`, // Placeholder until parent initiates actual payment flow
-        provider: "manual_pending", 
+        provider: "manual_pending",
       },
     });
 
@@ -318,15 +353,25 @@ export class BookingsService {
       where: {
         ...whereClause,
         status: {
-          in: ["CONFIRMED", "IN_PROGRESS"],
+          in: ["requested", "pending", "accepted", "CONFIRMED", "IN_PROGRESS"],
         },
       },
       include: {
         jobs: true,
-        users_bookings_nanny_idTousers:
-          role === "parent" ? { select: { profiles: true } } : undefined,
-        users_bookings_parent_idTousers:
-          role === "nanny" ? { select: { profiles: true } } : undefined,
+        users_bookings_nanny_idTousers: {
+          select: {
+            id: true,
+            profiles: true,
+            nanny_details: true
+          }
+        },
+        users_bookings_parent_idTousers: {
+          select: {
+            id: true,
+            profiles: true
+          }
+        },
+        service_requests: true,
       },
     });
 
@@ -336,12 +381,13 @@ export class BookingsService {
 
       return {
         ...b,
+        title: (b.jobs?.title || (b.service_requests ? `Care for ${b.service_requests.num_children} ${Number(b.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (nannyProfile ? ` with ${nannyProfile.first_name} ${nannyProfile.last_name}` : ''),
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-          : role === "parent" ? "Nanny" : undefined,
+          : "Pending Assignment",
         parent_name: parentProfile
           ? `${parentProfile.first_name} ${parentProfile.last_name}`
-          : role === "nanny" ? "Parent" : undefined,
+          : "Parent",
       };
     });
   }

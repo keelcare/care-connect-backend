@@ -39,13 +39,25 @@ export class PaymentsService {
 
     // Calculate Amount
     const hourlyRate =
-      Number(booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate) || 0;
+      Number(booking.users_bookings_nanny_idTousers?.nanny_details?.hourly_rate) || 0;
+
+    if (!booking.start_time || !booking.end_time) {
+      throw new BadRequestException("Booking start or end time is missing");
+    }
+
     const durationHours =
-      (booking.end_time.getTime() - booking.start_time.getTime()) /
+      (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) /
       (1000 * 60 * 60);
 
     const amountInRupees = hourlyRate * durationHours;
     const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
+
+    this.logger.log(`Creating order for booking: ${bookingId}`);
+    this.logger.log(`Hourly Rate: ${hourlyRate}, Duration: ${durationHours}, Amount(Paise): ${amountInPaise}`);
+
+    if (amountInPaise < 100) {
+      throw new BadRequestException(`Amount too low to create order: ${amountInRupees} INR`);
+    }
 
     // Idempotency: Check if order already exists
     const existingPayment = await this.prisma.payments.findFirst({
@@ -85,13 +97,20 @@ export class PaymentsService {
 
       return {
         orderId: order.id,
-        amount: amountInRupees,
+        order_id: order.id, // Compatible with Razorpay options
+        amount: amountInRupees, // For display
+        amount_due: amountInPaise, // For Razorpay options (subunits)
         currency: "INR",
         key: this.configService.get("RAZORPAY_KEY_ID"),
+        key_id: this.configService.get("RAZORPAY_KEY_ID"), // Compatible with Razorpay options
+        name: "Care Connect",
+        description: `Payment for Booking #${bookingId}`,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error("Error creating Razorpay order", error);
-      throw new BadRequestException("Failed to create payment order");
+      // Construct a more useful error message
+      const errorMessage = error?.error?.description || error?.message || "Failed to create payment order";
+      throw new BadRequestException(errorMessage);
     }
   }
 
@@ -120,7 +139,7 @@ export class PaymentsService {
   // 3. Webhook Handler (Source of Truth)
   async handleWebhook(signature: string, payload: any) {
     const secret = this.configService.get("RAZORPAY_WEBHOOK_SECRET") || "webhook_secret";
-    
+
     // Validate Webhook Signature
     const shasum = crypto.createHmac("sha256", secret);
     shasum.update(JSON.stringify(payload));

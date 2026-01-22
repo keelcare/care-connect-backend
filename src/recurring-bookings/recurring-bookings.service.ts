@@ -25,7 +25,7 @@ export class RecurringBookingsService {
 
     async findAll(userId: string, role: string) {
         const where = role === "parent" ? { parent_id: userId } : { nanny_id: userId };
-        return this.prisma.recurring_bookings.findMany({
+        const recurring = await this.prisma.recurring_bookings.findMany({
             where,
             include: {
                 users_recurring_bookings_parent_idTousers: {
@@ -36,6 +36,16 @@ export class RecurringBookingsService {
                 },
             },
             orderBy: { created_at: "desc" },
+        });
+
+        return recurring.map(r => {
+            const nannyProfile = r.users_recurring_bookings_nanny_idTousers?.profiles;
+            const parentProfile = r.users_recurring_bookings_parent_idTousers?.profiles;
+            return {
+                ...r,
+                nanny_name: nannyProfile ? `${nannyProfile.first_name} ${nannyProfile.last_name}` : "Nanny",
+                parent_name: parentProfile ? `${parentProfile.first_name} ${parentProfile.last_name}` : "Parent",
+            };
         });
     }
 
@@ -53,7 +63,15 @@ export class RecurringBookingsService {
             },
         });
         if (!recurring) throw new NotFoundException("Recurring booking not found");
-        return recurring;
+
+        const nannyProfile = recurring.users_recurring_bookings_nanny_idTousers?.profiles;
+        const parentProfile = recurring.users_recurring_bookings_parent_idTousers?.profiles;
+
+        return {
+            ...recurring,
+            nanny_name: nannyProfile ? `${nannyProfile.first_name} ${nannyProfile.last_name}` : "Nanny",
+            parent_name: parentProfile ? `${parentProfile.first_name} ${parentProfile.last_name}` : "Parent",
+        };
     }
 
     async update(id: string, data: any) {
