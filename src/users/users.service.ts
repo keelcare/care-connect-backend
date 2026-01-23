@@ -8,10 +8,12 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   // Auth-related methods
-  async create(data: Prisma.usersCreateInput): Promise<users & { profiles: profiles | null }> {
+  async create(
+    data: Prisma.usersCreateInput,
+  ): Promise<users & { profiles: profiles | null }> {
     return this.prisma.users.create({
       data,
       include: {
@@ -26,7 +28,26 @@ export class UsersService {
     });
   }
 
-  async findUserForAuth(email: string): Promise<Pick<users, 'id' | 'email' | 'password_hash' | 'role' | 'is_verified' | 'oauth_provider' | 'is_active' | 'ban_reason'> & { profiles: { first_name: string | null; last_name: string | null; profile_image_url: string | null } | null } | null> {
+  async findUserForAuth(email: string): Promise<
+    | (Pick<
+        users,
+        | "id"
+        | "email"
+        | "password_hash"
+        | "role"
+        | "is_verified"
+        | "oauth_provider"
+        | "is_active"
+        | "ban_reason"
+      > & {
+        profiles: {
+          first_name: string | null;
+          last_name: string | null;
+          profile_image_url: string | null;
+        } | null;
+      })
+    | null
+  > {
     return this.prisma.users.findUnique({
       where: { email },
       select: {
@@ -52,7 +73,26 @@ export class UsersService {
   async findByOAuth(
     provider: string,
     providerId: string,
-  ): Promise<Pick<users, 'id' | 'email' | 'password_hash' | 'role' | 'is_verified' | 'oauth_provider' | 'is_active' | 'ban_reason'> & { profiles: { first_name: string | null; last_name: string | null; profile_image_url: string | null } | null } | null> {
+  ): Promise<
+    | (Pick<
+        users,
+        | "id"
+        | "email"
+        | "password_hash"
+        | "role"
+        | "is_verified"
+        | "oauth_provider"
+        | "is_active"
+        | "ban_reason"
+      > & {
+        profiles: {
+          first_name: string | null;
+          last_name: string | null;
+          profile_image_url: string | null;
+        } | null;
+      })
+    | null
+  > {
     return this.prisma.users.findUnique({
       where: {
         oauth_provider_oauth_provider_id: {
@@ -114,9 +154,14 @@ export class UsersService {
         });
 
         const totalReviews = reviews.length;
-        const averageRating = totalReviews > 0
-          ? Math.round((reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / totalReviews) * 10) / 10
-          : null;
+        const averageRating =
+          totalReviews > 0
+            ? Math.round(
+                (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                  totalReviews) *
+                  10,
+              ) / 10
+            : null;
 
         // Exclude sensitive fields
         const {
@@ -135,7 +180,7 @@ export class UsersService {
           averageRating,
           totalReviews,
         };
-      })
+      }),
     );
 
     return nanniesWithRatings;
@@ -191,9 +236,14 @@ export class UsersService {
       });
 
       const totalReviews = reviews.length;
-      const averageRating = totalReviews > 0
-        ? Math.round((reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / totalReviews) * 10) / 10
-        : null;
+      const averageRating =
+        totalReviews > 0
+          ? Math.round(
+              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                totalReviews) *
+                10,
+            ) / 10
+          : null;
 
       return {
         ...user,
@@ -247,13 +297,18 @@ export class UsersService {
       let finalAddress = address;
       if (lat && lng && !address) {
         try {
-          const { LocationService } = await import('../location/location.service');
-          const { ConfigService } = await import('@nestjs/config');
+          const { LocationService } = await import(
+            "../location/location.service"
+          );
+          const { ConfigService } = await import("@nestjs/config");
           const locationService = new LocationService(
             new ConfigService(),
-            this.prisma
+            this.prisma,
           );
-          const geocodedAddress = await locationService.reverseGeocode(lat, lng);
+          const geocodedAddress = await locationService.reverseGeocode(
+            lat,
+            lng,
+          );
           if (geocodedAddress) {
             finalAddress = geocodedAddress;
             this.logger.log(`Auto-populated address: ${geocodedAddress}`);

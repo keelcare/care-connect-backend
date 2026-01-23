@@ -14,4 +14,4 @@ import { PrismaModule } from '../prisma/prisma.module';
     controllers: [VerificationController],
     providers: [VerificationService],
 })
-export class VerificationModule { }
+export class VerificationModule {}

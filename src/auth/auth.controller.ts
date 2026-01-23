@@ -21,7 +21,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
-  ) { }
+  ) {}
 
   @Post("signup")
   async signup(@Body() userDto: any) {
@@ -126,7 +126,7 @@ export class AuthController {
 
   @Get("google")
   @UseGuards(GoogleOauthGuard)
-  async googleAuth(@Req() req) { }
+  async googleAuth(@Req() req) {}
 
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))

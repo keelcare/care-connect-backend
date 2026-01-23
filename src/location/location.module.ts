@@ -12,4 +12,4 @@ import { NotificationsModule } from "../notifications/notifications.module";
   controllers: [LocationController],
   exports: [LocationService],
 })
-export class LocationModule { }
+export class LocationModule {}

@@ -21,12 +21,15 @@ async function bootstrap() {
           scriptSrc: ["'self'", "'unsafe-inline'"], // unsafe-inline might be needed for some inline scripts, remove if possible
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", "data:", "https:"],
-          connectSrc: ["'self'", process.env.FRONTEND_URL || "http://localhost:3000"],
+          connectSrc: [
+            "'self'",
+            process.env.FRONTEND_URL || "http://localhost:3000",
+          ],
         },
       },
       crossOriginEmbedderPolicy: false, // Often causes issues with resources loaded from other domains
       crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow resources to be loaded cross-origin (e.g., images)
-    })
+    }),
   );
 
   // Enable CORS with strict checks
@@ -51,4 +54,3 @@ async function bootstrap() {
   console.log(`🚀 Application is running on: http://localhost:${port}`);
 }
 bootstrap();
-
