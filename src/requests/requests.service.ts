@@ -55,7 +55,30 @@ export class RequestsService {
         },
       });
 
-      // 3. Trigger auto-matching
+      // 3. Create initial booking (Pending Assignment)
+      await this.prisma.bookings.create({
+        data: {
+          job_id: null,
+          request_id: request.id,
+          parent_id: parentId,
+          nanny_id: null, // No nanny assigned yet
+          status: "requested", // Initial status
+          start_time: new Date(
+            request.date.toISOString().split("T")[0] +
+            "T" +
+            request.start_time.toISOString().split("T")[1]
+          ),
+          end_time: new Date(
+            new Date(
+              request.date.toISOString().split("T")[0] +
+              "T" +
+              request.start_time.toISOString().split("T")[1]
+            ).getTime() + Number(request.duration_hours) * 60 * 60 * 1000
+          ),
+        },
+      });
+
+      // 4. Trigger auto-matching
       await this.triggerMatching(request.id);
 
       return request;

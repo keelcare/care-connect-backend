@@ -6,6 +6,7 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { ChatService } from "../chat/chat.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { RequestsService } from "../requests/requests.service";
 
 @Injectable()
 export class BookingsService {
@@ -13,7 +14,9 @@ export class BookingsService {
     private prisma: PrismaService,
     private chatService: ChatService,
     private notificationsService: NotificationsService,
+    private requestsService: RequestsService,
   ) { }
+
 
   async createBooking(
     jobId: string | undefined,
@@ -91,7 +94,9 @@ export class BookingsService {
     return booking;
   }
 
+
   async getBookingById(id: string) {
+    // ... (existing code) ...
     const booking = await this.prisma.bookings.findUnique({
       where: { id },
       include: {
@@ -131,6 +136,7 @@ export class BookingsService {
         : "Parent",
     };
   }
+
 
   async getBookingsByParent(parentId: string) {
     const bookings = await this.prisma.bookings.findMany({
@@ -284,7 +290,8 @@ export class BookingsService {
     return updatedBooking;
   }
 
-  async cancelBooking(id: string, reason?: string) {
+
+  async cancelBooking(id: string, reason?: string, cancelledByUserId?: string) {
     const booking = await this.prisma.bookings.findUnique({
       where: { id },
       include: {
@@ -301,6 +308,74 @@ export class BookingsService {
       );
     }
 
+    // Special Handling: Random Assignment Nanny Cancellation
+    if (
+      cancelledByUserId &&
+      booking.nanny_id === cancelledByUserId &&
+      booking.request_id
+    ) {
+      console.log(`Nanny cancelled random assignment booking ${id}. Triggering re-match.`);
+
+      // 1. Find the active assignment (accepted)
+      // We look for an assignment for this request by this nanny that is accepted
+      const assignment = await this.prisma.assignments.findFirst({
+        where: {
+          request_id: booking.request_id,
+          nanny_id: booking.nanny_id,
+          status: 'accepted'
+        }
+      });
+
+      if (assignment) {
+        // Mark match as rejected so they aren't matched again immediately
+        await this.prisma.assignments.update({
+          where: { id: assignment.id },
+          data: {
+            status: 'rejected',
+            rejection_reason: `Cancelled after booking: ${reason}`,
+            responded_at: new Date()
+          }
+        });
+      }
+
+      // 2. Revert Booking to Pending and Cleanup Chat
+      const updatedBooking = await this.prisma.bookings.update({
+        where: { id },
+        data: {
+          status: "requested",
+          nanny_id: null,
+          cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
+          // Reset other fields if necessary
+        },
+      });
+
+      // Cleanup existing chat so the next nanny doesn't see old messages
+      await this.chatService.deleteChatByBookingId(id);
+
+      // 3. Update Service Request (set back to pending from assigned)
+      await this.prisma.service_requests.update({
+        where: { id: booking.request_id },
+        data: { status: 'pending', current_assignment_id: null }
+      });
+
+      // 4. Trigger Re-matching
+      this.requestsService.triggerMatching(booking.request_id).catch(err => {
+        console.error("Failed to re-trigger matching", err);
+      });
+
+      // Notify Parent
+      await this.notificationsService.createNotification(
+        booking.parent_id,
+        "Nanny Cancelled - Re-matching",
+        `The assigned nanny had to cancel. We are looking for a new match immediately.`,
+        "warning",
+      );
+
+      return updatedBooking;
+    }
+
+    // Standard Cancellation Logic
+
     // Calculate Cancellation Fee
     // Rule: If cancelled < 24 hours before start, fee = 1 hour rate
     let cancellationFee = 0;
@@ -308,15 +383,17 @@ export class BookingsService {
 
     const now = new Date();
     const startTime = booking.start_time;
-    const hoursUntilStart =
-      (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+    if (startTime) {
+      const hoursUntilStart =
+        (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-    if (hoursUntilStart < 24) {
-      const hourlyRate = Number(
-        booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate || 0,
-      );
-      cancellationFee = hourlyRate;
-      feeStatus = "pending";
+      if (hoursUntilStart < 24 && booking.users_bookings_nanny_idTousers) {
+        const hourlyRate = Number(
+          booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate || 0,
+        );
+        cancellationFee = hourlyRate;
+        feeStatus = "pending";
+      }
     }
 
     const updatedBooking = await this.prisma.bookings.update({
@@ -330,12 +407,14 @@ export class BookingsService {
     });
 
     // Notify both parties
-    await this.notificationsService.createNotification(
-      booking.nanny_id,
-      "Booking Cancelled",
-      `The booking has been cancelled. Reason: ${reason || "No reason provided"}.`,
-      "warning",
-    );
+    if (booking.nanny_id) {
+      await this.notificationsService.createNotification(
+        booking.nanny_id,
+        "Booking Cancelled",
+        `The booking has been cancelled. Reason: ${reason || "No reason provided"}.`,
+        "warning",
+      );
+    }
     await this.notificationsService.createNotification(
       booking.parent_id,
       "Booking Cancelled",

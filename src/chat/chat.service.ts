@@ -3,7 +3,7 @@ import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
 export class ChatService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   async createChat(bookingId: string) {
     return this.prisma.chats.create({
@@ -89,5 +89,35 @@ export class ChatService {
         read_status: true,
       },
     });
+  }
+
+  async deleteChatByBookingId(bookingId: string) {
+    // Delete all messages first (Prisma might handle this if cascade is set, but let's be safe or just delete the chat)
+    const chat = await this.prisma.chats.findFirst({
+      where: { booking_id: bookingId }
+    });
+
+    if (chat) {
+      await this.prisma.chats.delete({
+        where: { id: chat.id }
+      });
+    }
+  }
+
+  async isUserInBooking(bookingId: string, userId: string): Promise<boolean> {
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id: bookingId }
+    });
+    if (!booking) return false;
+    return booking.parent_id === userId || booking.nanny_id === userId;
+  }
+
+  async isUserInChat(chatId: string, userId: string): Promise<boolean> {
+    const chat = await this.prisma.chats.findUnique({
+      where: { id: chatId },
+      include: { bookings: true }
+    });
+    if (!chat || !chat.bookings) return false;
+    return chat.bookings.parent_id === userId || chat.bookings.nanny_id === userId;
   }
 }

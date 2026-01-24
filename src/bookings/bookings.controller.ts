@@ -110,6 +110,6 @@ export class BookingsController {
     if (booking.nanny_id !== req.user.id && booking.parent_id !== req.user.id) {
       throw new ForbiddenException("Not authorized to cancel this booking");
     }
-    return this.bookingsService.cancelBooking(id, reason);
+    return this.bookingsService.cancelBooking(id, reason, req.user.id);
   }
 }
