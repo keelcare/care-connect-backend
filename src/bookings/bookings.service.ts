@@ -317,7 +317,6 @@ export class BookingsService {
       console.log(`Nanny cancelled random assignment booking ${id}. Triggering re-match.`);
 
       // 1. Find the active assignment (accepted)
-      // We look for an assignment for this request by this nanny that is accepted
       const assignment = await this.prisma.assignments.findFirst({
         where: {
           request_id: booking.request_id,
@@ -327,7 +326,6 @@ export class BookingsService {
       });
 
       if (assignment) {
-        // Mark match as rejected so they aren't matched again immediately
         await this.prisma.assignments.update({
           where: { id: assignment.id },
           data: {
@@ -345,11 +343,9 @@ export class BookingsService {
           status: "requested",
           nanny_id: null,
           cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
-          // Reset other fields if necessary
         },
       });
 
-      // Cleanup existing chat so the next nanny doesn't see old messages
       await this.chatService.deleteChatByBookingId(id);
 
       // 3. Update Service Request (set back to pending from assigned)
@@ -363,7 +359,6 @@ export class BookingsService {
         console.error("Failed to re-trigger matching", err);
       });
 
-      // Notify Parent
       await this.notificationsService.createNotification(
         booking.parent_id,
         "Nanny Cancelled - Re-matching",
@@ -374,10 +369,30 @@ export class BookingsService {
       return updatedBooking;
     }
 
+    // Special Handling: Parent Cancellation
+    if (cancelledByUserId && booking.parent_id === cancelledByUserId) {
+      console.log(`Parent cancelled booking ${id}.`);
+
+      // 1. If there's an associated service request, cancel it too
+      if (booking.request_id) {
+        await this.prisma.service_requests.update({
+          where: { id: booking.request_id },
+          data: { status: 'CANCELLED' }
+        });
+
+        // Also cancel any pending/accepted assignment for this request
+        await this.prisma.assignments.updateMany({
+          where: { request_id: booking.request_id, status: { in: ['pending', 'accepted'] } },
+          data: { status: 'cancelled', responded_at: new Date() }
+        });
+      }
+
+      // 2. Proceed to standard cancellation (status, fees, notifications)
+    }
+
     // Standard Cancellation Logic
 
     // Calculate Cancellation Fee
-    // Rule: If cancelled < 24 hours before start, fee = 1 hour rate
     let cancellationFee = 0;
     let feeStatus = "no_fee";
 
@@ -411,16 +426,20 @@ export class BookingsService {
       await this.notificationsService.createNotification(
         booking.nanny_id,
         "Booking Cancelled",
-        `The booking has been cancelled. Reason: ${reason || "No reason provided"}.`,
+        `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
         "warning",
       );
     }
-    await this.notificationsService.createNotification(
-      booking.parent_id,
-      "Booking Cancelled",
-      `The booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of $${cancellationFee} applies.` : ""}`,
-      "warning",
-    );
+
+    // Only notify parent if it WASN'T the parent who cancelled (avoid double info)
+    if (cancelledByUserId !== booking.parent_id) {
+      await this.notificationsService.createNotification(
+        booking.parent_id,
+        "Booking Cancelled",
+        `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of $${cancellationFee} applies.` : ""}`,
+        "warning",
+      );
+    }
 
     return updatedBooking;
   }
