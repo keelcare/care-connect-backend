@@ -1,6 +1,7 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
+import { ConfigService } from "@nestjs/config";
 
 describe("AuthController", () => {
   let controller: AuthController;
@@ -16,6 +17,12 @@ describe("AuthController", () => {
             login: jest.fn(),
             register: jest.fn(),
             googleLogin: jest.fn(),
+          },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn(),
           },
         },
       ],

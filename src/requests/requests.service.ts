@@ -18,12 +18,15 @@ export class RequestsService {
     private notificationsService: NotificationsService,
     private favoritesService: FavoritesService,
     private aiService: AiService,
-  ) { }
+  ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
     // 1. Get parent profile for location
     const parent = await this.usersService.findOne(parentId);
-    console.log("RequestsService.create parent:", JSON.stringify(parent, null, 2));
+    console.log(
+      "RequestsService.create parent:",
+      JSON.stringify(parent, null, 2),
+    );
     if (
       !parent ||
       !parent.profiles ||
@@ -166,7 +169,9 @@ export class RequestsService {
     const requiredSkills = request.required_skills || [];
 
     // Get parent's favorite nannies
-    const favoriteNannyIds = await this.favoritesService.getFavoriteNannyIds(request.parent_id);
+    const favoriteNannyIds = await this.favoritesService.getFavoriteNannyIds(
+      request.parent_id,
+    );
 
     // Get historical matching data for AI
     const historicalData = await this.prisma.matching_feedback.findMany({
@@ -248,7 +253,9 @@ export class RequestsService {
     if (scoredNannies.length > 0) {
       // Assign to the top-ranked candidate
       const bestMatch = scoredNannies[0];
-      console.log(`Best match for request ${requestId}: ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`);
+      console.log(
+        `Best match for request ${requestId}: ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`,
+      );
 
       // Create assignment
       const assignment = await this.prisma.assignments.create({
@@ -277,7 +284,7 @@ export class RequestsService {
         bestMatch.id,
         "New Service Request",
         `You have a new service request nearby! Tap to view details.`,
-        "info"
+        "info",
       );
 
       // Notify Parent about the match
@@ -285,7 +292,7 @@ export class RequestsService {
         request.parent_id,
         "Nanny Matched!",
         `We found a matching nanny! Waiting for their confirmation.`,
-        "info"
+        "info",
       );
 
       return assignment;
@@ -296,7 +303,7 @@ export class RequestsService {
         request.parent_id,
         "No Matches Found",
         `We couldn't find a nanny for your request at this time. We will keep looking.`,
-        "warning"
+        "warning",
       );
       return null;
     }

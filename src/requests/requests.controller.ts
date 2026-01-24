@@ -15,7 +15,7 @@ import { AuthGuard } from "@nestjs/passport";
 @Controller("requests")
 @UseGuards(AuthGuard("jwt"))
 export class RequestsController {
-  constructor(private readonly requestsService: RequestsService) { }
+  constructor(private readonly requestsService: RequestsService) {}
 
   @Post()
   create(@Request() req, @Body() createRequestDto: CreateRequestDto) {

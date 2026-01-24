@@ -3,32 +3,36 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 @Injectable()
 export class AiService {
-    private readonly logger = new Logger(AiService.name);
-    private genAI: GoogleGenerativeAI;
+  private readonly logger = new Logger(AiService.name);
+  private genAI: GoogleGenerativeAI;
 
-    constructor() {
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            this.logger.warn("GEMINI_API_KEY not found. AI matching will be disabled.");
-        } else {
-            this.genAI = new GoogleGenerativeAI(apiKey);
-        }
+  constructor() {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      this.logger.warn(
+        "GEMINI_API_KEY not found. AI matching will be disabled.",
+      );
+    } else {
+      this.genAI = new GoogleGenerativeAI(apiKey);
+    }
+  }
+
+  async getMatchingRecommendations(
+    requestData: any,
+    candidateNannies: any[],
+    historicalData: any[],
+  ): Promise<Map<string, number>> {
+    if (!this.genAI) {
+      this.logger.warn("Gemini API not configured. Returning default scores.");
+      return new Map();
     }
 
-    async getMatchingRecommendations(
-        requestData: any,
-        candidateNannies: any[],
-        historicalData: any[],
-    ): Promise<Map<string, number>> {
-        if (!this.genAI) {
-            this.logger.warn("Gemini API not configured. Returning default scores.");
-            return new Map();
-        }
+    try {
+      const model = this.genAI.getGenerativeModel({
+        model: "gemini-2.5-flash",
+      });
 
-        try {
-            const model = this.genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-            const prompt = `
+      const prompt = `
 You are an AI matching assistant for a childcare platform. Analyze the following data and provide AI-based scoring for each nanny candidate.
 
 REQUEST DETAILS:
@@ -38,19 +42,28 @@ REQUEST DETAILS:
 - Duration: ${requestData.duration_hours} hours
 
 CANDIDATE NANNIES:
-${candidateNannies.map((n, i) => `
+${candidateNannies
+  .map(
+    (n, i) => `
 Nanny ${i + 1} (ID: ${n.id}):
 - Skills: ${JSON.stringify(n.skills)}
 - Experience: ${n.experience_years} years
 - Hourly Rate: $${n.hourly_rate}
 - Distance: ${n.distance?.toFixed(2)} km
 - Acceptance Rate: ${n.acceptance_rate}%
-`).join("\n")}
+`,
+  )
+  .join("\n")}
 
 HISTORICAL SUCCESSFUL MATCHES (for learning):
-${historicalData.slice(0, 10).map((h) => `
+${historicalData
+  .slice(0, 10)
+  .map(
+    (h) => `
 - Request Skills: ${JSON.stringify(h.request_skills)} → Matched with Nanny (Experience: ${h.nanny_experience} years, Skills: ${JSON.stringify(h.nanny_skills)}) → Success: ${h.was_successful}
-`).join("\n")}
+`,
+  )
+  .join("\n")}
 
 Based on the historical data patterns and the current request, provide an AI score (0-100) for each nanny. Consider:
 1. Skill match quality (not just presence, but relevance)
@@ -62,34 +75,36 @@ Respond ONLY with a JSON object mapping nanny IDs to scores:
 {"nannyId1": score1, "nannyId2": score2, ...}
 `;
 
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            const text = response.text();
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
 
-            // Extract JSON from response
-            const jsonMatch = text.match(/\{[^}]+\}/);
-            if (jsonMatch) {
-                const scores = JSON.parse(jsonMatch[0]);
-                return new Map(Object.entries(scores).map(([k, v]) => [k, Number(v)]));
-            }
+      // Extract JSON from response
+      const jsonMatch = text.match(/\{[^}]+\}/);
+      if (jsonMatch) {
+        const scores = JSON.parse(jsonMatch[0]);
+        return new Map(Object.entries(scores).map(([k, v]) => [k, Number(v)]));
+      }
 
-            this.logger.warn("Could not parse AI response. Returning empty scores.");
-            return new Map();
-        } catch (error) {
-            this.logger.error(`AI matching error: ${error.message}`);
-            return new Map();
-        }
+      this.logger.warn("Could not parse AI response. Returning empty scores.");
+      return new Map();
+    } catch (error) {
+      this.logger.error(`AI matching error: ${error.message}`);
+      return new Map();
+    }
+  }
+
+  async chatWithAi(message: string): Promise<string> {
+    if (!this.genAI) {
+      return "I'm sorry, but I'm not currently connected to my AI brain. Please try again later.";
     }
 
-    async chatWithAi(message: string): Promise<string> {
-        if (!this.genAI) {
-            return "I'm sorry, but I'm not currently connected to my AI brain. Please try again later.";
-        }
+    try {
+      const model = this.genAI.getGenerativeModel({
+        model: "gemini-pro-latest",
+      });
 
-        try {
-            const model = this.genAI.getGenerativeModel({ model: "gemini-pro-latest" });
-
-            const systemPrompt = `
+      const systemPrompt = `
 You are the intelligent assistant for "Care Connect", a platform connecting parents with qualified nannies.
 Your role is to help users (parents, nannies, and admins) understand the app, its features, and how to use it.
 
@@ -126,12 +141,12 @@ GUIDELINES:
 User Question: ${message}
 `;
 
-            const result = await model.generateContent(systemPrompt);
-            const response = await result.response;
-            return response.text();
-        } catch (error) {
-            this.logger.error(`AI chat error: ${error.message}`);
-            return "I'm having trouble processing your request right now. Please try again.";
-        }
+      const result = await model.generateContent(systemPrompt);
+      const response = await result.response;
+      return response.text();
+    } catch (error) {
+      this.logger.error(`AI chat error: ${error.message}`);
+      return "I'm having trouble processing your request right now. Please try again.";
     }
+  }
 }

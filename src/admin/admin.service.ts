@@ -3,7 +3,7 @@ import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   // User Management
   async getAllUsers() {
@@ -95,18 +95,30 @@ export class AdminService {
         bookings: {
           include: {
             users_bookings_parent_idTousers: {
-              select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+              select: {
+                email: true,
+                profiles: { select: { first_name: true, last_name: true } },
+              },
             },
             users_bookings_nanny_idTousers: {
-              select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+              select: {
+                email: true,
+                profiles: { select: { first_name: true, last_name: true } },
+              },
             },
           },
         },
         users_disputes_raised_byTousers: {
-          select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+          select: {
+            email: true,
+            profiles: { select: { first_name: true, last_name: true } },
+          },
         },
         users_disputes_resolved_byTousers: {
-          select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+          select: {
+            email: true,
+            profiles: { select: { first_name: true, last_name: true } },
+          },
         },
       },
     });
@@ -144,10 +156,16 @@ export class AdminService {
         bookings: {
           include: {
             users_bookings_parent_idTousers: {
-              select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+              select: {
+                email: true,
+                profiles: { select: { first_name: true, last_name: true } },
+              },
             },
             users_bookings_nanny_idTousers: {
-              select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+              select: {
+                email: true,
+                profiles: { select: { first_name: true, last_name: true } },
+              },
             },
           },
         },
@@ -177,10 +195,16 @@ export class AdminService {
       orderBy: { created_at: "desc" },
       include: {
         users_reviews_reviewer_idTousers: {
-          select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+          select: {
+            email: true,
+            profiles: { select: { first_name: true, last_name: true } },
+          },
         },
         users_reviews_reviewee_idTousers: {
-          select: { email: true, profiles: { select: { first_name: true, last_name: true } } },
+          select: {
+            email: true,
+            profiles: { select: { first_name: true, last_name: true } },
+          },
         },
         bookings: true,
       },
@@ -250,13 +274,15 @@ export class AdminService {
       where: { status: "CANCELLED" },
     });
 
-    const completionRate = totalRequests > 0 ? (completedBookings / totalRequests) * 100 : 0;
+    const completionRate =
+      totalRequests > 0 ? (completedBookings / totalRequests) * 100 : 0;
 
     const totalAssignments = await this.prisma.assignments.count();
     const acceptedAssignments = await this.prisma.assignments.count({
       where: { status: "accepted" },
     });
-    const acceptanceRate = totalAssignments > 0 ? (acceptedAssignments / totalAssignments) * 100 : 0;
+    const acceptanceRate =
+      totalAssignments > 0 ? (acceptedAssignments / totalAssignments) * 100 : 0;
 
     const revenueData = await this.prisma.payments.aggregate({
       _sum: { amount: true },

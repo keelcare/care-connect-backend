@@ -15,4 +15,4 @@ import { PrismaModule } from "../prisma/prisma.module";
     providers: [RecurringBookingsService],
     exports: [RecurringBookingsService],
 })
-export class RecurringBookingsModule { }
+export class RecurringBookingsModule {}

@@ -1,7 +1,7 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString } from "class-validator";
 
 export class RejectVerificationDto {
-    @IsNotEmpty()
-    @IsString()
-    reason: string;
+  @IsNotEmpty()
+  @IsString()
+  reason: string;
 }

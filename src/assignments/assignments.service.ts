@@ -18,7 +18,43 @@ export class AssignmentsService {
     private chatService: ChatService,
   ) { }
 
-  // ... (findAllByNanny, findPendingByNanny, findOne remain same)
+  async findAllByNanny(nannyId: string) {
+    return this.prisma.assignments.findMany({
+      where: { nanny_id: nannyId },
+      orderBy: { created_at: "desc" },
+      include: {
+        service_requests: {
+          include: { users: { include: { profiles: true } } },
+        },
+      },
+    });
+  }
+
+  async findPendingByNanny(nannyId: string) {
+    return this.prisma.assignments.findMany({
+      where: {
+        nanny_id: nannyId,
+        status: "pending",
+      },
+      orderBy: { created_at: "desc" },
+      include: {
+        service_requests: {
+          include: { users: { include: { profiles: true } } },
+        },
+      },
+    });
+  }
+
+  async findOne(id: string) {
+    return this.prisma.assignments.findUnique({
+      where: { id },
+      include: {
+        service_requests: {
+          include: { users: { include: { profiles: true } } },
+        },
+      },
+    });
+  }
 
   async accept(id: string, nannyId: string) {
     const assignment = await this.prisma.assignments.findUnique({
@@ -136,7 +172,7 @@ export class AssignmentsService {
       assignment.service_requests.parent_id,
       "Booking Confirmed!",
       `A nanny has accepted your request. Tap to view booking details.`,
-      "success"
+      "success",
     );
 
     return { assignment: updatedAssignment, booking };

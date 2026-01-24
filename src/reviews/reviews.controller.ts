@@ -16,14 +16,11 @@ import { UpdateReviewDto } from "./dto/update-review.dto";
 
 @Controller("reviews")
 export class ReviewsController {
-  constructor(private readonly reviewsService: ReviewsService) { }
+  constructor(private readonly reviewsService: ReviewsService) {}
 
   @Post()
   @UseGuards(AuthGuard("jwt"))
-  async createReview(
-    @Body() createReviewDto: CreateReviewDto,
-    @Request() req,
-  ) {
+  async createReview(@Body() createReviewDto: CreateReviewDto, @Request() req) {
     return this.reviewsService.createReview(createReviewDto, req.user.id);
   }
 
@@ -65,7 +62,10 @@ export class ReviewsController {
 
   @Get("booking/:bookingId/can-review")
   @UseGuards(AuthGuard("jwt"))
-  async canReviewBooking(@Param("bookingId") bookingId: string, @Request() req) {
+  async canReviewBooking(
+    @Param("bookingId") bookingId: string,
+    @Request() req,
+  ) {
     return this.reviewsService.canUserReviewBooking(bookingId, req.user.id);
   }
 }

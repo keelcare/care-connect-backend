@@ -80,7 +80,7 @@ export class BookingsService {
       nannyId,
       "New Booking",
       `You have a new booking confirmed for ${finalStartTime.toDateString()}.`,
-      "success"
+      "success",
     );
 
     // Notify Parent
@@ -88,7 +88,7 @@ export class BookingsService {
       parentId,
       "Booking Confirmed",
       `Your booking has been successfully created.`,
-      "success"
+      "success",
     );
 
     return booking;
@@ -204,7 +204,7 @@ export class BookingsService {
       booking.parent_id,
       "Booking Started",
       `The nanny has started the booking.`,
-      "info"
+      "info",
     );
 
     return updatedBooking;
@@ -259,7 +259,7 @@ export class BookingsService {
     });
 
     // Create Payment Record (Pending Release)
-    // In a real flow, checking out triggers the Razorpay Order. 
+    // In a real flow, checking out triggers the Razorpay Order.
     // Here we create a placeholder record that will be updated or replaced when the parent initiates payment.
     await this.prisma.payments.create({
       data: {
