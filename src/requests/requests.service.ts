@@ -18,7 +18,7 @@ export class RequestsService {
     private notificationsService: NotificationsService,
     private favoritesService: FavoritesService,
     private aiService: AiService,
-  ) {}
+  ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
     // 1. Get parent profile for location
@@ -94,20 +94,26 @@ export class RequestsService {
   async cancelRequest(id: string) {
     const request = await this.prisma.service_requests.findUnique({
       where: { id },
-      include: { assignments: { where: { status: "pending" } } },
+      include: {
+        assignments: { where: { status: { in: ["pending", "accepted"] } } },
+        bookings: { where: { status: { not: "CANCELLED" } } }
+      },
     });
 
     if (!request) throw new NotFoundException("Request not found");
-    if (request.status !== "pending") {
+
+    // Status validation: Can cancel if pending, assigned, or accepted 
+    // (Essentially as long as it's not already cancelled or completed)
+    if (["CANCELLED", "COMPLETED"].includes(request.status)) {
       throw new BadRequestException(
-        "Cannot cancel a request that is not pending",
+        `Cannot cancel a request that is already ${request.status.toLowerCase()}`,
       );
     }
 
-    // Cancel any pending assignment
+    // 1. Cancel any pending or accepted assignments
     if (request.assignments.length > 0) {
-      await this.prisma.assignments.update({
-        where: { id: request.assignments[0].id },
+      await this.prisma.assignments.updateMany({
+        where: { request_id: id, status: { in: ["pending", "accepted"] } },
         data: {
           status: "cancelled",
           responded_at: new Date(),
@@ -115,7 +121,18 @@ export class RequestsService {
       });
     }
 
-    // Update request status
+    // 2. Cancel associated booking if exists
+    if (request.bookings.length > 0) {
+      await this.prisma.bookings.updateMany({
+        where: { request_id: id, status: { not: "CANCELLED" } },
+        data: {
+          status: "CANCELLED",
+          cancellation_reason: "User cancelled the service request",
+        },
+      });
+    }
+
+    // 3. Update request status
     return this.prisma.service_requests.update({
       where: { id },
       data: { status: "CANCELLED" },

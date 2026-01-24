@@ -7,6 +7,8 @@ import {
   Get,
   Param,
   Put,
+  NotFoundException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { RequestsService } from "./requests.service";
 import { CreateRequestDto } from "./dto/create-request.dto";
@@ -15,7 +17,7 @@ import { AuthGuard } from "@nestjs/passport";
 @Controller("requests")
 @UseGuards(AuthGuard("jwt"))
 export class RequestsController {
-  constructor(private readonly requestsService: RequestsService) {}
+  constructor(private readonly requestsService: RequestsService) { }
 
   @Post()
   create(@Request() req, @Body() createRequestDto: CreateRequestDto) {
@@ -28,7 +30,12 @@ export class RequestsController {
   }
 
   @Put(":id/cancel")
-  async cancelRequest(@Param("id") id: string) {
+  async cancelRequest(@Param("id") id: string, @Request() req) {
+    const request = await this.requestsService.findOne(id);
+    if (!request) throw new NotFoundException("Request not found");
+    if (request.parent_id !== req.user.id) {
+      throw new ForbiddenException("You are not authorized to cancel this request");
+    }
     return this.requestsService.cancelRequest(id);
   }
 
