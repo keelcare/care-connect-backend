@@ -87,11 +87,11 @@ export class AssignmentsService {
     });
 
     // 3. Update Existing Booking (that was created when request was made)
-    // Find the booking first
+    // Find the booking first. We look for any booking associated with this request that isn't cancelled.
     const existingBooking = await this.prisma.bookings.findFirst({
       where: {
         request_id: assignment.request_id,
-        status: { in: ['requested', 'pending'] }
+        status: { not: "CANCELLED" }
       }
     });
 
