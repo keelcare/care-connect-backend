@@ -31,6 +31,8 @@ model bookings {
   status                          String?    @default("requested") @db.VarChar(50)
   start_time                      DateTime?  @db.Timestamptz(6)
   end_time                        DateTime?  @db.Timestamptz(6)
+  actual_start_time               DateTime?  @db.Timestamptz(6)
+  actual_end_time                 DateTime?  @db.Timestamptz(6)
   created_at                      DateTime?  @default(now()) @db.Timestamptz(6)
   updated_at                      DateTime?  @default(now()) @db.Timestamptz(6)
   cancellation_reason             String?

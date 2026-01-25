@@ -195,7 +195,7 @@ export class BookingsService {
       where: { id },
       data: {
         status: "IN_PROGRESS",
-        start_time: new Date(), // Update actual start time
+        actual_start_time: new Date(), // Use actual_start_time instead of overwriting start_time
       },
     });
 
@@ -231,16 +231,19 @@ export class BookingsService {
     }
 
     // Safety checks to prevent 500 errors
-    if (!booking.start_time) {
-      throw new BadRequestException("Booking has no start time recorded.");
+    if (!booking.start_time || !booking.end_time) {
+      throw new BadRequestException("Booking has no scheduled start or end time recorded.");
     }
 
     if (!booking.users_bookings_nanny_idTousers) {
       throw new BadRequestException("Booking has no assigned nanny.");
     }
 
-    const endTime = new Date();
+    const actualEndTime = new Date();
     const startTime = booking.start_time;
+    const endTime = booking.end_time;
+
+    // Calculate duration based on original scheduled times
     const durationHours =
       (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
@@ -253,7 +256,7 @@ export class BookingsService {
       where: { id },
       data: {
         status: "COMPLETED",
-        end_time: endTime,
+        actual_end_time: actualEndTime, // Use actual_end_time instead of overwriting end_time
         is_review_prompted: true,
       },
     });
