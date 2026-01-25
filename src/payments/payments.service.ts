@@ -44,9 +44,14 @@ export class PaymentsService {
     if (!booking.start_time || !booking.end_time) {
       throw new BadRequestException("Booking start or end time is missing");
     }
-    const durationHours =
+    let durationHours =
       (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) /
       (1000 * 60 * 60);
+
+    // Robustness: if duration is negative, it's likely an overnight booking that wasn't correctly handled
+    if (durationHours < 0) {
+      durationHours += 24;
+    }
 
     const amountInRupees = hourlyRate * durationHours;
     const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise

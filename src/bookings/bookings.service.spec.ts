@@ -3,6 +3,7 @@ import { BookingsService } from "./bookings.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ChatService } from "../chat/chat.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { RequestsService } from "../requests/requests.service";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
 
 describe("BookingsService", () => {
@@ -33,6 +34,10 @@ describe("BookingsService", () => {
     createChat: jest.fn(),
   };
 
+  const mockRequestsService = {
+    triggerMatching: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -40,6 +45,7 @@ describe("BookingsService", () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotificationsService },
         { provide: ChatService, useValue: mockChatService },
+        { provide: RequestsService, useValue: mockRequestsService },
       ],
     }).compile();
 
@@ -122,12 +128,14 @@ describe("BookingsService", () => {
     it("should complete booking and create payment", async () => {
       const bookingId = "3";
       const start = new Date(Date.now() - 1000 * 60 * 60 * 2); // Started 2 hours ago
+      const end = new Date(Date.now() + 1000 * 60 * 60 * 2); // Scheduled to end in 2 hours
       const hourlyRate = 25;
 
       mockPrisma.bookings.findUnique.mockResolvedValue({
         id: bookingId,
         status: "IN_PROGRESS",
         start_time: start,
+        end_time: end,
         nanny_id: "nanny1",
         parent_id: "parent1",
         users_bookings_nanny_idTousers: {
@@ -146,6 +154,38 @@ describe("BookingsService", () => {
       expect(mockNotificationsService.createNotification).toHaveBeenCalledTimes(
         2,
       );
+    });
+  });
+
+  describe("createBooking duration", () => {
+    it("should handle overnight bookings correctly by incrementing the end date", async () => {
+      const date = "2026-01-25";
+      const startTime = "18:00";
+      const endTime = "06:00"; // Next day
+      const parentId = "parent1";
+      const nannyId = "nanny1";
+
+      mockPrisma.bookings.create.mockImplementation(({ data }) => ({
+        id: "new-booking-id",
+        ...data,
+      }));
+
+      const result = await service.createBooking(
+        undefined,
+        parentId,
+        nannyId,
+        date,
+        startTime,
+        endTime,
+      );
+
+      const start = new Date(`${date}T18:00:00`);
+      const expectedEnd = new Date(`${date}T06:00:00`);
+      expectedEnd.setDate(expectedEnd.getDate() + 1);
+
+      expect(result.start_time.getTime()).toBe(start.getTime());
+      expect(result.end_time.getTime()).toBe(expectedEnd.getTime());
+      expect(result.end_time.getTime() - result.start_time.getTime()).toBe(12 * 60 * 60 * 1000);
     });
   });
 });

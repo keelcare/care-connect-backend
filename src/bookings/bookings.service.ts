@@ -41,6 +41,11 @@ export class BookingsService {
       if (isNaN(finalStartTime.getTime()) || isNaN(finalEndTime.getTime())) {
         throw new BadRequestException("Invalid date or time format");
       }
+
+      // Handle overnight bookings: if end time is before start time, it must be the next day
+      if (finalEndTime < finalStartTime) {
+        finalEndTime.setDate(finalEndTime.getDate() + 1);
+      }
     }
 
     // 2. If no explicit time, try to get from Job
