@@ -68,4 +68,9 @@ export class ReviewsController {
   ) {
     return this.reviewsService.canUserReviewBooking(bookingId, req.user.id);
   }
+
+  @Get("written-by/:userId")
+  async getWrittenReviews(@Param("userId") userId: string) {
+    return this.reviewsService.getReviewsWrittenByUser(userId);
+  }
 }

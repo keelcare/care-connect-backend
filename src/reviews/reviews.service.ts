@@ -347,4 +347,37 @@ export class ReviewsService {
       totalReviews: reviews.length,
     };
   }
+
+  async getReviewsWrittenByUser(userId: string) {
+    return this.prisma.reviews.findMany({
+      where: {
+        reviewer_id: userId,
+      },
+      include: {
+        users_reviews_reviewee_idTousers: {
+          select: {
+            id: true,
+            role: true,
+            profiles: {
+              select: {
+                first_name: true,
+                last_name: true,
+                profile_image_url: true,
+              },
+            },
+          },
+        },
+        bookings: {
+          select: {
+            id: true,
+            start_time: true,
+            end_time: true,
+          },
+        },
+      },
+      orderBy: {
+        created_at: "desc",
+      },
+    });
+  }
 }
