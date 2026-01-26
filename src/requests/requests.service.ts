@@ -115,10 +115,17 @@ export class RequestsService {
 
     if (!request) throw new NotFoundException("Request not found");
 
-    // Status validation: Can cancel if pending, assigned, or accepted 
-    // (Essentially as long as it's not already cancelled or completed)
-    if (request.status === "CANCELLED" || request.status === "COMPLETED") {
-      throw new BadRequestException(`Cannot cancel a ${request.status} request`);
+    console.log(`Cancelling request ${id}, current status: ${request.status}`);
+
+    // Status validation
+    const allowedStatuses = ["pending", "accepted", "assigned"];
+    if (!allowedStatuses.includes(request.status)) {
+       // If already cancelled/completed, throw specific error
+       if (request.status === "CANCELLED" || request.status === "COMPLETED") {
+          throw new BadRequestException(`Cannot cancel a ${request.status} request`);
+       }
+       // Fallback for other statuses
+       throw new BadRequestException(`Cannot cancel a request that is not pending (Current: ${request.status})`);
     }
 
     // 1. Cancel any pending or accepted assignments

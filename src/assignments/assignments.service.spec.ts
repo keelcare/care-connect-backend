@@ -3,6 +3,7 @@ import { AssignmentsService } from "./assignments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RequestsService } from "../requests/requests.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { ChatService } from "../chat/chat.service";
 
 describe("AssignmentsService", () => {
   let service: AssignmentsService;
@@ -40,6 +41,12 @@ describe("AssignmentsService", () => {
           provide: NotificationsService,
           useValue: {
             sendPushNotification: jest.fn(),
+          },
+        },
+        {
+          provide: ChatService,
+          useValue: {
+            createChat: jest.fn(),
           },
         },
       ],
