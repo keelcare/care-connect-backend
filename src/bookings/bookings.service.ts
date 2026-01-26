@@ -418,10 +418,10 @@ export class BookingsService {
         (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
       if (hoursUntilStart < 24 && booking.users_bookings_nanny_idTousers) {
-        const hourlyRate = Number(
-          booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate || 0,
-        );
-        cancellationFee = hourlyRate;
+        const hourlyRateStr = booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate;
+        const hourlyRate = hourlyRateStr ? Number(hourlyRateStr) : 0;
+        
+        cancellationFee = isNaN(hourlyRate) ? 0 : hourlyRate;
         feeStatus = "pending";
       }
     }
@@ -437,34 +437,41 @@ export class BookingsService {
     });
 
     // Notify both parties
-    if (booking.nanny_id) {
-      // If parent cancelled, notify nanny. If nanny cancelled herself, she knows.
-      if (cancelledByUserId === booking.parent_id) {
+    try {
+      if (booking.nanny_id) {
+        // If parent cancelled, notify nanny. If nanny cancelled herself, she knows.
+        if (cancelledByUserId === booking.parent_id) {
+          await this.notificationsService.createNotification(
+            booking.nanny_id,
+            "Booking Cancelled",
+            `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
+            "warning",
+          );
+        }
+      }
+
+      // Notify parent if nanny cancelled
+      if (cancelledByUserId === booking.nanny_id) {
         await this.notificationsService.createNotification(
-          booking.nanny_id,
-          "Booking Cancelled",
-          `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
+          booking.parent_id,
+          "Booking Cancelled by Nanny",
+          `The nanny had to cancel your booking. Reason: ${reason || "No reason provided"}. We are automatically re-matching you.`,
           "warning",
         );
+      } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
+        // Some other cancellation (admin?)
+        if (booking.parent_id) {
+          await this.notificationsService.createNotification(
+            booking.parent_id,
+            "Booking Cancelled",
+            `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of ₹${cancellationFee} applies.` : ""}`,
+            "warning",
+          );
+        }
       }
-    }
-
-    // Notify parent if nanny cancelled
-    if (cancelledByUserId === booking.nanny_id) {
-      await this.notificationsService.createNotification(
-        booking.parent_id,
-        "Booking Cancelled by Nanny",
-        `The nanny had to cancel your booking. Reason: ${reason || "No reason provided"}. We are automatically re-matching you.`,
-        "warning",
-      );
-    } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
-      // Some other cancellation (admin?)
-      await this.notificationsService.createNotification(
-        booking.parent_id,
-        "Booking Cancelled",
-        `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of ₹${cancellationFee} applies.` : ""}`,
-        "warning",
-      );
+    } catch (error) {
+      console.error("Failed to send cancellation notification:", error);
+      // Don't fail the request if notification fails, the booking is already cancelled
     }
 
     return updatedBooking;

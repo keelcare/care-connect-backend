@@ -211,6 +211,7 @@ export class LocationService {
         JOIN profiles p ON u.id = p.user_id
         LEFT JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
+        AND u.identity_verification_status = 'verified'
         AND p.lat IS NOT NULL
         AND p.lng IS NOT NULL
         AND (6371 * acos(cos(radians(${latNum})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${lngNum})) + sin(radians(${latNum})) * sin(radians(p.lat)))) <= ${radiusNum}
