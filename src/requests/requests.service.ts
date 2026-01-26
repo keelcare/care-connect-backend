@@ -273,48 +273,63 @@ export class RequestsService {
       .sort((a, b) => b.score - a.score); // Sort by Score DESC
 
     if (scoredNannies.length > 0) {
-      // Assign to the top-ranked candidate
+      // Assign and Auto-Confirm the top-ranked candidate
       const bestMatch = scoredNannies[0];
       console.log(
         `Best match for request ${requestId}: ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`,
       );
 
-      // Create assignment
-      const assignment = await this.prisma.assignments.create({
-        data: {
-          request_id: requestId,
-          nanny_id: bestMatch.id,
-          response_deadline: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes from now
-          status: "pending",
-          rank_position: request.assignments.length + 1,
-        },
+      // Perform updates in a transaction for atomicity
+      const assignment = await this.prisma.$transaction(async (tx) => {
+        // 1. Create assignment (Directly as accepted)
+        const assignment = await tx.assignments.create({
+          data: {
+            request_id: requestId,
+            nanny_id: bestMatch.id,
+            response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+            status: "accepted",
+            responded_at: new Date(),
+            rank_position: request.assignments.length + 1,
+          },
+        });
+
+        // 2. Update request status to accepted
+        await tx.service_requests.update({
+          where: { id: requestId },
+          data: {
+            status: "accepted",
+            current_assignment_id: assignment.id,
+          },
+        });
+
+        // 3. Update associated booking to CONFIRMED
+        await tx.bookings.updateMany({
+          where: { request_id: requestId, status: { not: "CANCELLED" } },
+          data: {
+            nanny_id: bestMatch.id,
+            status: "CONFIRMED",
+          }
+        });
+
+        return assignment;
       });
 
-      // Update request status
-      await this.prisma.service_requests.update({
-        where: { id: requestId },
-        data: {
-          status: "assigned",
-          current_assignment_id: assignment.id,
-        },
-      });
-
-      console.log(`Assigned request ${requestId} to nanny ${bestMatch.id}`);
+      console.log(`Auto-confirmed request ${requestId} with nanny ${bestMatch.id}`);
 
       // Notify Nanny
       await this.notificationsService.createNotification(
         bestMatch.id,
-        "New Service Request",
-        `You have a new service request nearby! Tap to view details.`,
+        "New Assignment Confirmed",
+        `You have been automatically assigned to a new request! Tap to view details.`,
         "info",
       );
 
-      // Notify Parent about the match
+      // Notify Parent about the successful match and confirmation
       await this.notificationsService.createNotification(
         request.parent_id,
-        "Nanny Matched!",
-        `We found a matching nanny! Waiting for their confirmation.`,
-        "info",
+        "Nanny Assigned!",
+        `We found and confirmed a nanny for your request! Tap to view details.`,
+        "success",
       );
 
       return assignment;
