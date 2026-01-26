@@ -40,53 +40,58 @@ export class RequestsService {
     }
 
     try {
-      // 2. Create the service request
-      const request = await this.prisma.service_requests.create({
-        data: {
-          parent_id: parentId,
-          date: new Date(createRequestDto.date),
-          start_time: new Date(`1970-01-01T${createRequestDto.start_time}Z`), // Store as time on dummy date
-          duration_hours: createRequestDto.duration_hours,
-          num_children: createRequestDto.num_children,
-          children_ages: createRequestDto.children_ages || [],
-          special_requirements: createRequestDto.special_requirements,
-          required_skills: createRequestDto.required_skills || [],
-          max_hourly_rate: createRequestDto.max_hourly_rate,
-          location_lat: parent.profiles.lat,
-          location_lng: parent.profiles.lng,
-          status: "pending",
-        },
-      });
+      // 2. Wrap creation in a transaction to ensure atomicity
+      const { request } = await this.prisma.$transaction(async (tx) => {
+        // Create the service request
+        const request = await tx.service_requests.create({
+          data: {
+            parent_id: parentId,
+            date: new Date(createRequestDto.date),
+            start_time: new Date(`1970-01-01T${createRequestDto.start_time}Z`),
+            duration_hours: createRequestDto.duration_hours,
+            num_children: createRequestDto.num_children,
+            children_ages: createRequestDto.children_ages || [],
+            special_requirements: createRequestDto.special_requirements,
+            required_skills: createRequestDto.required_skills || [],
+            max_hourly_rate: createRequestDto.max_hourly_rate,
+            location_lat: parent.profiles.lat,
+            location_lng: parent.profiles.lng,
+            status: "pending",
+          },
+        });
 
-      // 3. Create initial booking (Pending Assignment)
-      await this.prisma.bookings.create({
-        data: {
-          job_id: null,
-          request_id: request.id,
-          parent_id: parentId,
-          nanny_id: null, // No nanny assigned yet
-          status: "requested", // Initial status
-          start_time: new Date(
-            request.date.toISOString().split("T")[0] +
-            "T" +
-            request.start_time.toISOString().split("T")[1]
-          ),
-          end_time: new Date(
-            new Date(
+        // Create initial booking (Pending Assignment)
+        await tx.bookings.create({
+          data: {
+            job_id: null,
+            request_id: request.id,
+            parent_id: parentId,
+            nanny_id: null,
+            status: "requested",
+            start_time: new Date(
               request.date.toISOString().split("T")[0] +
               "T" +
               request.start_time.toISOString().split("T")[1]
-            ).getTime() + Number(request.duration_hours) * 60 * 60 * 1000
-          ),
-        },
+            ),
+            end_time: new Date(
+              new Date(
+                request.date.toISOString().split("T")[0] +
+                "T" +
+                request.start_time.toISOString().split("T")[1]
+              ).getTime() + Number(request.duration_hours) * 60 * 60 * 1000
+            ),
+          },
+        });
+
+        return { request };
       });
 
-      // 4. Trigger auto-matching
+      // 3. Trigger auto-matching (Outside transaction)
       await this.triggerMatching(request.id);
 
       return request;
     } catch (error) {
-      console.error("Error creating service request:", error);
+      console.error("Error creating service request flow:", error);
       throw error;
     }
   }

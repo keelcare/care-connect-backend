@@ -68,70 +68,46 @@ export class AssignmentsService {
     if (assignment.status !== "pending")
       throw new BadRequestException("Assignment is not pending");
 
-    // 1. Update assignment status
-    const updatedAssignment = await this.prisma.assignments.update({
-      where: { id },
-      data: {
-        status: "accepted",
-        responded_at: new Date(),
-      },
-      include: {
-        service_requests: true,
-      },
-    });
-
-    // 2. Update request status
-    await this.prisma.service_requests.update({
-      where: { id: assignment.request_id },
-      data: { status: "accepted" },
-    });
-
-    // 3. Update Existing Booking (that was created when request was made)
-    // Find the booking first. We look for any booking associated with this request that isn't cancelled.
-    const existingBooking = await this.prisma.bookings.findFirst({
-      where: {
-        request_id: assignment.request_id,
-        status: { not: "CANCELLED" }
-      }
-    });
-
-    let finalBookingId: string;
-
-    if (!existingBooking) {
-      // Fallback: Create if not found (should not happen with new flow, but safe for legacy)
-      const newBooking = await this.prisma.bookings.create({
+    // Use a transaction to ensure all updates happen atomically and safely
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Update assignment status
+      const updatedAssignment = await tx.assignments.update({
+        where: { id },
         data: {
-          job_id: null,
-          request_id: assignment.request_id,
-          parent_id: assignment.service_requests.parent_id,
-          nanny_id: nannyId,
-          status: "CONFIRMED",
-          start_time: new Date(
-            assignment.service_requests.date.toISOString().split("T")[0] +
-            "T" +
-            assignment.service_requests.start_time.toISOString().split("T")[1],
-          ),
-          end_time: new Date(
-            new Date(
-              assignment.service_requests.date.toISOString().split("T")[0] +
-              "T" +
-              assignment.service_requests.start_time
-                .toISOString()
-                .split("T")[1],
-            ).getTime() +
-            Number(assignment.service_requests.duration_hours) * 60 * 60 * 1000,
-          ),
+          status: "accepted",
+          responded_at: new Date(),
+        },
+        include: {
+          service_requests: true,
         },
       });
-      finalBookingId = newBooking.id;
-    } else {
-      // Update existing
-      const updatedBooking = await this.prisma.bookings.update({
+
+      // 2. Update request status
+      await tx.service_requests.update({
+        where: { id: assignment.request_id },
+        data: { status: "accepted" },
+      });
+
+      // 3. Find and Update Existing Booking
+      // We look for any booking associated with this request that isn't cancelled.
+      const existingBooking = await tx.bookings.findFirst({
+        where: {
+          request_id: assignment.request_id,
+          status: { not: "CANCELLED" }
+        }
+      });
+
+      if (!existingBooking) {
+        // Instead of creating a duplicate, we throw an error. This identifies a system inconsistency.
+        throw new BadRequestException("No active booking found for this request. It may have been cancelled.");
+      }
+
+      const updatedBooking = await tx.bookings.update({
         where: { id: existingBooking.id },
         data: {
           nanny_id: nannyId,
           status: "CONFIRMED",
-          // Update times just in case they drifted or were adjusted
+          // Update times from request just in case
           start_time: new Date(
             assignment.service_requests.date.toISOString().split("T")[0] +
             "T" +
@@ -149,33 +125,27 @@ export class AssignmentsService {
           ),
         }
       });
-      finalBookingId = updatedBooking.id;
-    }
 
-    // 4. Create Chat for this booking (ONLY NOW that a nanny is assigned)
-    try {
-      await this.chatService.createChat(finalBookingId);
-    } catch (error) {
-      console.error("Failed to create chat for booking:", finalBookingId, error);
-    }
+      // 4. Create Chat for this booking (Atomically)
+      try {
+        await this.chatService.createChat(updatedBooking.id);
+      } catch (error) {
+        console.error("Failed to create chat for booking in transaction:", updatedBooking.id, error);
+      }
 
-    // Fetch fresh booking for return
-    const booking = await this.prisma.bookings.findUnique({
-      where: { id: finalBookingId }
+      // 5. Update acceptance rate
+      await this.updateAcceptanceRateInternal(nannyId, tx);
+
+      // 6. Notify Parent
+      await this.notificationsService.createNotification(
+        assignment.service_requests.parent_id,
+        "Booking Confirmed!",
+        `A nanny has accepted your request. Tap to view booking details.`,
+        "success",
+      );
+
+      return { assignment: updatedAssignment, booking: updatedBooking };
     });
-
-    // 5. Update acceptance rate
-    await this.updateAcceptanceRate(nannyId);
-
-    // 6. Notify Parent
-    await this.notificationsService.createNotification(
-      assignment.service_requests.parent_id,
-      "Booking Confirmed!",
-      `A nanny has accepted your request. Tap to view booking details.`,
-      "success",
-    );
-
-    return { assignment: updatedAssignment, booking };
   }
 
   async reject(id: string, nannyId: string, reason?: string) {
@@ -201,7 +171,7 @@ export class AssignmentsService {
     });
 
     // 2. Update acceptance rate
-    await this.updateAcceptanceRate(nannyId);
+    await this.updateAcceptanceRateInternal(nannyId);
 
     // 3. Trigger re-matching
     console.log(`Assignment ${id} rejected. Triggering re-match...`);
@@ -216,8 +186,9 @@ export class AssignmentsService {
     return { success: true };
   }
 
-  private async updateAcceptanceRate(nannyId: string) {
-    const assignments = await this.prisma.assignments.findMany({
+  private async updateAcceptanceRateInternal(nannyId: string, tx?: any) {
+    const prisma = tx || this.prisma;
+    const assignments = await prisma.assignments.findMany({
       where: {
         nanny_id: nannyId,
         status: { in: ["accepted", "rejected", "timeout"] }, // Only count responded assignments
@@ -231,7 +202,7 @@ export class AssignmentsService {
     ).length;
     const rate = (acceptedCount / assignments.length) * 100;
 
-    await this.prisma.nanny_details.update({
+    await prisma.nanny_details.update({
       where: { user_id: nannyId },
       data: { acceptance_rate: rate },
     });
