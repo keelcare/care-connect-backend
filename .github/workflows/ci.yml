@@ -27,6 +27,7 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?schema=public
+      DIRECT_URL: postgresql://test_user:test_password@localhost:5432/test_db?schema=public
       JWT_SECRET: dummy_secret
       PORT: 4000
       NODE_ENV: test
