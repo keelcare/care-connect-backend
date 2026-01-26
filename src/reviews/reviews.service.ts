@@ -7,10 +7,14 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateReviewDto } from "./dto/create-review.dto";
 import { UpdateReviewDto } from "./dto/update-review.dto";
+import { NotificationsService } from "../notifications/notifications.service";
 
 @Injectable()
 export class ReviewsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notificationsService: NotificationsService,
+  ) { }
 
   async createReview(createReviewDto: CreateReviewDto, reviewerId: string) {
     const { bookingId, rating, comment } = createReviewDto;
@@ -52,7 +56,7 @@ export class ReviewsService {
     }
 
     // 5. Create review
-    return this.prisma.reviews.create({
+    const review = await this.prisma.reviews.create({
       data: {
         booking_id: bookingId,
         reviewer_id: reviewerId,
@@ -74,8 +78,32 @@ export class ReviewsService {
             },
           },
         },
+        users_reviews_reviewer_idTousers: {
+          select: {
+            profiles: {
+              select: {
+                first_name: true,
+                last_name: true,
+              }
+            }
+          }
+        }
       },
     });
+
+    // 6. Notify Reviewee
+    const reviewerName = review.users_reviews_reviewer_idTousers?.profiles
+      ? `${review.users_reviews_reviewer_idTousers.profiles.first_name} ${review.users_reviews_reviewer_idTousers.profiles.last_name}`
+      : "Someone";
+
+    await this.notificationsService.createNotification(
+      revieweeId,
+      "New Review Received",
+      `${reviewerName} left you a ${rating}-star review for booking #${bookingId}.`,
+      "success",
+    );
+
+    return review;
   }
 
   async updateReview(

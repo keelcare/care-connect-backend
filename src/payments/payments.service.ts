@@ -8,6 +8,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import Razorpay from "razorpay";
 import * as crypto from "crypto";
 import { ConfigService } from "@nestjs/config";
+import { NotificationsService } from "../notifications/notifications.service";
 
 @Injectable()
 export class PaymentsService {
@@ -17,6 +18,7 @@ export class PaymentsService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private notificationsService: NotificationsService,
   ) {
     this.razorpay = new Razorpay({
       key_id: this.configService.get("RAZORPAY_KEY_ID") || "rzp_test_123",
@@ -60,7 +62,7 @@ export class PaymentsService {
     this.logger.log(`Hourly Rate: ${hourlyRate}, Duration: ${durationHours}, Amount(Paise): ${amountInPaise}`);
 
     if (amountInPaise < 100) {
-      throw new BadRequestException(`Amount too low to create order: ${amountInRupees} INR`);
+      throw new BadRequestException(`Amount too low to create order: ₹${amountInRupees} INR`);
     }
 
     // Idempotency: Check if order already exists
@@ -162,14 +164,24 @@ export class PaymentsService {
     if (event === "payment.captured" || event === "order.paid") {
       await this.capturePaymentSuccess(orderId, paymentId, "webhook_verified");
     } else if (event === "payment.failed") {
-      await this.prisma.payments.update({
+      const payment = await this.prisma.payments.update({
         where: { order_id: orderId },
         data: {
           status: "failed",
           error_code: paymentEntity.error_code,
           error_description: paymentEntity.error_description,
         },
+        include: { bookings: true }
       });
+
+      if (payment.bookings) {
+        await this.notificationsService.createNotification(
+          payment.bookings.parent_id,
+          "Payment Failed",
+          `Your payment for booking #${payment.booking_id} failed. Please try again.`,
+          "error"
+        );
+      }
     }
 
     return { status: "processed" };
@@ -201,10 +213,28 @@ export class PaymentsService {
       });
 
       // Update Booking
-      await tx.bookings.update({
+      const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
         data: { status: "COMPLETED" }, // Or whatever status signifies "Paid & Done"
       });
+
+      // Notify Parent
+      await this.notificationsService.createNotification(
+        updatedBooking.parent_id,
+        "Payment Successful",
+        `Your payment of ₹${payment.amount} has been processed successfully.`,
+        "success",
+      );
+
+      // Notify Nanny
+      if (updatedBooking.nanny_id) {
+        await this.notificationsService.createNotification(
+          updatedBooking.nanny_id,
+          "Payment Received",
+          `A payment of ₹${payment.amount} has been received for your booking.`,
+          "success",
+        );
+      }
     });
   }
 }

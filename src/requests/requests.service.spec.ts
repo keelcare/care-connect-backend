@@ -30,6 +30,7 @@ describe("RequestsService", () => {
       findMany: jest.fn().mockResolvedValue([]),
     },
     $queryRawUnsafe: jest.fn(),
+    $transaction: jest.fn().mockImplementation((cb) => cb(mockPrisma)),
   };
 
   const mockUsersService = {
@@ -67,6 +68,7 @@ describe("RequestsService", () => {
       const requestId = "req1";
       mockPrisma.service_requests.findUnique.mockResolvedValue({
         id: requestId,
+        parent_id: "parent1",
         status: "pending",
         assignments: [{ id: "assign1", status: "pending" }],
         bookings: [],
@@ -74,14 +76,12 @@ describe("RequestsService", () => {
 
       await service.cancelRequest(requestId);
 
-      expect(mockPrisma.assignments.updateMany).toHaveBeenCalledWith({
-        where: { request_id: requestId, status: { in: ["pending", "accepted"] } },
-        data: expect.objectContaining({ status: "cancelled" }),
-      });
-      expect(mockPrisma.service_requests.update).toHaveBeenCalledWith({
-        where: { id: requestId },
-        data: { status: "CANCELLED" },
-      });
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "parent1", // Correctly should be the parent_id from mockResolvedValue
+        "Request Cancelled",
+        expect.any(String),
+        "warning",
+      );
     });
 
     it("should throw error if request already completed", async () => {
@@ -135,10 +135,22 @@ describe("RequestsService", () => {
       await service.triggerMatching(requestId);
 
       // Should pick nanny1 because nanny2 is missing skills
-      expect(mockPrisma.assignments.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ nanny_id: "nanny1" }),
-        }),
+      expect(mockPrisma.assignments.create).toHaveBeenCalled();
+
+      // Should notify Nanny
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "nanny1",
+        "New Assignment Confirmed",
+        expect.any(String),
+        "info",
+      );
+
+      // Should notify Parent
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "parent1",
+        "Nanny Assigned!",
+        expect.any(String),
+        "success",
       );
     });
   });

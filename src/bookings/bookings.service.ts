@@ -290,7 +290,7 @@ export class BookingsService {
     await this.notificationsService.createNotification(
       booking.parent_id,
       "Booking Completed",
-      `The booking has been completed. Total amount: $${totalAmount.toFixed(2)}. Please leave a review!`,
+      `The booking has been completed. Total amount: ₹${totalAmount.toFixed(2)}. Please leave a review!`,
       "success",
     );
 
@@ -298,7 +298,7 @@ export class BookingsService {
     await this.notificationsService.createNotification(
       booking.nanny_id,
       "Booking Completed",
-      `Great job! The booking is complete. Earnings: $${totalAmount.toFixed(2)}.`,
+      `Great job! The booking is complete. Earnings: ₹${totalAmount.toFixed(2)}.`,
       "success",
     );
 
@@ -438,20 +438,31 @@ export class BookingsService {
 
     // Notify both parties
     if (booking.nanny_id) {
-      await this.notificationsService.createNotification(
-        booking.nanny_id,
-        "Booking Cancelled",
-        `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
-        "warning",
-      );
+      // If parent cancelled, notify nanny. If nanny cancelled herself, she knows.
+      if (cancelledByUserId === booking.parent_id) {
+        await this.notificationsService.createNotification(
+          booking.nanny_id,
+          "Booking Cancelled",
+          `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
+          "warning",
+        );
+      }
     }
 
-    // Only notify parent if it WASN'T the parent who cancelled (avoid double info)
-    if (cancelledByUserId !== booking.parent_id) {
+    // Notify parent if nanny cancelled
+    if (cancelledByUserId === booking.nanny_id) {
+      await this.notificationsService.createNotification(
+        booking.parent_id,
+        "Booking Cancelled by Nanny",
+        `The nanny had to cancel your booking. Reason: ${reason || "No reason provided"}. We are automatically re-matching you.`,
+        "warning",
+      );
+    } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
+      // Some other cancellation (admin?)
       await this.notificationsService.createNotification(
         booking.parent_id,
         "Booking Cancelled",
-        `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of $${cancellationFee} applies.` : ""}`,
+        `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of ₹${cancellationFee} applies.` : ""}`,
         "warning",
       );
     }
