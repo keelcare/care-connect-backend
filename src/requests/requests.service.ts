@@ -89,6 +89,14 @@ export class RequestsService {
       // 3. Trigger auto-matching (Outside transaction)
       await this.triggerMatching(request.id);
 
+      // 4. Notify Parent about matching in progress
+      await this.notificationsService.createNotification(
+        parentId,
+        "Request Created",
+        "Your care request has been created. We are matching you with the best available nannies.",
+        "info",
+      );
+
       return request;
     } catch (error) {
       console.error("Error creating service request flow:", error);
@@ -109,10 +117,8 @@ export class RequestsService {
 
     // Status validation: Can cancel if pending, assigned, or accepted 
     // (Essentially as long as it's not already cancelled or completed)
-    if (["CANCELLED", "COMPLETED"].includes(request.status)) {
-      throw new BadRequestException(
-        `Cannot cancel a request that is already ${request.status.toLowerCase()}`,
-      );
+    if (request.status === "CANCELLED" || request.status === "COMPLETED") {
+      throw new BadRequestException(`Cannot cancel a ${request.status} request`);
     }
 
     // 1. Cancel any pending or accepted assignments
@@ -132,16 +138,26 @@ export class RequestsService {
         where: { request_id: id, status: { not: "CANCELLED" } },
         data: {
           status: "CANCELLED",
-          cancellation_reason: "User cancelled the service request",
+          cancellation_reason: "Request cancelled by parent",
         },
       });
     }
 
     // 3. Update request status
-    return this.prisma.service_requests.update({
+    const result = await this.prisma.service_requests.update({
       where: { id },
       data: { status: "CANCELLED" },
     });
+
+    // 4. Notify Parent of successful cancellation
+    await this.notificationsService.createNotification(
+      request.parent_id,
+      "Request Cancelled",
+      "Your service request has been successfully cancelled.",
+      "warning",
+    );
+
+    return result;
   }
 
   async triggerMatching(requestId: string) {

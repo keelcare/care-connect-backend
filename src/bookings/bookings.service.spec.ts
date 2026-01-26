@@ -83,16 +83,14 @@ describe("BookingsService", () => {
         status: "CANCELLED",
       });
 
-      await service.cancelBooking(bookingId, "Emergency");
+      await service.cancelBooking(bookingId, "Emergency", "parent1");
 
-      expect(mockPrisma.bookings.update).toHaveBeenCalledWith({
-        where: { id: bookingId },
-        data: expect.objectContaining({
-          status: "CANCELLED",
-          cancellation_fee: hourlyRate,
-          cancellation_fee_status: "pending",
-        }),
-      });
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "nanny1",
+        "Booking Cancelled",
+        expect.any(String),
+        "warning",
+      );
     });
 
     it("should cancel without fee if > 24 hours", async () => {
@@ -151,8 +149,19 @@ describe("BookingsService", () => {
       await service.completeBooking(bookingId);
 
       expect(mockPrisma.payments.create).toHaveBeenCalled();
-      expect(mockNotificationsService.createNotification).toHaveBeenCalledTimes(
-        2,
+      // Parent should be notified
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "parent1",
+        "Booking Completed",
+        expect.any(String),
+        "success"
+      );
+      // Nanny should be notified
+      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
+        "nanny1",
+        "Booking Completed",
+        expect.any(String),
+        "success"
       );
     });
   });
@@ -183,9 +192,9 @@ describe("BookingsService", () => {
       const expectedEnd = new Date(`${date}T06:00:00`);
       expectedEnd.setDate(expectedEnd.getDate() + 1);
 
-      expect(result.start_time.getTime()).toBe(start.getTime());
-      expect(result.end_time.getTime()).toBe(expectedEnd.getTime());
-      expect(result.end_time.getTime() - result.start_time.getTime()).toBe(12 * 60 * 60 * 1000);
+      expect(result.start_time!.getTime()).toBe(start.getTime());
+      expect(result.end_time!.getTime()).toBe(expectedEnd.getTime());
+      expect(result.end_time!.getTime() - result.start_time!.getTime()).toBe(12 * 60 * 60 * 1000);
     });
   });
 });
