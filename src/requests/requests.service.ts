@@ -353,7 +353,16 @@ export class RequestsService {
 
   async findAllByParent(parentId: string) {
     return this.prisma.service_requests.findMany({
-      where: { parent_id: parentId },
+      where: {
+        parent_id: parentId,
+        // Only return requests that DO NOT have an active booking yet.
+        // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
+        bookings: {
+          none: {
+            status: { not: "CANCELLED" }
+          }
+        }
+      },
       orderBy: { created_at: "desc" },
       include: {
         assignments: {

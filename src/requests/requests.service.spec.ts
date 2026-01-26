@@ -21,6 +21,10 @@ describe("RequestsService", () => {
     assignments: {
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    bookings: {
+      updateMany: jest.fn(),
     },
     matching_feedback: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -65,17 +69,13 @@ describe("RequestsService", () => {
         id: requestId,
         status: "pending",
         assignments: [{ id: "assign1", status: "pending" }],
-      });
-
-      mockPrisma.service_requests.update.mockResolvedValue({
-        id: requestId,
-        status: "CANCELLED",
+        bookings: [],
       });
 
       await service.cancelRequest(requestId);
 
-      expect(mockPrisma.assignments.update).toHaveBeenCalledWith({
-        where: { id: "assign1" },
+      expect(mockPrisma.assignments.updateMany).toHaveBeenCalledWith({
+        where: { request_id: requestId, status: { in: ["pending", "accepted"] } },
         data: expect.objectContaining({ status: "cancelled" }),
       });
       expect(mockPrisma.service_requests.update).toHaveBeenCalledWith({
@@ -84,11 +84,12 @@ describe("RequestsService", () => {
       });
     });
 
-    it("should throw error if request not pending", async () => {
+    it("should throw error if request already completed", async () => {
       mockPrisma.service_requests.findUnique.mockResolvedValue({
         id: "req2",
-        status: "assigned",
+        status: "COMPLETED",
         assignments: [],
+        bookings: [],
       });
 
       await expect(service.cancelRequest("req2")).rejects.toThrow(

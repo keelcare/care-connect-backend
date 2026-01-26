@@ -155,7 +155,14 @@ export class BookingsService {
           },
         },
         jobs: true,
-        service_requests: true,
+        service_requests: {
+          include: {
+            assignments: {
+              where: { status: { in: ["pending", "accepted"] } },
+              include: { users: { include: { profiles: true, nanny_details: true } } },
+            },
+          }
+        },
       },
       orderBy: { created_at: "desc" },
     });
@@ -477,7 +484,14 @@ export class BookingsService {
             profiles: true
           }
         },
-        service_requests: true,
+        service_requests: {
+          include: {
+            assignments: {
+              where: { status: { in: ["pending", "accepted"] } },
+              include: { users: { include: { profiles: true, nanny_details: true } } },
+            },
+          }
+        },
       },
     });
 
