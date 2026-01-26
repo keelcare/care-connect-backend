@@ -20,6 +20,7 @@ describe("BookingsService - Reassignment Logic", () => {
         assignments: {
             findFirst: jest.fn(),
             update: jest.fn(),
+            updateMany: jest.fn(),
         },
         service_requests: {
             update: jest.fn(),
@@ -36,6 +37,7 @@ describe("BookingsService - Reassignment Logic", () => {
 
     const mockChatService = {
         createChat: jest.fn(),
+        deleteChatByBookingId: jest.fn(),
     };
 
     beforeEach(async () => {

@@ -135,7 +135,10 @@ export class UsersService {
   // Profile management methods
   async findAllNannies() {
     const nannies = await this.prisma.users.findMany({
-      where: { role: "nanny" },
+      where: {
+        role: "nanny",
+        identity_verification_status: "verified",
+      },
       include: {
         profiles: true,
         nanny_details: true,
