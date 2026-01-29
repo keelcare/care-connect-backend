@@ -24,6 +24,9 @@ describe("BookingsService", () => {
     jobs: {
       findUnique: jest.fn(),
     },
+    users: {
+      findUnique: jest.fn(),
+    },
   };
 
   const mockNotificationsService = {
@@ -166,13 +169,20 @@ describe("BookingsService", () => {
     });
   });
 
-  describe("createBooking duration", () => {
+  describe("createBooking", () => {
     it("should handle overnight bookings correctly by incrementing the end date", async () => {
       const date = "2026-01-25";
       const startTime = "18:00";
       const endTime = "06:00"; // Next day
       const parentId = "parent1";
       const nannyId = "nanny1";
+
+      // Mock verified nanny
+      mockPrisma.users.findUnique.mockResolvedValue({
+        id: nannyId,
+        role: "nanny",
+        identity_verification_status: "verified",
+      });
 
       mockPrisma.bookings.create.mockImplementation(({ data }) => ({
         id: "new-booking-id",
@@ -194,7 +204,31 @@ describe("BookingsService", () => {
 
       expect(result.start_time!.getTime()).toBe(start.getTime());
       expect(result.end_time!.getTime()).toBe(expectedEnd.getTime());
-      expect(result.end_time!.getTime() - result.start_time!.getTime()).toBe(12 * 60 * 60 * 1000);
+      expect(result.end_time!.getTime() - result.start_time!.getTime()).toBe(
+        12 * 60 * 60 * 1000,
+      );
+    });
+
+    it("should fail if nanny is not verified", async () => {
+      const parentId = "parent1";
+      const nannyId = "nannyUnverified";
+
+      mockPrisma.users.findUnique.mockResolvedValue({
+        id: nannyId,
+        role: "nanny",
+        identity_verification_status: "pending", // Not verified
+      });
+
+      await expect(
+        service.createBooking(
+          undefined,
+          parentId,
+          nannyId,
+          "2026-01-25",
+          "10:00",
+          "12:00",
+        ),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });
