@@ -134,6 +134,11 @@ describe("RequestsService", () => {
 
       await service.triggerMatching(requestId);
 
+      // Verify query includes updated verification check
+      expect(mockPrisma.$queryRawUnsafe).toHaveBeenCalledWith(
+        expect.stringContaining("AND u.identity_verification_status = 'verified'")
+      );
+
       // Should pick nanny1 because nanny2 is missing skills
       expect(mockPrisma.assignments.create).toHaveBeenCalled();
 

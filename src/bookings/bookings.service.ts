@@ -26,6 +26,20 @@ export class BookingsService {
     startTime?: string,
     endTime?: string,
   ) {
+    // Validate nanny verification
+    const nanny = await this.prisma.users.findUnique({
+      where: { id: nannyId },
+      select: { identity_verification_status: true, role: true }
+    });
+    
+    if (!nanny) throw new NotFoundException("Nanny not found");
+    
+    if (nanny.role !== 'nanny') throw new BadRequestException("Selected user is not a nanny");
+
+    if (nanny.identity_verification_status !== 'verified') {
+      throw new BadRequestException("Cannot book an unverified nanny");
+    }
+
     let finalStartTime: Date | undefined;
     let finalEndTime: Date | undefined;
 

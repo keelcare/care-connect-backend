@@ -1,8 +1,24 @@
 import { PrismaClient } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
 async function main() {
+    console.log('Starting seed...');
+
+    // 1. Clean up existing demo users
+    console.log('Cleaning up existing demo users...');
+    await prisma.users.deleteMany({
+        where: {
+            email: {
+                endsWith: '@example.com',
+            },
+        },
+    });
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash('password', 10);
+
     // Create a Parent User with location in Mumbai
     const parentEmail = 'parent@example.com';
     const parent = await prisma.users.upsert({
@@ -10,9 +26,10 @@ async function main() {
         update: {},
         create: {
             email: parentEmail,
-            password_hash: 'dummy_hash', // In real app, this would be hashed
+            password_hash: hashedPassword,
             role: 'parent',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: 'Rajesh',
@@ -27,16 +44,17 @@ async function main() {
     });
     console.log({ parent });
 
-    // Create a Nanny User with location in Mumbai
-    const nannyEmail = 'nanny@example.com';
+    // Create a Nanny User with location in Mumbai (Priya Patel)
+    const nannyEmail = 'priya.patel@example.com';
     const nanny = await prisma.users.upsert({
         where: { email: nannyEmail },
         update: {},
         create: {
             email: nannyEmail,
-            password_hash: 'dummy_hash',
+            password_hash: hashedPassword,
             role: 'nanny',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: 'Priya',
@@ -60,22 +78,24 @@ async function main() {
                         thursday: ['09:00-17:00'],
                         friday: ['09:00-17:00'],
                     },
+                    is_available_now: true,
                 },
             },
         },
     });
     console.log({ nanny });
 
-    // Create another nanny in Mumbai for testing nearby searches
-    const nanny2Email = 'nanny2@example.com';
+    // Create another nanny in Mumbai (Sunita Desai)
+    const nanny2Email = 'sunita.desai@example.com';
     const nanny2 = await prisma.users.upsert({
         where: { email: nanny2Email },
         update: {},
         create: {
             email: nanny2Email,
-            password_hash: 'dummy_hash',
+            password_hash: hashedPassword,
             role: 'nanny',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: 'Sunita',
@@ -98,22 +118,24 @@ async function main() {
                         friday: ['10:00-18:00'],
                         saturday: ['09:00-13:00'],
                     },
+                    is_available_now: true,
                 },
             },
         },
     });
     console.log({ nanny2 });
 
-    // Create a nanny in Bangalore for testing
-    const nanny3Email = 'nanny3@example.com';
+    // Create a nanny in Bangalore (Lakshmi Reddy)
+    const nanny3Email = 'lakshmi.reddy@example.com';
     const nanny3 = await prisma.users.upsert({
         where: { email: nanny3Email },
         update: {},
         create: {
             email: nanny3Email,
-            password_hash: 'dummy_hash',
+            password_hash: hashedPassword,
             role: 'nanny',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: 'Lakshmi',
@@ -137,6 +159,7 @@ async function main() {
                         thursday: ['08:00-16:00'],
                         friday: ['08:00-16:00'],
                     },
+                    is_available_now: true,
                 },
             },
         },
@@ -202,6 +225,7 @@ async function main() {
         },
     });
     console.log({ job3 });
+
     // --- Additional Bangalore Nannies ---
     const bangaloreNannies = [
         {
@@ -277,9 +301,10 @@ async function main() {
             update: {},
             create: {
                 email: n.email,
-                password_hash: 'dummy_hash',
+                password_hash: hashedPassword,
                 role: 'nanny',
                 is_verified: true,
+                identity_verification_status: 'verified',
                 profiles: {
                     create: {
                         first_name: n.firstName,
@@ -303,6 +328,7 @@ async function main() {
                             thursday: ['09:00-18:00'],
                             friday: ['09:00-18:00'],
                         },
+                        is_available_now: true,
                     },
                 },
             },
@@ -318,9 +344,10 @@ async function main() {
         update: {},
         create: {
             email: delhiParentEmail,
-            password_hash: 'dummy_hash',
+            password_hash: hashedPassword,
             role: 'parent',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: 'Vikram',
@@ -371,9 +398,10 @@ async function main() {
             update: {},
             create: {
                 email: n.email,
-                password_hash: 'dummy_hash',
+                password_hash: hashedPassword,
                 role: 'nanny',
                 is_verified: true,
+                identity_verification_status: 'verified',
                 profiles: {
                     create: {
                         first_name: n.firstName,
@@ -395,6 +423,7 @@ async function main() {
                             wednesday: ['10:00-19:00'],
                             friday: ['10:00-19:00'],
                         },
+                        is_available_now: true,
                     },
                 },
             },
@@ -422,9 +451,10 @@ async function main() {
         update: {},
         create: {
             email: hyderabadNanny.email,
-            password_hash: 'dummy_hash',
+            password_hash: hashedPassword,
             role: 'nanny',
             is_verified: true,
+            identity_verification_status: 'verified',
             profiles: {
                 create: {
                     first_name: hyderabadNanny.firstName,
@@ -449,6 +479,7 @@ async function main() {
                         friday: ['08:00-20:00'],
                         saturday: ['09:00-14:00'],
                     },
+                    is_available_now: true,
                 },
             },
         },

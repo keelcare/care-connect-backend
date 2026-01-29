@@ -21,6 +21,8 @@ export class RequestsService {
   ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
+    console.log("Creating Request with DTO:", JSON.stringify(createRequestDto, null, 2));
+
     // 1. Get parent profile for location
     const parent = await this.usersService.findOne(parentId);
     console.log(
@@ -39,6 +41,7 @@ export class RequestsService {
       );
     }
 
+
     try {
       // 2. Wrap creation in a transaction to ensure atomicity
       const { request } = await this.prisma.$transaction(async (tx) => {
@@ -47,7 +50,7 @@ export class RequestsService {
           data: {
             parent_id: parentId,
             date: new Date(createRequestDto.date),
-            start_time: new Date(`1970-01-01T${createRequestDto.start_time}Z`),
+            start_time: new Date(`${createRequestDto.date}T${createRequestDto.start_time}:00+05:30`), // Explicitly Enforce IST
             duration_hours: createRequestDto.duration_hours,
             num_children: createRequestDto.num_children,
             children_ages: createRequestDto.children_ages || [],
@@ -176,7 +179,42 @@ export class RequestsService {
     if (!request) throw new NotFoundException("Request not found");
 
     // Get IDs of nannies already assigned (rejected or timeout)
-    const excludedNannyIds = request.assignments.map((a) => a.nanny_id);
+    const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
+
+    // Calculate Request End Time directly from the date object
+    const datePart = new Date(request.date).toISOString().split('T')[0];
+    const timePart = new Date(request.start_time).toISOString().split('T')[1];
+    const requestStartTime = new Date(`${datePart}T${timePart}`); 
+    const requestEndTime = new Date(requestStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
+
+    console.log(`[DEBUG] Checking Overlap for Request: ${requestId}`);
+    console.log(`[DEBUG] Window: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`);
+
+    // Find Nannies with overlapping CONFIRMED bookings of any status that blocks availability
+    const busyNannies = await this.prisma.bookings.findMany({
+      where: {
+        nanny_id: { not: null },
+        status: "CONFIRMED",
+        OR: [
+          // Overlap Condition: (StartA < EndB) and (EndA > StartB)
+          {
+            AND: [
+              { start_time: { lt: requestEndTime } },
+              { end_time: { gt: requestStartTime } },
+            ],
+          },
+        ],
+      },
+      select: { nanny_id: true, start_time: true, end_time: true }, // Select times for logging
+    });
+
+    console.log(`[DEBUG] Found Busy Nannies:`, JSON.stringify(busyNannies, null, 2));
+
+    const busyNannyIds = busyNannies.map((b) => b.nanny_id);
+    console.log(`Busy Nannies (Overlap ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}):`, busyNannyIds);
+
+    // Combine previous rejects and currently busy nannies
+    const excludedNannyIds = [...new Set([...previouslyAssignedIds, ...busyNannyIds])];
 
     // Format excluded IDs for SQL NOT IN clause
     const excludedIdsSql =
@@ -203,7 +241,7 @@ export class RequestsService {
       JOIN profiles p ON u.id = p.user_id
       JOIN nanny_details nd ON u.id = nd.user_id
       WHERE u.role = 'nanny'
-      AND u.is_verified = true
+      AND u.identity_verification_status = 'verified'
       AND nd.is_available_now = true
       ${excludedIdsSql}
       ${maxRateSql}
@@ -290,6 +328,16 @@ export class RequestsService {
         // 6. AI Score (Max 30 pts)
         const aiScore = aiScores.get(nanny.id) || 0;
         score += (aiScore / 100) * 30;
+
+        console.log(`Nanny ${nanny.email} (${nanny.id}) Score Breakdown:
+          Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)
+          Exp: ${experienceScore}
+          Acc: ${acceptanceScore}
+          Rate: ${rateScore}
+          Favorite: ${favoriteNannyIds.includes(nanny.id) ? 50 : 0}
+          AI: ${(aiScore / 100) * 30}
+          TOTAL: ${score.toFixed(2)}
+        `);
 
         return { ...nanny, score };
       })
