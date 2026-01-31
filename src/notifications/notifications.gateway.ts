@@ -16,14 +16,13 @@ import { JwtService } from "@nestjs/jwt";
   namespace: "notifications",
 })
 export class NotificationsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+  implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(NotificationsGateway.name);
 
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(private readonly jwtService: JwtService) { }
 
   async handleConnection(client: Socket) {
     try {
@@ -61,8 +60,12 @@ export class NotificationsGateway
     if (!cookieHeader) return null;
 
     const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
-      const [name, value] = cookie.trim().split('=');
-      acc[name] = value;
+      const parts = cookie.trim().split('=');
+      if (parts.length >= 2) {
+        const name = parts.shift()?.trim();
+        const value = parts.join('='); // Rejoin in case value had =
+        if (name) acc[name] = value;
+      }
       return acc;
     }, {} as Record<string, string>);
 

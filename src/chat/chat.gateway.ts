@@ -27,7 +27,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
-  ) {}
+  ) { }
 
   async handleConnection(client: Socket) {
     try {
@@ -61,8 +61,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!cookieHeader) return null;
 
     const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
-      const [name, value] = cookie.trim().split('=');
-      acc[name] = value;
+      const parts = cookie.trim().split('=');
+      if (parts.length >= 2) {
+        const name = parts.shift()?.trim();
+        const value = parts.join('=');
+        if (name) acc[name] = value;
+      }
       return acc;
     }, {} as Record<string, string>);
 
