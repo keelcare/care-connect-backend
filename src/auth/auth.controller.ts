@@ -37,13 +37,11 @@ export class AuthController {
     const loginData = await this.authService.login(user);
 
     // Set HttpOnly Cookies
-    const isProd = this.configService.get("NODE_ENV") === "production";
     const cookieOptions = {
       httpOnly: true,
-      secure: isProd,
-      sameSite: (isProd ? "none" : "lax") as "none" | "lax", // 'none' required for cross-site cookies (Vercel -> Render)
+      secure: true, // Always secure for HTTPS backend
+      sameSite: "none" as "none", // Always allow cross-site (Vercel/Localhost -> Render)
       path: "/",
-      domain: isProd ? undefined : undefined, // Let browser infer domain to handle subdomains if needed, or set explicitly if sharing across subdomains
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -64,8 +62,8 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const cookieOptions = {
       httpOnly: true,
-      secure: isProd,
-      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
+      secure: true,
+      sameSite: "none" as "none",
       path: "/",
     };
 
@@ -88,8 +86,8 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const cookieOptions = {
       httpOnly: true,
-      secure: isProd,
-      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
+      secure: true,
+      sameSite: "none" as "none",
       path: "/",
     };
 
@@ -137,8 +135,8 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const cookieOptions = {
       httpOnly: true,
-      secure: isProd,
-      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
+      secure: true,
+      sameSite: "none" as "none",
       path: "/",
     };
 
