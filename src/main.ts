@@ -18,11 +18,23 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'"], // unsafe-inline might be needed for some inline scripts, remove if possible
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: [
+            "'self'",
+            "'unsafe-inline'",
+            "'unsafe-eval'", // often needed for dev or some libs
+            "https://checkout.razorpay.com",
+          ],
+          styleSrc: [
+            "'self'",
+            "'unsafe-inline'",
+            "https://fonts.googleapis.com",
+          ],
+          fontSrc: ["'self'", "https://fonts.gstatic.com"],
           imgSrc: ["'self'", "data:", "https:"],
+          frameSrc: ["'self'", "https://api.razorpay.com"], // Razorpay uses iframes
           connectSrc: [
             "'self'",
+            "https://api.razorpay.com",
             process.env.FRONTEND_URL || "http://localhost:3000",
           ],
         },
