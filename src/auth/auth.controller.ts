@@ -21,7 +21,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
-  ) {}
+  ) { }
 
   @Post("signup")
   async signup(@Body() userDto: any) {
@@ -41,8 +41,9 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? "strict" : "lax") as "strict" | "lax", // Lax needed for extensive dev testing usually, but Strict requested. Using conditional for safety during dev.
+      sameSite: (isProd ? "none" : "lax") as "none" | "lax", // 'none' required for cross-site cookies (Vercel -> Render)
       path: "/",
+      domain: isProd ? undefined : undefined, // Let browser infer domain to handle subdomains if needed, or set explicitly if sharing across subdomains
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -64,7 +65,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? "strict" : "lax") as "strict" | "lax",
+      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
       path: "/",
     };
 
@@ -88,7 +89,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? "strict" : "lax") as "strict" | "lax",
+      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
       path: "/",
     };
 
@@ -126,7 +127,7 @@ export class AuthController {
 
   @Get("google")
   @UseGuards(GoogleOauthGuard)
-  async googleAuth(@Req() req) {}
+  async googleAuth(@Req() req) { }
 
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
@@ -137,7 +138,7 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isProd,
-      sameSite: (isProd ? "strict" : "lax") as "strict" | "lax",
+      sameSite: (isProd ? "none" : "lax") as "none" | "lax",
       path: "/",
     };
 
