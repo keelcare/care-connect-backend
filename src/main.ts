@@ -61,6 +61,10 @@ async function bootstrap() {
     }),
   );
 
+  // Trust Proxy for Render (required for Secure cookies behind load balancer)
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set("trust proxy", 1); // Trust first proxy
+
   const port = process.env.PORT ?? 4000;
   await app.listen(port, '0.0.0.0');
   console.log(`🚀 Application is running on: http://0.0.0.0:${port}`);

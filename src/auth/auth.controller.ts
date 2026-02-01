@@ -37,9 +37,16 @@ export class AuthController {
     const loginData = await this.authService.login(user);
 
     const isProd = this.configService.get("NODE_ENV") === "production";
-    const frontendUrl =
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
       this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
-    const isSecure = isProd || frontendUrl.startsWith("https");
+    
+    // Fallback: If on Render but frontendUrl is localhost (common mistake), use production URL
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "https://keel-care.vercel.app";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
     // Set HttpOnly Cookies
     const cookieOptions = {
@@ -47,6 +54,8 @@ export class AuthController {
       secure: isSecure,
       sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore - Partitioned is a new attribute not yet in all types
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -65,15 +74,23 @@ export class AuthController {
   @Post("logout")
   async logout(@Res({ passthrough: true }) res: Response) {
     const isProd = this.configService.get("NODE_ENV") === "production";
-    const frontendUrl =
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
       this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
-    const isSecure = isProd || frontendUrl.startsWith("https");
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "https://keel-care.vercel.app";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
       sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore
+      partitioned: isSecure,
     };
 
     res.clearCookie("access_token", cookieOptions);
@@ -93,15 +110,23 @@ export class AuthController {
 
     // Set HttpOnly Cookies
     const isProd = this.configService.get("NODE_ENV") === "production";
-    const frontendUrl =
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
       this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
-    const isSecure = isProd || frontendUrl.startsWith("https");
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "https://keel-care.vercel.app";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
       sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -146,15 +171,23 @@ export class AuthController {
     const result = await this.authService.googleLogin(req.user);
 
     const isProd = this.configService.get("NODE_ENV") === "production";
-    const frontendUrl =
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
       this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
-    const isSecure = isProd || frontendUrl.startsWith("https");
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "https://keel-care.vercel.app";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
       sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", result.access_token, {
