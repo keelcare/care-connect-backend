@@ -12,6 +12,16 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
+  // DEBUG MIDDLEWARE: Log all requests to check for cookies
+  app.use((req, res, next) => {
+    console.log("------------------------------------------------------------------");
+    console.log(`[REQUEST] ${req.method} ${req.url}`);
+    console.log(`[ORIGIN] ${req.headers.origin}`);
+    console.log(`[COOKIES]`, req.headers.cookie);
+    console.log("------------------------------------------------------------------");
+    next();
+  });
+
   // Security Headers using Helmet
   app.use(
     helmet({

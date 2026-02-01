@@ -41,7 +41,7 @@ export class AuthController {
     let frontendUrl =
       this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
     
-    // Fallback: If on Render but frontendUrl is localhost (common mistake), use production URL
+   
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
       frontendUrl = "https://keel-care.vercel.app";
     }
@@ -76,10 +76,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
+      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-care.vercel.app";
+      frontendUrl = "https://keel-ten.vercel.app";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
@@ -112,10 +112,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
+      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-care.vercel.app";
+      frontendUrl = "https://keel-ten.vercel.app";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
@@ -173,10 +173,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
+      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-care.vercel.app";
+      frontendUrl = "https://keel-ten.vercel.app";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
