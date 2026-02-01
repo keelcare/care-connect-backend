@@ -10,11 +10,11 @@ import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
 @WebSocketGateway({
-    namespace: "/location",
-    cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:3000",
-        credentials: true,
-    },
+  namespace: "/location",
+  cors: {
+    origin: process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+    credentials: true,
+  },
 })
 export class LocationGateway {
   @WebSocketServer()
@@ -23,7 +23,7 @@ export class LocationGateway {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
-  ) {}
+  ) { }
 
   @SubscribeMessage("location:subscribe")
   async handleSubscribe(

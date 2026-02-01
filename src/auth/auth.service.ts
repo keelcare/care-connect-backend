@@ -14,7 +14,7 @@ export class AuthService {
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
-  ) {}
+  ) { }
 
   async validateUser(email: string, pass: string): Promise<any> {
     const user = await this.usersService.findUserForAuth(email);
@@ -104,8 +104,9 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
+    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
     console.log(
-      `Password reset link: http://localhost:3000/reset-password?token=${resetToken}`,
+      `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
     );
 
     return { message: "If the email exists, a reset link has been sent" };
@@ -151,8 +152,9 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
+    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
     console.log(
-      `Verification link: http://localhost:3000/verify?token=${verificationToken}`,
+      `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
     );
 
     return { message: "Verification email sent" };

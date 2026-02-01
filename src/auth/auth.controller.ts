@@ -151,7 +151,7 @@ export class AuthController {
     });
 
     // Redirect to frontend without token in URL
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
     res.redirect(`${frontendUrl}/auth/callback`); // Logic on frontend: check cookies
   }
 }
