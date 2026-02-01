@@ -101,8 +101,11 @@ export class AuthController {
 
   @Post("refresh")
   async refresh(@Req() req, @Res({ passthrough: true }) res: Response) {
+    console.log("[Auth] Refresh called");
+    console.log("[Auth] Cookies:", req.cookies);
     const refreshToken = req.cookies["refresh_token"];
     if (!refreshToken) {
+      console.log("[Auth] No refresh token found in cookies");
       throw new UnauthorizedException("No refresh token found");
     }
 
@@ -168,6 +171,7 @@ export class AuthController {
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
+    console.log("[Auth] Google Callback Recieved");
     const result = await this.authService.googleLogin(req.user);
 
     const isProd = this.configService.get("NODE_ENV") === "production";
