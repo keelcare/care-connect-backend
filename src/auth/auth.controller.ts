@@ -36,12 +36,26 @@ export class AuthController {
     }
     const loginData = await this.authService.login(user);
 
+    const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+    
+   
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+
     // Set HttpOnly Cookies
     const cookieOptions = {
       httpOnly: true,
-      secure: true, // Always secure for HTTPS backend
-      sameSite: "none" as "none", // Always allow cross-site (Vercel/Localhost -> Render)
+      secure: isSecure,
+      sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore - Partitioned is a new attribute not yet in all types
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -60,11 +74,23 @@ export class AuthController {
   @Post("logout")
   async logout(@Res({ passthrough: true }) res: Response) {
     const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: "none" as "none",
+      secure: isSecure,
+      sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore
+      partitioned: isSecure,
     };
 
     res.clearCookie("access_token", cookieOptions);
@@ -75,8 +101,11 @@ export class AuthController {
 
   @Post("refresh")
   async refresh(@Req() req, @Res({ passthrough: true }) res: Response) {
+    console.log("[Auth] Refresh called");
+    console.log("[Auth] Cookies:", req.cookies);
     const refreshToken = req.cookies["refresh_token"];
     if (!refreshToken) {
+      console.log("[Auth] No refresh token found in cookies");
       throw new UnauthorizedException("No refresh token found");
     }
 
@@ -84,11 +113,23 @@ export class AuthController {
 
     // Set HttpOnly Cookies
     const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: "none" as "none",
+      secure: isSecure,
+      sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
+      // @ts-ignore
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -130,28 +171,64 @@ export class AuthController {
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
+    console.log("[Auth] Google Callback Recieved");
     const result = await this.authService.googleLogin(req.user);
 
+    // Generate a short-lived session token
+    const sessionToken = await this.authService.generateSessionToken(result.user);
+
     const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    // Redirect to frontend with the session token
+    res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+  }
+
+  @Post("session")
+  async exchangeSession(@Body("token") token: string, @Res({ passthrough: true }) res: Response) {
+    if (!token) {
+      throw new UnauthorizedException("No token provided");
+    }
+
+    const loginData = await this.authService.exchangeSessionToken(token);
+
+    const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+
+    // Set cookies with Partitioned attribute for cross-site support
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: "none" as "none",
+      secure: isSecure,
+      sameSite: "none" as const, // Must be 'none' for partitioned cookies
       path: "/",
+      // @ts-ignore
+      partitioned: true, // Required for Chrome CHIPS
     };
 
-    res.cookie("access_token", result.access_token, {
+    res.cookie("access_token", loginData.access_token, {
       ...cookieOptions,
       maxAge: 15 * 60 * 1000,
     });
 
-    res.cookie("refresh_token", result.refresh_token, {
+    res.cookie("refresh_token", loginData.refresh_token, {
       ...cookieOptions,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    // Redirect to frontend without token in URL
-    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
-    res.redirect(`${frontendUrl}/auth/callback`); // Logic on frontend: check cookies
+    return { user: loginData.user };
   }
 }

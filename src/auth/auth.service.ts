@@ -104,7 +104,7 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
-    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
     );
@@ -152,7 +152,7 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
-    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
     );
@@ -240,5 +240,26 @@ export class AuthService {
     }
 
     return this.login(user);
+  }
+
+  async generateSessionToken(user: any) {
+    const payload = { sub: user.id };
+    // Short-lived token specifically for the exchange
+    return this.jwtService.sign(payload, { expiresIn: "1m" });
+  }
+
+  async exchangeSessionToken(token: string) {
+    try {
+      const payload = this.jwtService.verify(token);
+      const user = await this.usersService.findOne(payload.sub);
+
+      if (!user) {
+        throw new UnauthorizedException("Invalid session token");
+      }
+
+      return this.login(user);
+    } catch (error) {
+      throw new UnauthorizedException("Invalid or expired session token");
+    }
   }
 }

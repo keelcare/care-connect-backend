@@ -12,6 +12,17 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
+  // DEBUG MIDDLEWARE: Log all requests to check for cookies
+  app.use((req, res, next) => {
+    console.log("------------------------------------------------------------------");
+    console.log(`[REQUEST] ${req.method} ${req.url}`);
+    console.log(`[ORIGIN] ${req.headers.origin}`);
+    console.log(`[COOKIES (Header)]`, req.headers.cookie);
+    console.log(`[COOKIES (Parsed)]`, req.cookies);
+    console.log("------------------------------------------------------------------");
+    next();
+  });
+
   // Security Headers using Helmet
   app.use(
     helmet({
@@ -35,7 +46,7 @@ async function bootstrap() {
           connectSrc: [
             "'self'",
             "https://api.razorpay.com",
-            process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+            process.env.FRONTEND_URL || "http://localhost:3000",
           ],
         },
       },
@@ -62,7 +73,7 @@ async function bootstrap() {
 
   // Enable CORS with strict checks
   app.enableCors({
-    origin: process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -76,6 +87,10 @@ async function bootstrap() {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
+
+  // Trust Proxy for Render (required for Secure cookies behind load balancer)
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set("trust proxy", 1); // Trust first proxy
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port, '0.0.0.0');
