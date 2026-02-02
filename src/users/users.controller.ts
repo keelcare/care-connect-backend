@@ -7,14 +7,16 @@ import {
   Param,
   UseGuards,
   Request,
+  ForbiddenException,
 } from "@nestjs/common";
 import { UsersService } from "./users.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { AuthGuard } from "@nestjs/passport";
+import { OwnershipGuard, ResourceOwnership, ResourceType } from "../common/guards/ownership.guard";
 
 @Controller("users")
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) { }
 
   @UseGuards(AuthGuard("jwt"))
   @Get("me")
@@ -32,13 +34,18 @@ export class UsersController {
     return this.usersService.findOne(id);
   }
 
+  @UseGuards(AuthGuard("jwt"), OwnershipGuard)
+  @ResourceOwnership(ResourceType.USER)
   @Put(":id")
   updateUser(@Param("id") id: string, @Body() updateUserDto: UpdateUserDto) {
     return this.usersService.update(id, updateUserDto);
   }
 
   @Post("upload-image")
-  uploadImage(@Body() body: { userId: string; imageUrl: string }) {
+  uploadImage(@Body() body: { userId: string; imageUrl: string }, @Request() req) {
+    if (body.userId !== req.user.id && req.user.role !== 'admin') {
+      throw new ForbiddenException('Cannot upload image for another user');
+    }
     return this.usersService.uploadImage(body.userId, body.imageUrl);
   }
 }
