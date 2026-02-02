@@ -13,6 +13,8 @@ import { UsersService } from "./users.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { OwnershipGuard, ResourceOwnership, ResourceType } from "../common/guards/ownership.guard";
+import { PermissionsGuard, RequirePermissions } from "../common/guards/permissions.guard";
+import { Permission } from "../common/constants/permissions.enum";
 
 @Controller("users")
 export class UsersController {
@@ -34,7 +36,8 @@ export class UsersController {
     return this.usersService.findOne(id);
   }
 
-  @UseGuards(AuthGuard("jwt"), OwnershipGuard)
+  @UseGuards(AuthGuard("jwt"), OwnershipGuard, PermissionsGuard)
+  @RequirePermissions(Permission.USER_WRITE)
   @ResourceOwnership(ResourceType.USER)
   @Put(":id")
   updateUser(@Param("id") id: string, @Body() updateUserDto: UpdateUserDto) {

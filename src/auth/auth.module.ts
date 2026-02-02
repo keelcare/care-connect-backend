@@ -8,6 +8,8 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { JwtStrategy } from "./strategies/jwt.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
 
+import { TokenBlacklistService } from "./token-blacklist.service";
+
 @Module({
   imports: [
     UsersModule,
@@ -17,13 +19,13 @@ import { GoogleStrategy } from "./strategies/google.strategy";
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get<string>("JWT_SECRET") || "secretKey",
-        signOptions: { expiresIn: "15m" },
+        signOptions: { expiresIn: "1h" }, // Extended to 1h
       }),
       inject: [ConfigService],
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, TokenBlacklistService],
   exports: [AuthService],
 })
-export class AuthModule {}
+export class AuthModule { }

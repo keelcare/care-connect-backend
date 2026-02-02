@@ -5,14 +5,17 @@ import {
   IsArray,
   IsObject,
 } from "class-validator";
+import { Sanitize } from "../../common/decorators/sanitize.decorator";
 
 export class UpdateUserDto {
   @IsOptional()
   @IsString()
+  @Sanitize()
   firstName?: string;
 
   @IsOptional()
   @IsString()
+  @Sanitize()
   lastName?: string;
 
   @IsOptional()
@@ -21,6 +24,7 @@ export class UpdateUserDto {
 
   @IsOptional()
   @IsString()
+  @Sanitize()
   address?: string;
 
   @IsOptional()
@@ -50,6 +54,7 @@ export class UpdateUserDto {
 
   @IsOptional()
   @IsString()
+  @Sanitize()
   bio?: string;
 
   @IsOptional()
