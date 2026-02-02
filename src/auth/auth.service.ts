@@ -241,4 +241,25 @@ export class AuthService {
 
     return this.login(user);
   }
+
+  async generateSessionToken(user: any) {
+    const payload = { sub: user.id };
+    // Short-lived token specifically for the exchange
+    return this.jwtService.sign(payload, { expiresIn: "1m" });
+  }
+
+  async exchangeSessionToken(token: string) {
+    try {
+      const payload = this.jwtService.verify(token);
+      const user = await this.usersService.findOne(payload.sub);
+
+      if (!user) {
+        throw new UnauthorizedException("Invalid session token");
+      }
+
+      return this.login(user);
+    } catch (error) {
+      throw new UnauthorizedException("Invalid or expired session token");
+    }
+  }
 }

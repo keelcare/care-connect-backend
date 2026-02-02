@@ -174,6 +174,30 @@ export class AuthController {
     console.log("[Auth] Google Callback Recieved");
     const result = await this.authService.googleLogin(req.user);
 
+    // Generate a short-lived session token
+    const sessionToken = await this.authService.generateSessionToken(result.user);
+
+    const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    let frontendUrl =
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      frontendUrl = "http://localhost:3000";
+    }
+
+    // Redirect to frontend with the session token
+    res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+  }
+
+  @Post("session")
+  async exchangeSession(@Body("token") token: string, @Res({ passthrough: true }) res: Response) {
+    if (!token) {
+      throw new UnauthorizedException("No token provided");
+    }
+
+    const loginData = await this.authService.exchangeSessionToken(token);
+
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
@@ -185,26 +209,26 @@ export class AuthController {
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
+    // Set cookies with Partitioned attribute for cross-site support
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
-      sameSite: isSecure ? ("none" as const) : ("lax" as const),
+      sameSite: "none" as const, // Must be 'none' for partitioned cookies
       path: "/",
       // @ts-ignore
-      partitioned: isSecure,
+      partitioned: true, // Required for Chrome CHIPS
     };
 
-    res.cookie("access_token", result.access_token, {
+    res.cookie("access_token", loginData.access_token, {
       ...cookieOptions,
       maxAge: 15 * 60 * 1000,
     });
 
-    res.cookie("refresh_token", result.refresh_token, {
+    res.cookie("refresh_token", loginData.refresh_token, {
       ...cookieOptions,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    // Redirect to frontend without token in URL
-    res.redirect(`${frontendUrl}/auth/callback`); // Logic on frontend: check cookies
+    return { user: loginData.user };
   }
 }
