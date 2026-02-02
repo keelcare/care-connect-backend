@@ -104,7 +104,7 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
-    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
     );
@@ -152,7 +152,7 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
-    const frontendUrl = process.env.FRONTEND_URL || "https://keel-care.vercel.app";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
     );

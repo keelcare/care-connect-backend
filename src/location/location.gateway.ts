@@ -12,7 +12,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 @WebSocketGateway({
   namespace: "/location",
   cors: {
-    origin: process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
     credentials: true,
   },
 })

@@ -46,7 +46,7 @@ async function bootstrap() {
           connectSrc: [
             "'self'",
             "https://api.razorpay.com",
-            process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+            process.env.FRONTEND_URL || "http://localhost:3000",
           ],
         },
       },
@@ -57,7 +57,7 @@ async function bootstrap() {
 
   // Enable CORS with strict checks
   app.enableCors({
-    origin: process.env.FRONTEND_URL || "https://keel-care.vercel.app",
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],

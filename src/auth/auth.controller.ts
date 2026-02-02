@@ -39,11 +39,11 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-care.vercel.app";
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
     
    
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-care.vercel.app";
+      frontendUrl = "http://localhost:3000";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
@@ -76,10 +76,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-ten.vercel.app";
+      frontendUrl = "http://localhost:3000";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
@@ -115,10 +115,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-ten.vercel.app";
+      frontendUrl = "http://localhost:3000";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
@@ -177,10 +177,10 @@ export class AuthController {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
     let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "https://keel-ten.vercel.app";
+      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
     if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "https://keel-ten.vercel.app";
+      frontendUrl = "http://localhost:3000";
     }
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
