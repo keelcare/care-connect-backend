@@ -56,7 +56,7 @@ import { LoggerModule } from "nestjs-pino";
     ThrottlerModule.forRoot([
       {
         ttl: 60000, // 1 minute
-        limit: 1000, // Increased to 1000 for dev/testing flows
+        limit: 100, // Reduced to 100 for better security
       },
     ]),
     ServeStaticModule.forRoot({

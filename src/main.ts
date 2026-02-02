@@ -20,8 +20,8 @@ async function bootstrap() {
           defaultSrc: ["'self'"],
           scriptSrc: [
             "'self'",
-            "'unsafe-inline'",
-            "'unsafe-eval'", // often needed for dev or some libs
+            "'unsafe-inline'", // Kept for Next.js hydration scripts if needed, but ideally remove
+            "'unsafe-eval'",   // Kept for some dev tools, consider removing for prod
             "https://checkout.razorpay.com",
           ],
           styleSrc: [
@@ -31,7 +31,7 @@ async function bootstrap() {
           ],
           fontSrc: ["'self'", "https://fonts.gstatic.com"],
           imgSrc: ["'self'", "data:", "https:"],
-          frameSrc: ["'self'", "https://api.razorpay.com"], // Razorpay uses iframes
+          frameSrc: ["'self'", "https://api.razorpay.com"],
           connectSrc: [
             "'self'",
             "https://api.razorpay.com",
@@ -39,8 +39,24 @@ async function bootstrap() {
           ],
         },
       },
-      crossOriginEmbedderPolicy: false, // Often causes issues with resources loaded from other domains
-      crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow resources to be loaded cross-origin (e.g., images)
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+      // Strict Transport Security (HSTS)
+      hsts: {
+        maxAge: 31536000, // 1 year
+        includeSubDomains: true,
+        preload: true,
+      },
+      // Prevent clickjacking
+      frameguard: {
+        action: 'deny',
+      },
+      // XSS Protection
+      xssFilter: true,
+      // Prevent MIME sniffing
+      noSniff: true,
+      // Hide X-Powered-By
+      hidePoweredBy: true,
     }),
   );
 
