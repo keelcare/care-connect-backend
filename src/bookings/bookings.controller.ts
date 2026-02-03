@@ -15,9 +15,10 @@ import { AuthGuard } from "@nestjs/passport";
 @Controller("bookings")
 @UseGuards(AuthGuard("jwt"))
 export class BookingsController {
-  constructor(private readonly bookingsService: BookingsService) {}
+  constructor(private readonly bookingsService: BookingsService) { }
 
   // Temporary endpoint for testing creation until Feature 5 is ready
+  /*
   @Post()
   async createBooking(
     @Body()
@@ -41,6 +42,7 @@ export class BookingsController {
       body.endTime,
     );
   }
+  */
 
   @Get("active")
   async getActiveBookings(@Request() req) {
