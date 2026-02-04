@@ -84,19 +84,43 @@ export class AuthController {
 
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
-    const cookieOptions = {
+    // Clear all possible variations of the cookie to ensure it is removed
+    
+    // Variation 1: Secure + SameSite=None + Partitioned
+    const optionsSecurePartitioned = {
       httpOnly: true,
-      secure: isSecure,
-      sameSite: isSecure ? ("none" as const) : ("lax" as const),
+      secure: true,
+      sameSite: "none" as const,
       path: "/",
       // @ts-ignore
-      partitioned: isSecure,
+      partitioned: true,
     };
 
-    res.clearCookie("access_token", cookieOptions);
-    res.clearCookie("refresh_token", cookieOptions);
+    // Variation 2: Secure + SameSite=None (No Partitioned)
+    const optionsSecure = {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none" as const,
+      path: "/",
+      partitioned: false,
+    };
 
-    return { message: "Logged out successfully" };
+    // Variation 3: Lax + Not Secure (Localhost standard)
+    const optionsLax = {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax" as const,
+      path: "/",
+      partitioned: false,
+    };
+
+    ["access_token", "refresh_token"].forEach((cookie) => {
+      res.clearCookie(cookie, optionsSecurePartitioned);
+      res.clearCookie(cookie, optionsSecure);
+      res.clearCookie(cookie, optionsLax);
+    });
+
+    return { success: true };
   }
 
   @Post("refresh")
@@ -171,23 +195,47 @@ export class AuthController {
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
-    console.log("[Auth] Google Callback Recieved");
-    const result = await this.authService.googleLogin(req.user);
+    try {
+      console.log("[Auth] Google Callback Received");
+      console.log("[Auth] Request User:", JSON.stringify(req.user));
 
-    // Generate a short-lived session token
-    const sessionToken = await this.authService.generateSessionToken(result.user);
+      if (!req.user) {
+        console.error("[Auth] No user found in request");
+        throw new UnauthorizedException("Google authentication failed");
+      }
 
-    const isProd = this.configService.get("NODE_ENV") === "production";
-    const renderEnv = this.configService.get("RENDER");
-    let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+      const result = await this.authService.googleLogin(req.user);
+      console.log("[Auth] Google Login Result:", JSON.stringify(result));
 
-    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "http://localhost:3000";
+      // Generate a short-lived session token
+      const sessionToken = await this.authService.generateSessionToken(result.user);
+      console.log("[Auth] Session Token Generated");
+
+      const isProd = this.configService.get("NODE_ENV") === "production";
+      const renderEnv = this.configService.get("RENDER");
+      let frontendUrl =
+        this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+      if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+        frontendUrl = "http://localhost:3000";
+      }
+
+      console.log("[Auth] Redirecting to:", `${frontendUrl}/auth/callback`);
+
+      // Redirect to frontend with the session token
+      res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+    } catch (error) {
+      console.error("[Auth] Google Callback Error:", error);
+      // Redirect to frontend with error
+      const isProd = this.configService.get("NODE_ENV") === "production";
+      const renderEnv = this.configService.get("RENDER");
+      let frontendUrl =
+        this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+       if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+        frontendUrl = "http://localhost:3000";
+      }
+      res.redirect(`${frontendUrl}/auth/callback?error=auth_failed`);
     }
-
-    // Redirect to frontend with the session token
-    res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
   }
 
   @Post("session")
@@ -213,10 +261,10 @@ export class AuthController {
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
-      sameSite: "none" as const, // Must be 'none' for partitioned cookies
+      sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
       // @ts-ignore
-      partitioned: true, // Required for Chrome CHIPS
+      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
