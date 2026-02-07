@@ -230,6 +230,7 @@ export class AuthController {
           if (state.origin &&
             (state.origin.includes('localhost') ||
               state.origin.includes('keelcare.netlify.app') ||
+              state.origin.includes('care-connect-dev.vercel.app') ||
               state.origin.includes('127.0.0.1'))) {
             frontendUrl = state.origin;
             // Remove trailing slash if present

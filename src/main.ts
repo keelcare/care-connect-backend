@@ -28,6 +28,7 @@ async function bootstrap() {
     process.env.FRONTEND_URL,
     "http://localhost:3000",
     "https://keelcare.netlify.app",
+    "https://care-connect-dev.vercel.app",
     "http://127.0.0.1:3000",
   ].filter(Boolean) as string[];
 
