@@ -4,6 +4,7 @@ import {
     ExecutionContext,
     ForbiddenException,
     NotFoundException,
+    SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -134,8 +135,4 @@ export class OwnershipGuard implements CanActivate {
  * 
  * @param resourceType - Type of resource to verify ownership for
  */
-export const ResourceOwnership = (resourceType: ResourceType) =>
-    Reflector.createDecorator<ResourceType>({
-        key: RESOURCE_TYPE_KEY,
-        value: resourceType
-    });
+export const ResourceOwnership = (resourceType: ResourceType) => SetMetadata(RESOURCE_TYPE_KEY, resourceType);

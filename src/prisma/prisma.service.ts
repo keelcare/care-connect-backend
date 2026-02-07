@@ -12,7 +12,7 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
-    this.registerEncryptionMiddleware();
+    // this.registerEncryptionMiddleware();
   }
 
   async onModuleDestroy() {

@@ -109,5 +109,10 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+    },
+  "overrides": {
+    "isomorphic-dompurify": {
+      "jsdom": "22.1.0"
+    }
   }
 }
