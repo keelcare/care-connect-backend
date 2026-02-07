@@ -31,9 +31,9 @@ export class BookingsService {
       where: { id: nannyId },
       select: { identity_verification_status: true, role: true }
     });
-    
+
     if (!nanny) throw new NotFoundException("Nanny not found");
-    
+
     if (nanny.role !== 'nanny') throw new BadRequestException("Selected user is not a nanny");
 
     if (nanny.identity_verification_status !== 'verified') {
@@ -434,7 +434,7 @@ export class BookingsService {
       if (hoursUntilStart < 24 && booking.users_bookings_nanny_idTousers) {
         const hourlyRateStr = booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate;
         const hourlyRate = hourlyRateStr ? Number(hourlyRateStr) : 0;
-        
+
         cancellationFee = isNaN(hourlyRate) ? 0 : hourlyRate;
         feeStatus = "pending";
       }
@@ -542,5 +542,49 @@ export class BookingsService {
           : "Parent",
       };
     });
+  }
+  async checkExpiredBookings() {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    // Find bookings that are older than 2 hours past their end time and still 'CONFIRMED' or 'requested'
+    const expiredBookings = await this.prisma.bookings.findMany({
+      where: {
+        status: { in: ["CONFIRMED", "requested"] },
+        end_time: { lt: twoHoursAgo },
+      },
+      select: { id: true, status: true, parent_id: true, nanny_id: true }
+    });
+
+    console.log(`[Cron] Found ${expiredBookings.length} expired bookings to cancel.`);
+
+    for (const booking of expiredBookings) {
+      await this.prisma.bookings.update({
+        where: { id: booking.id },
+        data: {
+          status: "CANCELLED",
+          cancellation_reason: "System Auto-cancellation: Booking expired (No Show)",
+        },
+      });
+
+      // Notify users
+      if (booking.parent_id) {
+        await this.notificationsService.createNotification(
+          booking.parent_id,
+          "Booking Cancelled (Expired)",
+          "Your booking was cancelled because it was not started/completed on time.",
+          "warning"
+        );
+      }
+      if (booking.nanny_id) {
+        await this.notificationsService.createNotification(
+          booking.nanny_id,
+          "Booking Cancelled (Expired)",
+          "The booking was cancelled because it was not started/completed on time.",
+          "warning"
+        );
+      }
+    }
+
+    return expiredBookings.length;
   }
 }
