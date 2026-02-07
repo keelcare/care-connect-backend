@@ -50,4 +50,8 @@ export class CreateRequestDto {
   @IsArray()
   @IsString({ each: true })
   required_skills?: string[];
+
+  @IsOptional()
+  @IsString()
+  category?: string;
 }

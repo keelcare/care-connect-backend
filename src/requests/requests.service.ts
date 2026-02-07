@@ -59,8 +59,9 @@ export class RequestsService {
             max_hourly_rate: createRequestDto.max_hourly_rate,
             location_lat: parent.profiles.lat,
             location_lng: parent.profiles.lng,
+            category: (createRequestDto as any).category,
             status: "pending",
-          },
+          } as any,
         });
 
         // Create initial booking (Pending Assignment)
@@ -123,12 +124,12 @@ export class RequestsService {
     // Status validation
     const allowedStatuses = ["pending", "accepted", "assigned"];
     if (!allowedStatuses.includes(request.status)) {
-       // If already cancelled/completed, throw specific error
-       if (request.status === "CANCELLED" || request.status === "COMPLETED") {
-          throw new BadRequestException(`Cannot cancel a ${request.status} request`);
-       }
-       // Fallback for other statuses
-       throw new BadRequestException(`Cannot cancel a request that is not pending (Current: ${request.status})`);
+      // If already cancelled/completed, throw specific error
+      if (request.status === "CANCELLED" || request.status === "COMPLETED") {
+        throw new BadRequestException(`Cannot cancel a ${request.status} request`);
+      }
+      // Fallback for other statuses
+      throw new BadRequestException(`Cannot cancel a request that is not pending (Current: ${request.status})`);
     }
 
     // 1. Cancel any pending or accepted assignments
@@ -184,7 +185,7 @@ export class RequestsService {
     // Calculate Request End Time directly from the date object
     const datePart = new Date(request.date).toISOString().split('T')[0];
     const timePart = new Date(request.start_time).toISOString().split('T')[1];
-    const requestStartTime = new Date(`${datePart}T${timePart}`); 
+    const requestStartTime = new Date(`${datePart}T${timePart}`);
     const requestEndTime = new Date(requestStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
 
     console.log(`[DEBUG] Checking Overlap for Request: ${requestId}`);
@@ -228,6 +229,10 @@ export class RequestsService {
       ? `AND nd.hourly_rate <= ${request.max_hourly_rate}`
       : "";
 
+    const categorySql = (request as any).category
+      ? `AND '${(request as any).category}' = ANY(nd.tags)`
+      : "";
+
     const nannies = (await this.prisma.$queryRawUnsafe(`
       SELECT 
         u.id, 
@@ -245,6 +250,7 @@ export class RequestsService {
       AND nd.is_available_now = true
       ${excludedIdsSql}
       ${maxRateSql}
+      ${categorySql}
       AND (6371 * acos(cos(radians(${request.location_lat})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${request.location_lng})) + sin(radians(${request.location_lat})) * sin(radians(p.lat)))) < ${radiusKm}
     `)) as any[];
 

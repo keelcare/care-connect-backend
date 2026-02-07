@@ -103,6 +103,7 @@ model nanny_details {
   availability_schedule Json?
   acceptance_rate       Decimal?  @default(0) @db.Decimal(5, 2)
   is_available_now      Boolean?  @default(true)
+  tags                  String[]  @default([])
   created_at            DateTime? @default(now()) @db.Timestamptz(6)
   updated_at            DateTime? @default(now()) @db.Timestamptz(6)
   users                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -124,6 +125,7 @@ model service_requests {
   status                 String       @default("pending") @db.VarChar(50)
   current_assignment_id  String?      @db.Uuid
   max_hourly_rate        Decimal?     @db.Decimal(10, 2)
+  category               String?      @db.VarChar(50)
   created_at             DateTime?    @default(now()) @db.Timestamptz(6)
   updated_at             DateTime?    @default(now()) @db.Timestamptz(6)
   users                  users        @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
