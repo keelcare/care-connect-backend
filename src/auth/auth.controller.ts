@@ -24,8 +24,15 @@ export class AuthController {
   ) { }
 
   @Post("signup")
-  async signup(@Body() userDto: any) {
-    return this.authService.register(userDto);
+  async signup(@Body() userDto: any, @Req() req) {
+    const user = await this.authService.register(userDto);
+    const origin = req.headers.origin || req.headers.referer;
+    try {
+      await this.authService.sendVerificationEmail(user.id, origin);
+    } catch (e) {
+      console.error("[Auth] Failed to send initial verification email:", e);
+    }
+    return user;
   }
 
   @Post("login")
@@ -36,17 +43,13 @@ export class AuthController {
     }
     const loginData = await this.authService.login(user);
 
+    const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
-    let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-    
-   
-    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "http://localhost:3000";
-    }
 
-    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+    // Determine if we should treat this as a secure/cross-site connection
+    // Secure IF: Prod/Render OR HTTPS origin OR explicitly configured dev frontend
+    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
 
     // Set HttpOnly Cookies
     const cookieOptions = {
@@ -85,7 +88,7 @@ export class AuthController {
     const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
 
     // Clear all possible variations of the cookie to ensure it is removed
-    
+
     // Variation 1: Secure + SameSite=None + Partitioned
     const optionsSecurePartitioned = {
       httpOnly: true,
@@ -124,7 +127,10 @@ export class AuthController {
   }
 
   @Post("refresh")
-  async refresh(@Req() req, @Res({ passthrough: true }) res: Response) {
+  async refresh(
+    @Req() req,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     console.log("[Auth] Refresh called");
     console.log("[Auth] Cookies:", req.cookies);
     const refreshToken = req.cookies["refresh_token"];
@@ -135,17 +141,11 @@ export class AuthController {
 
     const loginData = await this.authService.refresh(refreshToken);
 
-    // Set HttpOnly Cookies
+    const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
-    let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
-    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "http://localhost:3000";
-    }
-
-    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
 
     const cookieOptions = {
       httpOnly: true,
@@ -170,8 +170,9 @@ export class AuthController {
   }
 
   @Post("forgot-password")
-  async forgotPassword(@Body("email") email: string) {
-    return this.authService.forgotPassword(email);
+  async forgotPassword(@Body("email") email: string, @Req() req) {
+    const origin = req.headers.origin || req.headers.referer;
+    return this.authService.forgotPassword(email, origin);
   }
 
   @Post("reset-password")
@@ -186,6 +187,15 @@ export class AuthController {
   async verifyEmail(@Req() req) {
     const token = req.query.token;
     return this.authService.verifyEmail(token);
+  }
+
+  @Post("resend-verification")
+  async resendVerification(@Body("email") email: string, @Req() req) {
+    const origin = req.headers.origin || req.headers.referer;
+    // We need to find the user by email first to get the ID
+    const user = await this.authService.validateUser(email, ""); // This is just to get user, but better way is needed
+    // Actually, AuthService should handle email lookup
+    return this.authService.sendVerificationEmailByEmail(email, origin);
   }
 
   @Get("google")
@@ -211,13 +221,33 @@ export class AuthController {
       const sessionToken = await this.authService.generateSessionToken(result.user);
       console.log("[Auth] Session Token Generated");
 
+      // Parse origin from state
+      let frontendUrl = this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+
+      if (req.query.state) {
+        try {
+          const state = JSON.parse(req.query.state as string);
+          if (state.origin &&
+            (state.origin.includes('localhost') ||
+              state.origin.includes('keelcare.netlify.app') ||
+              state.origin.includes('127.0.0.1'))) {
+            frontendUrl = state.origin;
+            // Remove trailing slash if present
+            if (frontendUrl.endsWith('/')) {
+              frontendUrl = frontendUrl.slice(0, -1);
+            }
+          }
+        } catch (e) {
+          console.error("[Auth] Failed to parse state origin:", e);
+        }
+      }
+
       const isProd = this.configService.get("NODE_ENV") === "production";
       const renderEnv = this.configService.get("RENDER");
-      let frontendUrl =
-        this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
       if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-        frontendUrl = "http://localhost:3000";
+        // Allow localhost redirect even in prod if explicitly requested via state
+        console.log("[Auth] Using localhost redirect in production environment via state");
       }
 
       console.log("[Auth] Redirecting to:", `${frontendUrl}/auth/callback`);
@@ -226,36 +256,36 @@ export class AuthController {
       res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
-      // Redirect to frontend with error
-      const isProd = this.configService.get("NODE_ENV") === "production";
-      const renderEnv = this.configService.get("RENDER");
-      let frontendUrl =
-        this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-       if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-        frontendUrl = "http://localhost:3000";
+
+      let frontendUrl = this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+      if (req.query.state) {
+        try {
+          const state = JSON.parse(req.query.state as string);
+          if (state.origin) frontendUrl = state.origin;
+        } catch (e) { }
       }
+
       res.redirect(`${frontendUrl}/auth/callback?error=auth_failed`);
     }
   }
 
   @Post("session")
-  async exchangeSession(@Body("token") token: string, @Res({ passthrough: true }) res: Response) {
+  async exchangeSession(
+    @Req() req,
+    @Body("token") token: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     if (!token) {
       throw new UnauthorizedException("No token provided");
     }
 
     const loginData = await this.authService.exchangeSessionToken(token);
 
+    const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
-    let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
-    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "http://localhost:3000";
-    }
-
-    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
+    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
 
     // Set cookies with Partitioned attribute for cross-site support
     const cookieOptions = {

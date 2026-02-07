@@ -6,9 +6,13 @@ export class GoogleOauthGuard extends AuthGuard("google") {
   getAuthenticateOptions(context: ExecutionContext) {
     const req = context.switchToHttp().getRequest();
     const role = req.query.role;
+    const origin = req.query.origin || req.headers.referer || req.headers.origin;
 
     return {
-      state: role ? JSON.stringify({ role }) : undefined,
+      state: JSON.stringify({
+        role: role || 'parent',
+        origin: origin
+      }),
     };
   }
 }
