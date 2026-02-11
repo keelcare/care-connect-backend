@@ -46,11 +46,15 @@ export class RequestsService {
       // 2. Wrap creation in a transaction to ensure atomicity
       const { request } = await this.prisma.$transaction(async (tx) => {
         // Create the service request
+        const startTimeStr = createRequestDto.start_time.split(':').length === 2
+          ? `${createRequestDto.start_time}:00`
+          : createRequestDto.start_time;
+
         const request = await tx.service_requests.create({
           data: {
             parent_id: parentId,
             date: new Date(createRequestDto.date),
-            start_time: new Date(`${createRequestDto.date}T${createRequestDto.start_time}:00+05:30`), // Explicitly Enforce IST
+            start_time: new Date(`${createRequestDto.date}T${startTimeStr}+05:30`), // Explicitly Enforce IST
             duration_hours: createRequestDto.duration_hours,
             num_children: createRequestDto.num_children,
             children_ages: createRequestDto.children_ages || [],
@@ -59,12 +63,15 @@ export class RequestsService {
             max_hourly_rate: createRequestDto.max_hourly_rate,
             location_lat: parent.profiles.lat,
             location_lng: parent.profiles.lng,
-            category: (createRequestDto as any).category,
+            category: createRequestDto.category,
             status: "pending",
           } as any,
         });
 
         // Create initial booking (Pending Assignment)
+        const bookingStartTime = new Date(`${createRequestDto.date}T${startTimeStr}+05:30`);
+        const bookingEndTime = new Date(bookingStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
+
         await tx.bookings.create({
           data: {
             job_id: null,
@@ -72,18 +79,8 @@ export class RequestsService {
             parent_id: parentId,
             nanny_id: null,
             status: "requested",
-            start_time: new Date(
-              request.date.toISOString().split("T")[0] +
-              "T" +
-              request.start_time.toISOString().split("T")[1]
-            ),
-            end_time: new Date(
-              new Date(
-                request.date.toISOString().split("T")[0] +
-                "T" +
-                request.start_time.toISOString().split("T")[1]
-              ).getTime() + Number(request.duration_hours) * 60 * 60 * 1000
-            ),
+            start_time: bookingStartTime,
+            end_time: bookingEndTime,
           },
         });
 
@@ -230,7 +227,7 @@ export class RequestsService {
       : "";
 
     const categorySql = (request as any).category
-      ? `AND '${(request as any).category}' = ANY(nd.tags)`
+      ? `AND ('${(request as any).category}' = ANY(nd.tags) OR '${(request as any).category}' = ANY(nd.skills) OR array_length(nd.tags, 1) IS NULL OR array_length(nd.tags, 1) = 0)`
       : "";
 
     const nannies = (await this.prisma.$queryRawUnsafe(`

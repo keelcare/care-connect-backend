@@ -24,23 +24,7 @@ export class RequestsController {
     return this.requestsService.create(req.user.id, createRequestDto);
   }
 
-  @Post("special-needs")
-  createSpecialNeeds(@Request() req, @Body() createRequestDto: CreateRequestDto) {
-    createRequestDto.category = "SN";
-    return this.requestsService.create(req.user.id, createRequestDto);
-  }
 
-  @Post("shadow-teacher")
-  createShadowTeacher(@Request() req, @Body() createRequestDto: CreateRequestDto) {
-    createRequestDto.category = "ST";
-    return this.requestsService.create(req.user.id, createRequestDto);
-  }
-
-  @Post("elderly-care")
-  createElderlyCare(@Request() req, @Body() createRequestDto: CreateRequestDto) {
-    createRequestDto.category = "EC";
-    return this.requestsService.create(req.user.id, createRequestDto);
-  }
 
   @Get("parent/me")
   findAllMyRequests(@Request() req) {

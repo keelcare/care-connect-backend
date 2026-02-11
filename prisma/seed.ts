@@ -79,6 +79,7 @@ async function main() {
                         friday: ['09:00-17:00'],
                     },
                     is_available_now: true,
+                    tags: ['NY'],
                 },
             },
         },
@@ -119,6 +120,7 @@ async function main() {
                         saturday: ['09:00-13:00'],
                     },
                     is_available_now: true,
+                    tags: ['NY'],
                 },
             },
         },
@@ -160,6 +162,7 @@ async function main() {
                         friday: ['08:00-16:00'],
                     },
                     is_available_now: true,
+                    tags: ['SN'],
                 },
             },
         },
@@ -240,6 +243,7 @@ async function main() {
             exp: 4,
             rate: 300.0,
             bio: 'Energetic nanny who loves engaging kids in creative arts and crafts.',
+            tags: ['Standard'],
         },
         {
             email: 'ananya.gupta@example.com',
@@ -253,6 +257,7 @@ async function main() {
             exp: 2,
             rate: 200.0,
             bio: 'University student available for part-time babysitting and homework help.',
+            tags: ['Standard'],
         },
         {
             email: 'kavita.singh@example.com',
@@ -266,6 +271,7 @@ async function main() {
             exp: 8,
             rate: 400.0,
             bio: 'Reliable and experienced. Can manage household chores along with childcare.',
+            tags: ['Premium'],
         },
         {
             email: 'deepa.rao@example.com',
@@ -279,6 +285,7 @@ async function main() {
             exp: 10,
             rate: 450.0,
             bio: 'Certified caregiver with a decade of experience in both child and elderly care.',
+            tags: ['Premium'],
         },
         {
             email: 'manju.thomas@example.com',
@@ -292,6 +299,7 @@ async function main() {
             exp: 6,
             rate: 350.0,
             bio: 'Specialized in newborn care and post-partum support for mothers.',
+            tags: ['Premium'],
         },
     ];
 
@@ -329,6 +337,7 @@ async function main() {
                             friday: ['09:00-18:00'],
                         },
                         is_available_now: true,
+                        tags: (n as any).tags || [],
                     },
                 },
             },
@@ -376,6 +385,7 @@ async function main() {
             exp: 12,
             rate: 300.0,
             bio: 'Mature and responsible nanny. Very good with cooking healthy meals.',
+            tags: ['Standard'],
         },
         {
             email: 'pooja.rani@example.com',
@@ -389,6 +399,7 @@ async function main() {
             exp: 3,
             rate: 250.0,
             bio: 'Active and energetic. Loves taking kids to the park and playing sports.',
+            tags: ['Standard'],
         },
     ];
 
@@ -424,6 +435,7 @@ async function main() {
                             friday: ['10:00-19:00'],
                         },
                         is_available_now: true,
+                        tags: (n as any).tags || [],
                     },
                 },
             },
@@ -480,6 +492,7 @@ async function main() {
                         saturday: ['09:00-14:00'],
                     },
                     is_available_now: true,
+                    tags: ['EC'],
                 },
             },
         },

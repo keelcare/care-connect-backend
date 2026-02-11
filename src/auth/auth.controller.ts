@@ -148,7 +148,6 @@ export class AuthController {
 
     const loginData = await this.authService.refresh(refreshToken);
 
-    const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
 

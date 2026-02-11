@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import DOMPurify from 'isomorphic-dompurify';
+import * as DOMPurify from 'isomorphic-dompurify';
 
 export interface SanitizeOptions {
     allowedTags?: string[];
@@ -12,9 +12,20 @@ export function Sanitize(options?: SanitizeOptions) {
             return value;
         }
 
-        return DOMPurify.sanitize(value, {
-            ALLOWED_TAGS: options?.allowedTags,
-            ALLOWED_ATTR: options?.allowedAttributes ? Object.keys(options.allowedAttributes) : undefined,
-        });
+        const sanitizeFn = (DOMPurify as any).sanitize || (DOMPurify as any).default?.sanitize;
+
+        if (typeof sanitizeFn !== 'function') {
+            return value;
+        }
+
+        const config: any = {};
+        if (options?.allowedTags) {
+            config.ALLOWED_TAGS = options.allowedTags;
+        }
+        if (options?.allowedAttributes) {
+            config.ALLOWED_ATTR = Object.keys(options.allowedAttributes);
+        }
+
+        return sanitizeFn(value, config);
     });
 }

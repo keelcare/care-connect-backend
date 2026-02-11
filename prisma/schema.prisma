@@ -44,6 +44,10 @@ model bookings {
   care_location_lng               Decimal?   @db.Decimal(11, 8)
   geofence_radius                 Int?       @default(100)
   recurring_booking_id            String?    @db.Uuid
+  original_start_time             DateTime?  @db.Timestamptz(6)
+  original_end_time               DateTime?  @db.Timestamptz(6)
+  reschedule_count                Int?       @default(0)
+  last_rescheduled_at             DateTime?  @db.Timestamptz(6)
   jobs                            jobs?      @relation(fields: [job_id], references: [id], onUpdate: NoAction)
   service_requests                service_requests? @relation(fields: [request_id], references: [id], onUpdate: NoAction)
   users_bookings_nanny_idTousers  users?     @relation("bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
