@@ -10,6 +10,13 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { AiService } from "../ai/ai.service";
 
+const CATEGORY_SKILL_MAP = {
+  'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
+  'EC': ['Elderly Care', 'Senior Care', 'Geriatric Care', 'Caregiver'],
+  'Standard': [],
+  'Premium': [],
+};
+
 @Injectable()
 export class RequestsService {
   constructor(
@@ -258,9 +265,19 @@ export class RequestsService {
       ? `AND nd.hourly_rate <= ${request.max_hourly_rate}`
       : "";
 
-    const categorySql = (request as any).category
-      ? `AND ('${(request as any).category}' = ANY(nd.tags) OR '${(request as any).category}' = ANY(nd.skills))`
-      : "";
+    const category = (request as any).category;
+    const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
+    const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
+
+    let categorySql = "";
+    if (skillSearchTerms.length > 0) {
+      const termsSql = skillSearchTerms.map(s => `'${s}'`).join(',');
+      categorySql = `AND (
+        EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${termsSql}))
+        OR 
+        EXISTS (SELECT 1 FROM unnest(nd.skills) s WHERE s IN (${termsSql}))
+      )`;
+    }
 
     const nannies = (await this.prisma.$queryRawUnsafe(`
       SELECT 
