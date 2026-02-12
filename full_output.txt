@@ -1,0 +1,27 @@
+1. Login...
+Tokens acquired.
+
+2. Test with Valid Access Token...
+HTTP Status: 200
+
+3. Test Transparent Refresh (Invalid Access Token + Valid Refresh Token)...
+HTTP/1.1 401 Unauthorized
+Content-Security-Policy: default-src 'self';script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com;style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;font-src 'self' https://fonts.gstatic.com;img-src 'self' data: https:;frame-src 'self' https://api.razorpay.com;connect-src 'self' https://api.razorpay.com http://localhost:3000 http://localhost:3000 https://keelcare.netlify.app https://care-connect-dev.vercel.app http://127.0.0.1:3000;base-uri 'self';form-action 'self';frame-ancestors 'self';object-src 'none';script-src-attr 'none';upgrade-insecure-requests
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: cross-origin
+Origin-Agent-Cluster: ?1
+Referrer-Policy: no-referrer
+Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+X-Content-Type-Options: nosniff
+X-DNS-Prefetch-Control: off
+X-Download-Options: noopen
+X-Frame-Options: DENY
+X-Permitted-Cross-Domain-Policies: none
+X-XSS-Protection: 0
+Vary: Origin
+Access-Control-Allow-Credentials: true
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 94
+X-RateLimit-Reset: 49
+X-RateLimit-Limit-user: 50
+X-RateLimit-Remaining-user: 44

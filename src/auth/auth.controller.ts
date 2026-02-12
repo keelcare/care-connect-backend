@@ -71,14 +71,11 @@ export class AuthController {
     // Secure ONLY IF: (Prod/Render OR HTTPS origin OR explicitly configured dev frontend) AND NOT localhost
     const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
 
-    // Set HttpOnly Cookies
     const cookieOptions = {
       httpOnly: true,
       secure: isSecure,
       sameSite: isSecure ? ("none" as const) : ("lax" as const),
       path: "/",
-      // @ts-ignore - Partitioned is a new attribute not yet in all types
-      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -151,11 +148,8 @@ export class AuthController {
     @Req() req,
     @Res({ passthrough: true }) res: Response,
   ) {
-    console.log("[Auth] Refresh called");
-    console.log("[Auth] Cookies:", req.cookies);
     const refreshToken = req.cookies["refresh_token"];
     if (!refreshToken) {
-      console.log("[Auth] No refresh token found in cookies");
       throw new UnauthorizedException("No refresh token found");
     }
 

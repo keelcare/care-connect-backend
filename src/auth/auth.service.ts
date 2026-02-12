@@ -4,11 +4,13 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import * as crypto from "crypto";
 import { SignupDto } from "./dto/signup.dto";
+import { PrismaService } from "../prisma/prisma.service";
 
 /**
  * SECURITY: Password Complexity Regex
@@ -25,6 +27,8 @@ export class AuthService {
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
+    private configService: ConfigService,
+    private prisma: PrismaService,
   ) { }
 
   async validateUser(email: string, pass: string): Promise<any> {
@@ -48,8 +52,18 @@ export class AuthService {
       role: user.role,
       is_active: user.is_active,
     };
-    const accessToken = this.jwtService.sign(payload, { expiresIn: "15m" });
-    const refreshToken = this.jwtService.sign(payload, { expiresIn: "7d" });
+
+    const secret = this.configService.get<string>("JWT_SECRET") || "secretKey";
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: "15m",
+      secret: secret
+    });
+
+    const refreshToken = this.jwtService.sign(payload, {
+      expiresIn: "7d",
+      secret: secret
+    });
 
     // Hash and store refresh token
     const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
@@ -77,8 +91,12 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     try {
-      const payload = this.jwtService.verify(refreshToken);
-      const user = await this.usersService.findOne(payload.sub);
+      const secret = this.configService.get<string>("JWT_SECRET") || "secretKey";
+      const payload = this.jwtService.verify(refreshToken, { secret });
+      // Directly using findUnique to be 100% sure we get the hash
+      const user = await this.prisma.users.findUnique({
+        where: { email: payload.email }
+      });
 
       if (!user || !user.refresh_token_hash) {
         throw new UnauthorizedException("Invalid refresh token");

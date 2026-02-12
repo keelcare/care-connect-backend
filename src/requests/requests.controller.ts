@@ -12,10 +12,10 @@ import {
 } from "@nestjs/common";
 import { RequestsService } from "./requests.service";
 import { CreateRequestDto } from "./dto/create-request.dto";
-import { AuthGuard } from "@nestjs/passport";
+import { TransparentJwtAuthGuard } from "../auth/guards/transparent-jwt-auth.guard";
 
 @Controller("requests")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(TransparentJwtAuthGuard)
 export class RequestsController {
   constructor(private readonly requestsService: RequestsService) { }
 

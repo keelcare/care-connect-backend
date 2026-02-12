@@ -8,7 +8,7 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   // Auth-related methods
   async create(
@@ -28,37 +28,10 @@ export class UsersService {
     });
   }
 
-  async findUserForAuth(email: string): Promise<
-    | (Pick<
-        users,
-        | "id"
-        | "email"
-        | "password_hash"
-        | "role"
-        | "is_verified"
-        | "oauth_provider"
-        | "is_active"
-        | "ban_reason"
-      > & {
-        profiles: {
-          first_name: string | null;
-          last_name: string | null;
-          profile_image_url: string | null;
-        } | null;
-      })
-    | null
-  > {
+  async findUserForAuth(email: string) {
     return this.prisma.users.findUnique({
       where: { email },
-      select: {
-        id: true,
-        email: true,
-        password_hash: true,
-        role: true,
-        is_verified: true,
-        is_active: true,
-        ban_reason: true,
-        oauth_provider: true,
+      include: {
         profiles: {
           select: {
             first_name: true,
@@ -73,26 +46,7 @@ export class UsersService {
   async findByOAuth(
     provider: string,
     providerId: string,
-  ): Promise<
-    | (Pick<
-        users,
-        | "id"
-        | "email"
-        | "password_hash"
-        | "role"
-        | "is_verified"
-        | "oauth_provider"
-        | "is_active"
-        | "ban_reason"
-      > & {
-        profiles: {
-          first_name: string | null;
-          last_name: string | null;
-          profile_image_url: string | null;
-        } | null;
-      })
-    | null
-  > {
+  ) {
     return this.prisma.users.findUnique({
       where: {
         oauth_provider_oauth_provider_id: {
@@ -100,15 +54,7 @@ export class UsersService {
           oauth_provider_id: providerId,
         },
       },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        password_hash: true,
-        is_verified: true,
-        is_active: true,
-        ban_reason: true,
-        oauth_provider: true,
+      include: {
         profiles: {
           select: {
             first_name: true,
@@ -160,10 +106,10 @@ export class UsersService {
         const averageRating =
           totalReviews > 0
             ? Math.round(
-                (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-                  totalReviews) *
-                  10,
-              ) / 10
+              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                totalReviews) *
+              10,
+            ) / 10
             : null;
 
         // Exclude sensitive fields
@@ -245,10 +191,10 @@ export class UsersService {
       const averageRating =
         totalReviews > 0
           ? Math.round(
-              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-                totalReviews) *
-                10,
-            ) / 10
+            (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+              totalReviews) *
+            10,
+          ) / 10
           : null;
 
       return {
@@ -261,6 +207,22 @@ export class UsersService {
     return user;
   }
 
+  async findFullUserById(id: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id },
+    });
+    console.log(`[UsersService] findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`);
+    return user;
+  }
+
+  async findFullUserByEmail(email: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { email },
+    });
+    console.log(`[UsersService] findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`);
+    return user;
+  }
+
   async update(
     id: string,
     updateUserDto: UpdateUserDto | Prisma.usersUpdateInput,
@@ -268,18 +230,19 @@ export class UsersService {
     // Handle both UpdateUserDto and Prisma.usersUpdateInput
     // Check if any UpdateUserDto fields are present
     const isUpdateUserDto =
-      "firstName" in updateUserDto ||
-      "lastName" in updateUserDto ||
-      "phone" in updateUserDto ||
-      "address" in updateUserDto ||
-      "lat" in updateUserDto ||
-      "lng" in updateUserDto ||
-      "profileImageUrl" in updateUserDto ||
-      "skills" in updateUserDto ||
-      "experienceYears" in updateUserDto ||
-      "hourlyRate" in updateUserDto ||
-      "bio" in updateUserDto ||
-      "availabilitySchedule" in updateUserDto;
+      updateUserDto && typeof updateUserDto === 'object' && (
+        "firstName" in updateUserDto ||
+        "lastName" in updateUserDto ||
+        "phone" in updateUserDto ||
+        "address" in updateUserDto ||
+        "lat" in updateUserDto ||
+        "lng" in updateUserDto ||
+        "profileImageUrl" in updateUserDto ||
+        "skills" in updateUserDto ||
+        "experienceYears" in updateUserDto ||
+        "hourlyRate" in updateUserDto ||
+        "bio" in updateUserDto ||
+        "availabilitySchedule" in updateUserDto);
 
     if (isUpdateUserDto) {
       // Handle UpdateUserDto
@@ -299,38 +262,12 @@ export class UsersService {
         availabilitySchedule,
       } = dto;
 
-      // Auto-populate address via reverse geocoding if lat/lng provided but no address
-      let finalAddress = address;
-      if (lat && lng && !address) {
-        try {
-          const { LocationService } = await import(
-            "../location/location.service"
-          );
-          const { ConfigService } = await import("@nestjs/config");
-          const locationService = new LocationService(
-            new ConfigService(),
-            this.prisma,
-          );
-          const geocodedAddress = await locationService.reverseGeocode(
-            lat,
-            lng,
-          );
-          if (geocodedAddress) {
-            finalAddress = geocodedAddress;
-            this.logger.log(`Auto-populated address: ${geocodedAddress}`);
-          }
-        } catch (error) {
-          this.logger.warn(`Failed to reverse geocode: ${error.message}`);
-          // Continue without address if reverse geocoding fails
-        }
-      }
-
       // Update basic profile info
       if (
         firstName ||
         lastName ||
         phone ||
-        finalAddress ||
+        address ||
         lat ||
         lng ||
         profileImageUrl
@@ -341,7 +278,7 @@ export class UsersService {
             first_name: firstName,
             last_name: lastName,
             phone,
-            address: finalAddress,
+            address: address,
             lat,
             lng,
             profile_image_url: profileImageUrl,
@@ -352,7 +289,7 @@ export class UsersService {
             first_name: firstName,
             last_name: lastName,
             phone,
-            address: finalAddress,
+            address: address,
             lat,
             lng,
             profile_image_url: profileImageUrl,
