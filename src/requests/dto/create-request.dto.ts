@@ -6,10 +6,30 @@ import {
   IsOptional,
   IsString,
   IsArray,
+  IsEnum,
+  IsUUID,
   Min,
   Max,
+  MaxLength,
 } from "class-validator";
 import { Type } from "class-transformer";
+import { Sanitize } from "../../common/decorators/sanitize.decorator";
+
+/**
+ * SECURITY: Service request DTO with comprehensive validation
+ * 
+ * Validates all user inputs to prevent injection attacks and data corruption
+ */
+
+/**
+ * Service categories - must match database enum
+ */
+export enum ServiceCategory {
+  CC = 'CC',
+  EC = 'EC',
+  STANDARD = 'Standard',
+  PREMIUM = 'Premium',
+}
 
 export class CreateRequestDto {
   @IsNotEmpty()
@@ -37,8 +57,14 @@ export class CreateRequestDto {
   @IsInt({ each: true })
   children_ages?: number[];
 
+  /**
+   * SECURITY: Sanitize special requirements to prevent XSS
+   * Max 1000 characters to prevent abuse
+   */
   @IsOptional()
   @IsString()
+  @MaxLength(1000, { message: 'Special requirements must not exceed 1000 characters' })
+  @Sanitize()
   special_requirements?: string;
 
   @IsOptional()
@@ -46,17 +72,27 @@ export class CreateRequestDto {
   @Min(0)
   max_hourly_rate?: number;
 
+  /**
+   * SECURITY: Limit skill string length to prevent abuse
+   */
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @MaxLength(50, { each: true, message: 'Each skill must not exceed 50 characters' })
   required_skills?: string[];
 
+  /**
+   * SECURITY: Enum validation to prevent invalid categories
+   */
   @IsNotEmpty()
-  @IsString()
-  category: string;
+  @IsEnum(ServiceCategory, { message: 'Category must be one of: CC, EC, Standard, Premium' })
+  category: ServiceCategory;
 
+  /**
+   * SECURITY: UUID validation to prevent SQL injection via child IDs
+   */
   @IsOptional()
   @IsArray()
-  @IsString({ each: true })
+  @IsUUID('4', { each: true, message: 'Each child ID must be a valid UUID' })
   child_ids?: string[];
 }

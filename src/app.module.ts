@@ -24,8 +24,9 @@ import { VerificationModule } from "./verification/verification.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { CommonModule } from "./common/common.module";
 import { FamilyModule } from "./family/family.module";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { ThrottlerModule } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
+import { UserThrottlerGuard } from "./common/guards/user-throttler.guard";
 import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
 
@@ -35,10 +36,25 @@ import { LoggerModule } from "nestjs-pino";
       isGlobal: true,
       envFilePath: ".env",
       validationSchema: Joi.object({
+        // Database
         DATABASE_URL: Joi.string().required(),
+
+        // Authentication
         JWT_SECRET: Joi.string().required(),
+
+        // Server
         PORT: Joi.number().default(4000),
-        FRONTEND_URL: Joi.string().uri().optional(), // Marking optional only to avoid breaking dev if not set
+        FRONTEND_URL: Joi.string().uri().optional(),
+
+        // API Keys - Optional (warnings logged in services if missing)
+        RAZORPAY_KEY_ID: Joi.string().allow('', null).optional(),
+        RAZORPAY_KEY_SECRET: Joi.string().allow('', null).optional(),
+        RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('', null).optional(),
+        GOOGLE_MAPS_API_KEY: Joi.string().allow('', null).optional(),
+        GEMINI_API_KEY: Joi.string().allow('', null).optional(),
+        CLOUDINARY_API_KEY: Joi.string().allow('', null).optional(),
+        CLOUDINARY_API_SECRET: Joi.string().allow('', null).optional(),
+        CLOUDINARY_CLOUD_NAME: Joi.string().allow('', null).optional(),
       }),
     }),
     LoggerModule.forRoot({
@@ -56,8 +72,19 @@ import { LoggerModule } from "nestjs-pino";
     }),
     ThrottlerModule.forRoot([
       {
+        name: 'default',
         ttl: 60000, // 1 minute
-        limit: 100, // Reduced to 100 for better security
+        limit: 100, // Global IP-based limit: 100 requests per minute
+      },
+      {
+        name: 'user',
+        ttl: 60000, // 1 minute
+        limit: 50, // User-based limit: 50 requests per minute per authenticated user
+      },
+      {
+        name: 'strict',
+        ttl: 60000, // 1 minute
+        limit: 10, // Strict limit for auth endpoints: 10 requests per minute
       },
     ]),
     ServeStaticModule.forRoot({
@@ -90,7 +117,7 @@ import { LoggerModule } from "nestjs-pino";
     AppService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
   ],
 })

@@ -11,10 +11,14 @@ import {
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "@nestjs/passport";
 import { Response } from "express";
-
 import { GoogleOauthGuard } from "./guards/google-oauth.guard";
-
 import { ConfigService } from "@nestjs/config";
+import { StrictThrottle } from "../common/decorators/throttle.decorator";
+import { SignupDto } from "./dto/signup.dto";
+import { LoginDto } from "./dto/login.dto";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
+import { SessionDto } from "./dto/session.dto";
 
 @Controller("auth")
 export class AuthController {
@@ -23,8 +27,12 @@ export class AuthController {
     private configService: ConfigService,
   ) { }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) to prevent automated account creation
+   */
   @Post("signup")
-  async signup(@Body() userDto: any, @Req() req) {
+  @StrictThrottle()
+  async signup(@Body() userDto: SignupDto, @Req() req) {
     const user = await this.authService.register(userDto);
     const origin = req.headers.origin || req.headers.referer;
     try {
@@ -35,9 +43,13 @@ export class AuthController {
     return user;
   }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) to prevent brute force attacks
+   */
   @Post("login")
+  @StrictThrottle()
   async login(
-    @Body() loginDto: any,
+    @Body() loginDto: LoginDto,
     @Req() req,
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -178,18 +190,23 @@ export class AuthController {
     return { message: "Token refreshed successfully" };
   }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) to prevent email bombing
+   */
   @Post("forgot-password")
-  async forgotPassword(@Body("email") email: string, @Req() req) {
+  @StrictThrottle()
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req) {
     const origin = req.headers.origin || req.headers.referer;
-    return this.authService.forgotPassword(email, origin);
+    return this.authService.forgotPassword(dto.email, origin);
   }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) to prevent brute force token attacks
+   */
   @Post("reset-password")
-  async resetPassword(
-    @Body("token") token: string,
-    @Body("password") password: string,
-  ) {
-    return this.authService.resetPassword(token, password);
+  @StrictThrottle()
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.password);
   }
 
   @Get("verify")
@@ -198,13 +215,14 @@ export class AuthController {
     return this.authService.verifyEmail(token);
   }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) to prevent email bombing
+   */
   @Post("resend-verification")
-  async resendVerification(@Body("email") email: string, @Req() req) {
+  @StrictThrottle()
+  async resendVerification(@Body() dto: ForgotPasswordDto, @Req() req) {
     const origin = req.headers.origin || req.headers.referer;
-    // We need to find the user by email first to get the ID
-    const user = await this.authService.validateUser(email, ""); // This is just to get user, but better way is needed
-    // Actually, AuthService should handle email lookup
-    return this.authService.sendVerificationEmailByEmail(email, origin);
+    return this.authService.sendVerificationEmailByEmail(dto.email, origin);
   }
 
   @Get("google")
@@ -279,17 +297,17 @@ export class AuthController {
     }
   }
 
+  /**
+   * SECURITY: Strict rate limiting (10 req/min) for OAuth session exchange
+   */
   @Post("session")
+  @StrictThrottle()
   async exchangeSession(
     @Req() req,
-    @Body("token") token: string,
+    @Body() dto: SessionDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    if (!token) {
-      throw new UnauthorizedException("No token provided");
-    }
-
-    const loginData = await this.authService.exchangeSessionToken(token);
+    const loginData = await this.authService.exchangeSessionToken(dto.token);
 
     const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";

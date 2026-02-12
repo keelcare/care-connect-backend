@@ -1,14 +1,19 @@
+import 'reflect-metadata';
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
 import helmet from "helmet";
 import { Logger as PinoLogger } from "nestjs-pino";
 import cookieParser from "cookie-parser";
+import { ThrottleExceptionFilter } from "./common/filters/throttle-exception.filter";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   // Use nestjs-pino logger
   app.useLogger(app.get(PinoLogger));
+
+  // SECURITY: Global exception filter for graceful rate limit responses
+  app.useGlobalFilters(new ThrottleExceptionFilter());
 
   app.use(cookieParser());
 

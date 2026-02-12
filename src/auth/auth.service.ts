@@ -8,6 +8,17 @@ import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import * as crypto from "crypto";
+import { SignupDto } from "./dto/signup.dto";
+
+/**
+ * SECURITY: Password Complexity Regex
+ * - Min 8 characters
+ * - At least one uppercase
+ * - At least one lowercase
+ * - At least one number
+ * - At least one special character
+ */
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/;
 
 @Injectable()
 export class AuthService {
@@ -113,6 +124,15 @@ export class AuthService {
   }
 
   async resetPassword(token: string, newPassword: string) {
+    /**
+     * SECURITY: Service-level password validation as second layer of defense
+     */
+    if (newPassword.length < 8 || !PASSWORD_REGEX.test(newPassword)) {
+      throw new BadRequestException(
+        "Password must be at least 8 characters and contain uppercase, lowercase, number, and special character",
+      );
+    }
+
     const user = await this.usersService.findByResetToken(token);
 
     if (
@@ -189,7 +209,16 @@ export class AuthService {
     return { message: "Email verified successfully" };
   }
 
-  async register(userDto: any) {
+  async register(userDto: SignupDto) {
+    /**
+     * SECURITY: Service-level password validation as second layer of defense
+     */
+    if (userDto.password.length < 8 || !PASSWORD_REGEX.test(userDto.password)) {
+      throw new BadRequestException(
+        "Password must be at least 8 characters and contain uppercase, lowercase, number, and special character",
+      );
+    }
+
     const hashedPassword = await bcrypt.hash(userDto.password, 10);
     const user = await this.usersService.create({
       email: userDto.email,

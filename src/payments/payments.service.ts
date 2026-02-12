@@ -20,14 +20,29 @@ export class PaymentsService {
     private configService: ConfigService,
     private notificationsService: NotificationsService,
   ) {
+    const keyId = this.configService.get<string>('RAZORPAY_KEY_ID');
+    const keySecret = this.configService.get<string>('RAZORPAY_KEY_SECRET');
+
+    if (!keyId || !keySecret) {
+      this.logger.warn(
+        'RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is not configured. Payment features will be disabled.',
+      );
+    }
+
+    // Initialize Razorpay even if keys are missing (library might handle it or fail on call)
     this.razorpay = new Razorpay({
-      key_id: this.configService.get("RAZORPAY_KEY_ID") || "rzp_test_123",
-      key_secret: this.configService.get("RAZORPAY_KEY_SECRET") || "secret_123",
+      key_id: keyId || '',
+      key_secret: keySecret || '',
     });
   }
 
   // 1. Create Order (Server-Side Price Calculation)
   async createOrder(bookingId: string) {
+    if (!this.configService.get('RAZORPAY_KEY_ID')) {
+      this.logger.error('Cannot create order: RAZORPAY_KEY_ID missing');
+      throw new BadRequestException('Payment service is currently unavailable');
+    }
+
     const booking = await this.prisma.bookings.findUnique({
       where: { id: bookingId },
       include: {
@@ -122,14 +137,20 @@ export class PaymentsService {
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)
   async verifyPayment(orderId: string, paymentId: string, signature: string) {
-    const secret =
-      this.configService.get("RAZORPAY_KEY_SECRET") || "secret_123";
+    const secret = this.configService.get<string>('RAZORPAY_KEY_SECRET');
+
+    if (!secret) {
+      this.logger.error('RAZORPAY_KEY_SECRET not configured. Cannot verify payment.');
+      throw new BadRequestException('Payment verification is currently unavailable');
+    }
+
     const generatedSignature = crypto
       .createHmac("sha256", secret)
       .update(orderId + "|" + paymentId)
       .digest("hex");
 
     if (generatedSignature !== signature) {
+      this.logger.warn(`Payment signature mismatch for order ${orderId}`);
       throw new BadRequestException(
         "Invalid payment signature (Potential Fraud)",
       );
@@ -143,7 +164,12 @@ export class PaymentsService {
 
   // 3. Webhook Handler (Source of Truth)
   async handleWebhook(signature: string, payload: any) {
-    const secret = this.configService.get("RAZORPAY_WEBHOOK_SECRET") || "webhook_secret";
+    const secret = this.configService.get<string>('RAZORPAY_WEBHOOK_SECRET');
+
+    if (!secret) {
+      this.logger.error('RAZORPAY_WEBHOOK_SECRET not configured. Cannot verify webhook.');
+      throw new BadRequestException('Webhook verification is currently unavailable');
+    }
 
     // Validate Webhook Signature
     const shasum = crypto.createHmac("sha256", secret);
@@ -151,9 +177,8 @@ export class PaymentsService {
     const digest = shasum.digest("hex");
 
     if (digest !== signature) {
-      // In production, log this as a security alert
-      this.logger.warn("Webhook signature mismatch");
-      // throw new BadRequestException("Invalid webhook signature");
+      this.logger.warn('Webhook signature mismatch - potential spoofing attempt');
+      throw new BadRequestException("Invalid webhook signature");
     }
 
     const event = payload.event;
