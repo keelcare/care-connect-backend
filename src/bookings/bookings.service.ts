@@ -31,9 +31,9 @@ export class BookingsService {
       where: { id: nannyId },
       select: { identity_verification_status: true, role: true }
     });
-    
+
     if (!nanny) throw new NotFoundException("Nanny not found");
-    
+
     if (nanny.role !== 'nanny') throw new BadRequestException("Selected user is not a nanny");
 
     if (nanny.identity_verification_status !== 'verified') {
@@ -434,7 +434,7 @@ export class BookingsService {
       if (hoursUntilStart < 24 && booking.users_bookings_nanny_idTousers) {
         const hourlyRateStr = booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate;
         const hourlyRate = hourlyRateStr ? Number(hourlyRateStr) : 0;
-        
+
         cancellationFee = isNaN(hourlyRate) ? 0 : hourlyRate;
         feeStatus = "pending";
       }
@@ -542,5 +542,158 @@ export class BookingsService {
           : "Parent",
       };
     });
+  }
+  async checkExpiredBookings() {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+
+    // Find bookings that are older than 2 hours past their end time and still 'CONFIRMED' or 'requested'
+    const expiredBookings = await this.prisma.bookings.findMany({
+      where: {
+        status: { in: ["CONFIRMED", "requested"] },
+        end_time: { lt: twoHoursAgo },
+      },
+      select: { id: true, status: true, parent_id: true, nanny_id: true }
+    });
+
+    console.log(`[Cron] Found ${expiredBookings.length} expired bookings to cancel.`);
+
+    for (const booking of expiredBookings) {
+      await this.prisma.bookings.update({
+        where: { id: booking.id },
+        data: {
+          status: "CANCELLED",
+          cancellation_reason: "System Auto-cancellation: Booking expired (No Show)",
+          tags: ["noshow"],
+        },
+      });
+
+      // Notify users
+      if (booking.parent_id) {
+        await this.notificationsService.createNotification(
+          booking.parent_id,
+          "Booking Cancelled (Expired)",
+          "Your booking was cancelled because it was not started/completed on time.",
+          "warning"
+        );
+      }
+      if (booking.nanny_id) {
+        await this.notificationsService.createNotification(
+          booking.nanny_id,
+          "Booking Cancelled (Expired)",
+          "The booking was cancelled because it was not started/completed on time.",
+          "warning"
+        );
+      }
+    }
+
+    return expiredBookings.length;
+  }
+
+  async rescheduleBooking(
+    id: string,
+    newDate: string,
+    newStartTime: string,
+    newEndTime: string,
+    userId: string,
+  ) {
+    // 1. Fetch the booking
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id },
+      include: {
+        users_bookings_nanny_idTousers: {
+          include: { nanny_details: true, profiles: true },
+        },
+        users_bookings_parent_idTousers: {
+          include: { profiles: true },
+        },
+      },
+    });
+
+    if (!booking) {
+      throw new NotFoundException("Booking not found");
+    }
+
+    // 2. Authorization check - only parent can reschedule
+    if (booking.parent_id !== userId) {
+      throw new BadRequestException(
+        "Only the parent can reschedule this booking",
+      );
+    }
+
+    // 3. Status validation
+    if (!["CONFIRMED", "REQUESTED", "requested"].includes(booking.status)) {
+      throw new BadRequestException(
+        "Only confirmed or requested bookings can be rescheduled",
+      );
+    }
+
+    // 4. Parse and validate new date/time
+    const formatTime = (t: string) => (t.length === 5 ? `${t}:00` : t);
+    const newStartDateTime = new Date(
+      `${newDate}T${formatTime(newStartTime)}+05:30`, // Explicitly Enforce IST
+    );
+    const newEndDateTime = new Date(
+      `${newDate}T${formatTime(newEndTime)}+05:30`, // Explicitly Enforce IST
+    );
+
+    if (
+      isNaN(newStartDateTime.getTime()) ||
+      isNaN(newEndDateTime.getTime())
+    ) {
+      throw new BadRequestException("Invalid date or time format");
+    }
+
+    // Handle overnight bookings
+    if (newEndDateTime < newStartDateTime) {
+      newEndDateTime.setDate(newEndDateTime.getDate() + 1);
+    }
+
+    // 5. Prevent rescheduling to past
+    if (newStartDateTime < new Date()) {
+      throw new BadRequestException("Cannot reschedule to a past date/time");
+    }
+
+    // 6. Store original times if this is the first reschedule
+    const updateData: any = {
+      start_time: newStartDateTime,
+      end_time: newEndDateTime,
+      reschedule_count: (booking.reschedule_count || 0) + 1,
+      last_rescheduled_at: new Date(),
+    };
+
+    if (!booking.original_start_time) {
+      updateData.original_start_time = booking.start_time;
+      updateData.original_end_time = booking.end_time;
+    }
+
+    // 7. Update the booking
+    const updatedBooking = await this.prisma.bookings.update({
+      where: { id },
+      data: updateData,
+    });
+
+    // 8. Send notifications
+    const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
+    const nannyName = nannyProfile
+      ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
+      : "the nanny";
+
+    if (booking.nanny_id) {
+      await this.notificationsService.createNotification(
+        booking.nanny_id,
+        "Booking Rescheduled",
+        `A booking has been rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
+        "info",
+      );
+    }
+
+    await this.notificationsService.createNotification(
+      booking.parent_id,
+      "Booking Rescheduled",
+      `Your booking with ${nannyName} has been successfully rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
+      "success",
+    );
+
+    return updatedBooking;
   }
 }

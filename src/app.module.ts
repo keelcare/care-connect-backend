@@ -33,7 +33,7 @@ import { LoggerModule } from "nestjs-pino";
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: "prisma.env",
+      envFilePath: ".env",
       validationSchema: Joi.object({
         DATABASE_URL: Joi.string().required(),
         JWT_SECRET: Joi.string().required(),

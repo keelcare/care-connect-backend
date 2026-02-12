@@ -88,7 +88,7 @@ export class AuthService {
     }
   }
 
-  async forgotPassword(email: string) {
+  async forgotPassword(email: string, origin?: string) {
     const user = await this.usersService.findUserForAuth(email);
     if (!user) {
       // Don't reveal if user exists
@@ -104,7 +104,7 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
     );
@@ -133,7 +133,7 @@ export class AuthService {
     return { message: "Password reset successful" };
   }
 
-  async sendVerificationEmail(userId: string) {
+  async sendVerificationEmail(userId: string, origin?: string) {
     const user = await this.usersService.findOne(userId);
     if (!user) {
       throw new BadRequestException("User not found");
@@ -152,12 +152,21 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
     console.log(
       `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
     );
 
     return { message: "Verification email sent" };
+  }
+
+  async sendVerificationEmailByEmail(email: string, origin?: string) {
+    const user = await this.usersService.findUserForAuth(email);
+    if (!user) {
+      // Don't reveal user existence
+      return { message: "Verification email sent if account exists" };
+    }
+    return this.sendVerificationEmail(user.id, origin);
   }
 
   async verifyEmail(token: string) {

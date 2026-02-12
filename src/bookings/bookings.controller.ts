@@ -114,4 +114,33 @@ export class BookingsController {
     }
     return this.bookingsService.cancelBooking(id, reason, req.user.id);
   }
+
+  @Put(":id/reschedule")
+  async rescheduleBooking(
+    @Param("id") id: string,
+    @Body()
+    body: {
+      date: string;
+      startTime: string;
+      endTime: string;
+    },
+    @Request() req,
+  ) {
+    return this.bookingsService.rescheduleBooking(
+      id,
+      body.date,
+      body.startTime,
+      body.endTime,
+      req.user.id,
+    );
+  }
+
+  @Post("check-expired")
+  async checkExpired() {
+    const expiredCount = await this.bookingsService.checkExpiredBookings();
+    return {
+      message: `Checked for expired bookings successfully`,
+      expired_count: expiredCount,
+    };
+  }
 }

@@ -12,7 +12,19 @@ import { NotificationsService } from "../notifications/notifications.service";
 @WebSocketGateway({
   namespace: "/location",
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: (origin, callback) => {
+      const allowedOrigins = [
+        process.env.FRONTEND_URL,
+        "http://localhost:3000",
+        "https://keelcare.netlify.app",
+        "http://127.0.0.1:3000",
+      ].filter(Boolean);
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
     credentials: true,
   },
 })

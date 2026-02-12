@@ -23,6 +23,15 @@ async function bootstrap() {
     next();
   });
 
+  // Connect-src for Helmet needs multiple origins
+  const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    "http://localhost:3000",
+    "https://keelcare.netlify.app",
+    "https://care-connect-dev.vercel.app",
+    "http://127.0.0.1:3000",
+  ].filter(Boolean) as string[];
+
   // Security Headers using Helmet
   app.use(
     helmet({
@@ -31,8 +40,8 @@ async function bootstrap() {
           defaultSrc: ["'self'"],
           scriptSrc: [
             "'self'",
-            "'unsafe-inline'", // Kept for Next.js hydration scripts if needed, but ideally remove
-            "'unsafe-eval'",   // Kept for some dev tools, consider removing for prod
+            "'unsafe-inline'",
+            "'unsafe-eval'",
             "https://checkout.razorpay.com",
           ],
           styleSrc: [
@@ -46,34 +55,35 @@ async function bootstrap() {
           connectSrc: [
             "'self'",
             "https://api.razorpay.com",
-            process.env.FRONTEND_URL || "http://localhost:3000",
+            ...allowedOrigins,
           ],
         },
       },
       crossOriginEmbedderPolicy: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
-      // Strict Transport Security (HSTS)
       hsts: {
-        maxAge: 31536000, // 1 year
+        maxAge: 31536000,
         includeSubDomains: true,
         preload: true,
       },
-      // Prevent clickjacking
       frameguard: {
         action: 'deny',
       },
-      // XSS Protection
       xssFilter: true,
-      // Prevent MIME sniffing
       noSniff: true,
-      // Hide X-Powered-By
       hidePoweredBy: true,
     }),
   );
 
-  // Enable CORS with strict checks
+  // Enable CORS with multiple origins
   app.enableCors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],

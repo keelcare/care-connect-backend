@@ -14,7 +14,13 @@ import { JwtService } from "@nestjs/jwt";
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: [
+      process.env.FRONTEND_URL || "http://localhost:3000",
+      "http://localhost:3000",
+      "https://keelcare.netlify.app",
+      "https://care-connect-dev.vercel.app",
+      "http://127.0.0.1:3000",
+    ],
     credentials: true,
   },
 })
