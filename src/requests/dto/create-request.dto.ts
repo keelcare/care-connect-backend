@@ -54,4 +54,9 @@ export class CreateRequestDto {
   @IsNotEmpty()
   @IsString()
   category: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  child_ids?: string[];
 }
