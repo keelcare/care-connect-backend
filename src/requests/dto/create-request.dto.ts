@@ -50,4 +50,9 @@ export class CreateRequestDto {
   @IsArray()
   @IsString({ each: true })
   required_skills?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  child_ids?: string[];
 }

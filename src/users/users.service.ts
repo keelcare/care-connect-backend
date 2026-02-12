@@ -195,6 +195,9 @@ export class UsersService {
       include: {
         profiles: true,
         nanny_details: true,
+        children: {
+          orderBy: { created_at: "desc" },
+        },
       },
     });
 

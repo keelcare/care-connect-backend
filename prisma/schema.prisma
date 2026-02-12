@@ -54,6 +54,7 @@ model bookings {
   disputes                        disputes[]
   location_updates                location_updates[]
   recurring_bookings              recurring_bookings? @relation(fields: [recurring_booking_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  booking_children                booking_children[]
 }
 
 model chats {
@@ -257,6 +258,7 @@ model users {
   recurring_bookings_recurring_bookings_nanny_idTousers  recurring_bookings[] @relation("recurring_bookings_nanny_idTousers")
   availability_blocks                availability_blocks[]
   verification_attempts              verification_attempts[]
+  children                           children[]
 
   @@unique([oauth_provider, oauth_provider_id])
 }
@@ -390,4 +392,48 @@ model revoked_tokens {
 
   @@index([token])
   @@index([expires_at])
+}
+
+enum child_profile_type {
+  STANDARD
+  SPECIAL_NEEDS
+}
+
+enum gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model children {
+  id                 String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id          String             @db.Uuid
+  first_name         String             @db.VarChar(100)
+  last_name          String             @db.VarChar(100)
+  dob                DateTime           @db.Date
+  gender             gender
+  profile_type       child_profile_type @default(STANDARD)
+  allergies          String[]           @default([])
+  dietary_notes      String?
+  diagnosis          String?
+  care_instructions  String?            @db.Text
+  emergency_contact  Json?
+  school_details     Json?
+  learning_goals     String[]           @default([])
+  created_at         DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime?          @default(now()) @db.Timestamptz(6)
+
+  users              users              @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  booking_children   booking_children[]
+
+  @@index([parent_id])
+}
+
+model booking_children {
+  booking_id String   @db.Uuid
+  child_id   String   @db.Uuid
+  bookings   bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  children   children @relation(fields: [child_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([booking_id, child_id])
 }

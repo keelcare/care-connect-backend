@@ -44,7 +44,7 @@ export class RequestsService {
 
     try {
       // 2. Wrap creation in a transaction to ensure atomicity
-      const { request } = await this.prisma.$transaction(async (tx) => {
+      const { request, booking } = await this.prisma.$transaction(async (tx) => {
         // Create the service request
         const request = await tx.service_requests.create({
           data: {
@@ -64,7 +64,7 @@ export class RequestsService {
         });
 
         // Create initial booking (Pending Assignment)
-        await tx.bookings.create({
+        const booking = await tx.bookings.create({
           data: {
             job_id: null,
             request_id: request.id,
@@ -86,7 +86,17 @@ export class RequestsService {
           },
         });
 
-        return { request };
+        // Link children to the booking if child_ids were provided
+        if (createRequestDto.child_ids && createRequestDto.child_ids.length > 0) {
+          await tx.booking_children.createMany({
+            data: createRequestDto.child_ids.map((childId) => ({
+              booking_id: booking.id,
+              child_id: childId,
+            })),
+          });
+        }
+
+        return { request, booking };
       });
 
       // 3. Trigger auto-matching (Outside transaction)

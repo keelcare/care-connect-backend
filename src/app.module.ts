@@ -23,6 +23,7 @@ import { AvailabilityModule } from "./availability/availability.module";
 import { VerificationModule } from "./verification/verification.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { CommonModule } from "./common/common.module";
+import { FamilyModule } from "./family/family.module";
 import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
 import * as Joi from "joi";
@@ -82,6 +83,7 @@ import { LoggerModule } from "nestjs-pino";
     VerificationModule,
     PaymentsModule,
     CommonModule,
+    FamilyModule,
   ],
   controllers: [AppController],
   providers: [
