@@ -106,7 +106,7 @@ export class RequestsService {
   }
 
   async cancelRequest(id: string) {
-    const request = await this.prisma.service_requests.findUnique({
+    let request = await this.prisma.service_requests.findUnique({
       where: { id },
       include: {
         assignments: { where: { status: { in: ["pending", "accepted"] } } },
@@ -114,9 +114,30 @@ export class RequestsService {
       },
     });
 
+    // Strategy 2: If not found by Request ID, check if the ID provided is a Booking ID
+    if (!request) {
+      console.log(`Request ID ${id} not found. checking if it is a Booking ID...`);
+      const booking = await this.prisma.bookings.findUnique({
+        where: { id },
+        select: { request_id: true }
+      });
+
+      if (booking && booking.request_id) {
+        console.log(`Found associated Request ID ${booking.request_id} for Booking ${id}`);
+        request = await this.prisma.service_requests.findUnique({
+          where: { id: booking.request_id },
+          include: {
+            assignments: { where: { status: { in: ["pending", "accepted"] } } },
+            bookings: { where: { status: { not: "CANCELLED" } } }
+          },
+        });
+      }
+    }
+
     if (!request) throw new NotFoundException("Request not found");
 
-    console.log(`Cancelling request ${id}, current status: ${request.status}`);
+    const requestId = request.id;
+    console.log(`Cancelling request ${requestId}, current status: ${request.status}`);
 
     // Status validation
     const allowedStatuses = ["pending", "accepted", "assigned"];
@@ -132,7 +153,7 @@ export class RequestsService {
     // 1. Cancel any pending or accepted assignments
     if (request.assignments.length > 0) {
       await this.prisma.assignments.updateMany({
-        where: { request_id: id, status: { in: ["pending", "accepted"] } },
+        where: { request_id: requestId, status: { in: ["pending", "accepted"] } },
         data: {
           status: "cancelled",
           responded_at: new Date(),
@@ -143,7 +164,7 @@ export class RequestsService {
     // 2. Cancel associated booking if exists
     if (request.bookings.length > 0) {
       await this.prisma.bookings.updateMany({
-        where: { request_id: id, status: { not: "CANCELLED" } },
+        where: { request_id: requestId, status: { not: "CANCELLED" } },
         data: {
           status: "CANCELLED",
           cancellation_reason: "Request cancelled by parent",
@@ -153,7 +174,7 @@ export class RequestsService {
 
     // 3. Update request status
     const result = await this.prisma.service_requests.update({
-      where: { id },
+      where: { id: requestId },
       data: { status: "CANCELLED" },
     });
 
@@ -180,9 +201,20 @@ export class RequestsService {
     const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
 
     // Calculate Request End Time directly from the date object
-    const datePart = new Date(request.date).toISOString().split('T')[0];
-    const timePart = new Date(request.start_time).toISOString().split('T')[1];
-    const requestStartTime = new Date(`${datePart}T${timePart}`);
+    let requestStartTime: Date;
+    try {
+      const datePart = new Date(request.date).toISOString().split('T')[0];
+      const timePart = new Date(request.start_time).toISOString().split('T')[1];
+      requestStartTime = new Date(`${datePart}T${timePart}`);
+
+      if (isNaN(requestStartTime.getTime())) {
+        throw new Error("Invalid start time result");
+      }
+    } catch (e) {
+      console.error("Date parsing failed, falling back to direct date field", e);
+      requestStartTime = new Date(request.date);
+    }
+
     const requestEndTime = new Date(requestStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
 
     console.log(`[DEBUG] Checking Overlap for Request: ${requestId}`);
@@ -227,7 +259,7 @@ export class RequestsService {
       : "";
 
     const categorySql = (request as any).category
-      ? `AND ('${(request as any).category}' = ANY(nd.tags) OR '${(request as any).category}' = ANY(nd.skills) OR array_length(nd.tags, 1) IS NULL OR array_length(nd.tags, 1) = 0)`
+      ? `AND ('${(request as any).category}' = ANY(nd.tags) OR '${(request as any).category}' = ANY(nd.skills))`
       : "";
 
     const nannies = (await this.prisma.$queryRawUnsafe(`
@@ -294,15 +326,17 @@ export class RequestsService {
     );
 
     const scoredNannies = nannies
-      .filter((nanny) => {
-        // Filter by Skills (Strict Match: Nanny must have ALL required skills)
-        if (requiredSkills.length === 0) return true;
-        const nannySkills = nanny.skills || [];
-        return requiredSkills.every((skill) => nannySkills.includes(skill));
-      })
       .map((nanny) => {
         // Calculate Score
         let score = 0;
+
+        // 0. Skill Match (Max 40 pts)
+        const nannySkills = nanny.skills || [];
+        const matchedSkills = requiredSkills.filter(skill => nannySkills.includes(skill));
+        const skillScore = requiredSkills.length > 0
+          ? (matchedSkills.length / requiredSkills.length) * 40
+          : 40; // If no skills required, everyone gets full skill points
+        score += skillScore;
 
         // 1. Distance (Max 30 pts) - Closer is better
         const distanceScore = Math.max(0, 30 * (1 - nanny.distance / radiusKm));
@@ -337,6 +371,7 @@ export class RequestsService {
           Exp: ${experienceScore}
           Acc: ${acceptanceScore}
           Rate: ${rateScore}
+          Skills: ${skillScore.toFixed(2)} (${matchedSkills.length}/${requiredSkills.length})
           Favorite: ${favoriteNannyIds.includes(nanny.id) ? 50 : 0}
           AI: ${(aiScore / 100) * 30}
           TOTAL: ${score.toFixed(2)}

@@ -563,6 +563,7 @@ export class BookingsService {
         data: {
           status: "CANCELLED",
           cancellation_reason: "System Auto-cancellation: Booking expired (No Show)",
+          tags: ["noshow"],
         },
       });
 

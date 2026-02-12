@@ -134,4 +134,13 @@ export class BookingsController {
       req.user.id,
     );
   }
+
+  @Post("check-expired")
+  async checkExpired() {
+    const expiredCount = await this.bookingsService.checkExpiredBookings();
+    return {
+      message: `Checked for expired bookings successfully`,
+      expired_count: expiredCount,
+    };
+  }
 }

@@ -53,10 +53,11 @@ export class AuthController {
     const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
+    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
 
     // Determine if we should treat this as a secure/cross-site connection
-    // Secure IF: Prod/Render OR HTTPS origin OR explicitly configured dev frontend
-    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
+    // Secure ONLY IF: (Prod/Render OR HTTPS origin OR explicitly configured dev frontend) AND NOT localhost
+    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
 
     // Set HttpOnly Cookies
     const cookieOptions = {
@@ -148,10 +149,12 @@ export class AuthController {
 
     const loginData = await this.authService.refresh(refreshToken);
 
+    const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
+    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
 
-    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
+    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
 
     const cookieOptions = {
       httpOnly: true,
@@ -291,8 +294,9 @@ export class AuthController {
     const origin = req.headers.origin || req.headers.referer || "";
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
+    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
 
-    const isSecure = isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app");
+    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
 
     // Set cookies with Partitioned attribute for cross-site support
     const cookieOptions = {
