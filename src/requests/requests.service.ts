@@ -72,7 +72,7 @@ export class RequestsService {
         const bookingStartTime = new Date(`${createRequestDto.date}T${startTimeStr}+05:30`);
         const bookingEndTime = new Date(bookingStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
 
-        await tx.bookings.create({
+        const booking = await tx.bookings.create({
           data: {
             job_id: null,
             request_id: request.id,
