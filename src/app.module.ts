@@ -73,19 +73,9 @@ import { LoggerModule } from "nestjs-pino";
     ThrottlerModule.forRoot([
       {
         name: 'default',
-        ttl: 60000, // 1 minute
-        limit: 100, // Global IP-based limit: 100 requests per minute
-      },
-      {
-        name: 'user',
-        ttl: 60000, // 1 minute
-        limit: 50, // User-based limit: 50 requests per minute per authenticated user
-      },
-      {
-        name: 'strict',
-        ttl: 60000, // 1 minute
-        limit: 10, // Strict limit for auth endpoints: 10 requests per minute
-      },
+        ttl: 60000,
+        limit: 300, // Balanced global limit for SPA usage
+      }
     ]),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), "uploads"),

@@ -29,7 +29,7 @@ export const StrictThrottle = () => Throttle({ default: { limit: 10, ttl: 60000 
  * Moderate rate limiting for write operations
  * 
  * Use on: POST, PUT, PATCH, DELETE endpoints
- * Limit: 30 requests per minute
+ * Limit: 60 requests per minute (1 req/sec)
  * 
  * Provides protection against spam and abuse while allowing
  * legitimate users to perform multiple operations.
@@ -41,7 +41,7 @@ export const StrictThrottle = () => Throttle({ default: { limit: 10, ttl: 60000 
  * async createRequest(@Body() dto: CreateRequestDto) { ... }
  * ```
  */
-export const ModerateThrottle = () => Throttle({ default: { limit: 30, ttl: 60000 } });
+export const ModerateThrottle = () => Throttle({ default: { limit: 60, ttl: 60000 } });
 
 /**
  * Skip throttling for specific endpoints
