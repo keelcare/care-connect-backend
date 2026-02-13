@@ -27,8 +27,8 @@ import { Sanitize } from "../../common/decorators/sanitize.decorator";
 export enum ServiceCategory {
   CC = 'CC',
   EC = 'EC',
-  STANDARD = 'Standard',
-  PREMIUM = 'Premium',
+  SN = 'SN',
+  ST = 'ST',
 }
 
 export class CreateRequestDto {
@@ -85,7 +85,8 @@ export class CreateRequestDto {
    * SECURITY: Enum validation to prevent invalid categories
    */
   @IsNotEmpty()
-  @IsEnum(ServiceCategory, { message: 'Category must be one of: CC, EC, Standard, Premium' })
+  @IsNotEmpty()
+  @IsEnum(ServiceCategory, { message: 'Category must be one of: CC, EC, SN, ST' })
   category: ServiceCategory;
 
   /**

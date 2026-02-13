@@ -29,6 +29,7 @@ import { APP_GUARD } from "@nestjs/core";
 import { UserThrottlerGuard } from "./common/guards/user-throttler.guard";
 import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
+import { ServicesModule } from './services/services.module';
 
 @Module({
   imports: [
@@ -101,6 +102,7 @@ import { LoggerModule } from "nestjs-pino";
     PaymentsModule,
     CommonModule,
     FamilyModule,
+    ServicesModule,
   ],
   controllers: [AppController],
   providers: [

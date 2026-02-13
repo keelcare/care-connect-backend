@@ -25,6 +25,7 @@ describe("RequestsService", () => {
     },
     bookings: {
       updateMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     matching_feedback: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -110,6 +111,10 @@ describe("RequestsService", () => {
         location_lng: -74.006,
         required_skills: requiredSkills,
         assignments: [],
+        date: new Date(),
+        start_time: "10:00:00",
+        duration_hours: 4,
+        max_hourly_rate: 200,
       });
 
       // Mock raw query return

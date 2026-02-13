@@ -49,6 +49,7 @@ export class PaymentsService {
         users_bookings_nanny_idTousers: {
           include: { nanny_details: true },
         },
+        service_requests: true,
       },
     });
 
@@ -56,7 +57,7 @@ export class PaymentsService {
 
     // Calculate Amount
     const hourlyRate =
-      Number(booking.users_bookings_nanny_idTousers?.nanny_details?.hourly_rate) || 0;
+      Number(booking.service_requests?.max_hourly_rate || 200); // Default fallback should be rarely used if service_requests exists
 
     if (!booking.start_time || !booking.end_time) {
       throw new BadRequestException("Booking start or end time is missing");

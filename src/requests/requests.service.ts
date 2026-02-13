@@ -12,9 +12,9 @@ import { AiService } from "../ai/ai.service";
 
 const CATEGORY_SKILL_MAP = {
   'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
-  'EC': ['Elderly Care', 'Senior Care', 'Geriatric Care', 'Caregiver'],
-  'Standard': [],
-  'Premium': [],
+  'ST': ['Shadow Teacher', 'Special Education', 'Autism Support', 'ADHD Support'],
+  'SN': ['Special Needs', 'Disability Care', 'Therapy Support', 'Medical Assistance'],
+  'EC': ['Elderly Care', 'Geriatric Support', 'Companion Care'],
 };
 
 @Injectable()
@@ -57,6 +57,15 @@ export class RequestsService {
           ? `${createRequestDto.start_time}:00`
           : createRequestDto.start_time;
 
+        // Fetch service details for pricing
+        const serviceSettings = await this.prisma.services.findUnique({
+          where: { name: createRequestDto.category },
+        });
+
+        if (!serviceSettings) {
+          throw new BadRequestException(`Service category '${createRequestDto.category}' not found.`);
+        }
+
         const request = await tx.service_requests.create({
           data: {
             parent_id: parentId,
@@ -67,7 +76,7 @@ export class RequestsService {
             children_ages: createRequestDto.children_ages || [],
             special_requirements: createRequestDto.special_requirements,
             required_skills: createRequestDto.required_skills || [],
-            max_hourly_rate: createRequestDto.max_hourly_rate,
+            max_hourly_rate: createRequestDto.max_hourly_rate || serviceSettings.hourly_rate, // Use Service Rate
             location_lat: parent.profiles.lat,
             location_lng: parent.profiles.lng,
             category: createRequestDto.category,
@@ -271,9 +280,10 @@ export class RequestsService {
 
     // Hard Filters
     const radiusKm = 15; // Increased to 15km
-    const maxRateSql = request.max_hourly_rate
-      ? `AND nd.hourly_rate <= ${request.max_hourly_rate}`
-      : "";
+    // Pricing is now standardized by Service, so we might NOT want to filter nannies by rate strictly
+    // unless we want to ensure their base rate is within the service rate.
+    // For now, let's relax this or keep it as a loose filter.
+    const maxRateSql = "";
 
     const category = (request as any).category;
     const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
@@ -295,7 +305,6 @@ export class RequestsService {
         u.email,
         nd.skills,
         nd.experience_years,
-        nd.hourly_rate,
         nd.acceptance_rate,
         (6371 * acos(cos(radians(${request.location_lat})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${request.location_lng})) + sin(radians(${request.location_lat})) * sin(radians(p.lat)))) AS distance
       FROM users u
@@ -379,10 +388,6 @@ export class RequestsService {
         const acceptanceScore = (acceptanceRate / 100) * 20;
         score += acceptanceScore;
 
-        // 4. Hourly Rate (Max 10 pts)
-        const rate = Number(nanny.hourly_rate) || 0;
-        const rateScore = Math.max(0, 10 * (1 - (rate - 10) / 40));
-        score += rateScore;
 
         // 5. Favorite Bonus (+50 pts)
         if (favoriteNannyIds.includes(nanny.id)) {
@@ -397,7 +402,6 @@ export class RequestsService {
           Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)
           Exp: ${experienceScore}
           Acc: ${acceptanceScore}
-          Rate: ${rateScore}
           Skills: ${skillScore.toFixed(2)} (${matchedSkills.length}/${requiredSkills.length})
           Favorite: ${favoriteNannyIds.includes(nanny.id) ? 50 : 0}
           AI: ${(aiScore / 100) * 30}

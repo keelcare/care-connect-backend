@@ -243,6 +243,7 @@ export class BookingsService {
         users_bookings_nanny_idTousers: {
           include: { nanny_details: true },
         },
+        service_requests: true,
       },
     });
     if (!booking) throw new NotFoundException("Booking not found");
@@ -274,7 +275,7 @@ export class BookingsService {
       (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
     const hourlyRate = Number(
-      booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate || 0,
+      booking.service_requests?.max_hourly_rate || 200, // Default to 200 if not found
     );
     const totalAmount = durationHours * hourlyRate;
 
@@ -327,6 +328,7 @@ export class BookingsService {
         users_bookings_nanny_idTousers: {
           include: { nanny_details: true },
         },
+        service_requests: true,
       },
     });
     if (!booking) throw new NotFoundException("Booking not found");
@@ -431,8 +433,8 @@ export class BookingsService {
       const hoursUntilStart =
         (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-      if (hoursUntilStart < 24 && booking.users_bookings_nanny_idTousers) {
-        const hourlyRateStr = booking.users_bookings_nanny_idTousers.nanny_details?.hourly_rate;
+      if (hoursUntilStart < 24 && booking.service_requests) {
+        const hourlyRateStr = booking.service_requests.max_hourly_rate;
         const hourlyRate = hourlyRateStr ? Number(hourlyRateStr) : 0;
 
         cancellationFee = isNaN(hourlyRate) ? 0 : hourlyRate;

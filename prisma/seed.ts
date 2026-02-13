@@ -6,6 +6,36 @@ const prisma = new PrismaClient();
 async function main() {
     console.log('Starting seed...');
 
+    // 0. Create Services with pricing
+    console.log('Creating services...');
+    const ccService = await prisma.services.upsert({
+        where: { name: 'CC' },
+        update: { hourly_rate: 200.0 },
+        create: { name: 'CC', hourly_rate: 200.0 },
+    });
+    console.log({ ccService });
+
+    const stService = await prisma.services.upsert({
+        where: { name: 'ST' },
+        update: { hourly_rate: 200.0 },
+        create: { name: 'ST', hourly_rate: 200.0 },
+    });
+    console.log({ stService });
+
+    const snService = await prisma.services.upsert({
+        where: { name: 'SN' },
+        update: { hourly_rate: 300.0 },
+        create: { name: 'SN', hourly_rate: 300.0 },
+    });
+    console.log({ snService });
+
+    const ecService = await prisma.services.upsert({
+        where: { name: 'EC' },
+        update: { hourly_rate: 200.0 }, // Defaulting EC to 200
+        create: { name: 'EC', hourly_rate: 200.0 },
+    });
+    console.log({ ecService });
+
     // 1. Clean up existing demo users
     console.log('Cleaning up existing demo users...');
     await prisma.users.deleteMany({
@@ -69,7 +99,6 @@ async function main() {
                 create: {
                     skills: ['First Aid', 'Cooking', 'Hindi', 'English'],
                     experience_years: 5,
-                    hourly_rate: 300.0, // INR per hour
                     bio: 'Experienced nanny with 5 years of childcare experience. Fluent in Hindi and English.',
                     availability_schedule: {
                         monday: ['09:00-17:00'],
@@ -111,7 +140,6 @@ async function main() {
                 create: {
                     skills: ['Music', 'Art', 'Swimming', 'Marathi', 'English'],
                     experience_years: 3,
-                    hourly_rate: 250.0, // INR per hour
                     bio: 'Creative nanny with background in arts and music. Great with toddlers.',
                     availability_schedule: {
                         monday: ['10:00-18:00'],
@@ -152,7 +180,6 @@ async function main() {
                 create: {
                     skills: ['First Aid', 'Cooking', 'Kannada', 'English', 'Tamil'],
                     experience_years: 7,
-                    hourly_rate: 350.0, // INR per hour
                     bio: 'Highly experienced nanny with excellent references. Specialized in infant care.',
                     availability_schedule: {
                         monday: ['08:00-16:00'],
@@ -327,7 +354,6 @@ async function main() {
                     create: {
                         skills: n.skills,
                         experience_years: n.exp,
-                        hourly_rate: n.rate,
                         bio: n.bio,
                         availability_schedule: {
                             monday: ['09:00-18:00'],
@@ -427,7 +453,6 @@ async function main() {
                     create: {
                         skills: n.skills,
                         experience_years: n.exp,
-                        hourly_rate: n.rate,
                         bio: n.bio,
                         availability_schedule: {
                             monday: ['10:00-19:00'],
@@ -481,7 +506,6 @@ async function main() {
                 create: {
                     skills: hyderabadNanny.skills,
                     experience_years: hyderabadNanny.exp,
-                    hourly_rate: hyderabadNanny.rate,
                     bio: hyderabadNanny.bio,
                     availability_schedule: {
                         monday: ['08:00-20:00'],

@@ -257,7 +257,6 @@ export class UsersService {
         profileImageUrl,
         skills,
         experienceYears,
-        hourlyRate,
         bio,
         availabilitySchedule,
       } = dto;
@@ -301,7 +300,6 @@ export class UsersService {
       if (
         skills ||
         experienceYears ||
-        hourlyRate ||
         bio ||
         availabilitySchedule
       ) {
@@ -310,7 +308,6 @@ export class UsersService {
           update: {
             skills: skills,
             experience_years: experienceYears,
-            hourly_rate: hourlyRate,
             bio,
             availability_schedule: availabilitySchedule,
             updated_at: new Date(),
@@ -319,7 +316,6 @@ export class UsersService {
             user_id: id,
             skills: skills || [],
             experience_years: experienceYears,
-            hourly_rate: hourlyRate,
             bio,
             availability_schedule: availabilitySchedule,
           },
