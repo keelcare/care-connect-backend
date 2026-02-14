@@ -39,8 +39,8 @@ export class FamilyService {
           : null,
         diagnosis: dto.diagnosis ?? null,
         care_instructions: dto.care_instructions ?? null,
-        emergency_contact: dto.emergency_contact ?? undefined,
-        school_details: dto.school_details ?? undefined,
+        emergency_contact: (dto.emergency_contact as any) ?? undefined,
+        school_details: (dto.school_details as any) ?? undefined,
         learning_goals: dto.learning_goals ?? [],
       },
     });

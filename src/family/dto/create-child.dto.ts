@@ -4,9 +4,12 @@ import {
   IsArray,
   IsEnum,
   IsDateString,
-  IsObject,
   MaxLength,
+  ValidateNested,
+  ArrayMaxSize,
+   
 } from "class-validator";
+import { Type } from "class-transformer";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
 
 /**
@@ -22,6 +25,39 @@ export enum Gender {
   MALE = "MALE",
   FEMALE = "FEMALE",
   OTHER = "OTHER",
+}
+
+export class EmergencyContactDto {
+  @IsString()
+  @MaxLength(100)
+  @Sanitize()
+  name: string;
+
+  @IsString()
+  @MaxLength(20)
+  phone: string;
+
+  @IsString()
+  @MaxLength(50)
+  @Sanitize()
+  relation: string;
+}
+
+export class SchoolDetailsDto {
+  @IsString()
+  @MaxLength(200)
+  @Sanitize()
+  name: string;
+
+  @IsString()
+  @MaxLength(20)
+  grade: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Sanitize()
+  teacher_contact?: string;
 }
 
 export class CreateChildDto {
@@ -53,12 +89,14 @@ export class CreateChildDto {
    */
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20, { message: 'Maximum 20 allergies allowed' })
   @IsString({ each: true })
   @MaxLength(50, { each: true, message: 'Each allergy must not exceed 50 characters' })
   allergies?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20, { message: 'Maximum 20 dietary restrictions allowed' })
   @IsString({ each: true })
   @MaxLength(50, { each: true, message: 'Each dietary restriction must not exceed 50 characters' })
   dietary_restrictions?: string[];
@@ -79,19 +117,18 @@ export class CreateChildDto {
   care_instructions?: string;
 
   @IsOptional()
-  @IsObject()
-  emergency_contact?: { name: string; phone: string; relation: string };
+  @ValidateNested()
+  @Type(() => EmergencyContactDto)
+  emergency_contact?: EmergencyContactDto;
 
   @IsOptional()
-  @IsObject()
-  school_details?: {
-    name: string;
-    grade: string;
-    teacher_contact?: string;
-  };
+  @ValidateNested()
+  @Type(() => SchoolDetailsDto)
+  school_details?: SchoolDetailsDto;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20, { message: 'Maximum 20 learning goals allowed' })
   @IsString({ each: true })
   @MaxLength(50, { each: true, message: 'Each learning goal must not exceed 50 characters' })
   learning_goals?: string[];

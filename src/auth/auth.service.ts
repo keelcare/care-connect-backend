@@ -29,7 +29,11 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private prisma: PrismaService,
-  ) { }
+  ) {
+    if (!this.configService.get<string>("JWT_SECRET")) {
+      throw new Error("JWT_SECRET must be configured");
+    }
+  }
 
   async validateUser(email: string, pass: string): Promise<any> {
     const user = await this.usersService.findUserForAuth(email);
@@ -53,7 +57,10 @@ export class AuthService {
       is_active: user.is_active,
     };
 
-    const secret = this.configService.get<string>("JWT_SECRET") || "secretKey";
+    const secret = this.configService.get<string>("JWT_SECRET");
+    if (!secret) {
+      throw new Error("JWT_SECRET is not configured");
+    }
 
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: "15m",
@@ -91,7 +98,10 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     try {
-      const secret = this.configService.get<string>("JWT_SECRET") || "secretKey";
+      const secret = this.configService.get<string>("JWT_SECRET");
+      if (!secret) {
+        throw new Error("JWT_SECRET is not configured");
+      }
       const payload = this.jwtService.verify(refreshToken, { secret });
       // Directly using findUnique to be 100% sure we get the hash
       const user = await this.prisma.users.findUnique({
@@ -134,9 +144,7 @@ export class AuthService {
 
     // TODO: Send email with reset link
     const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-    console.log(
-      `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
-    );
+    
 
     return { message: "If the email exists, a reset link has been sent" };
   }
@@ -191,19 +199,19 @@ export class AuthService {
 
     // TODO: Send email with verification link
     const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-    console.log(
-      `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
-    );
+    
 
     return { message: "Verification email sent" };
   }
 
   async sendVerificationEmailByEmail(email: string, origin?: string) {
     const user = await this.usersService.findUserForAuth(email);
-    if (!user) {
+    if (!user || user.is_verified) {
       // Don't reveal user existence
       return { message: "Verification email sent if account exists" };
     }
+
+
     return this.sendVerificationEmail(user.id, origin);
   }
 
