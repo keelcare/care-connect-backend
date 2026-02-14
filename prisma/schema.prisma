@@ -111,7 +111,19 @@ model nanny_details {
   created_at            DateTime? @default(now()) @db.Timestamptz(6)
   updated_at            DateTime? @default(now()) @db.Timestamptz(6)
   tags                  String[]  @default([])
-  users                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                 users                   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  categories            String[]                @default([])
+}
+
+model nanny_category_requests {
+  id                   String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id             String    @db.Uuid
+  requested_categories String[]
+  status               String    @default("pending") @db.VarChar(50) // pending, approved, rejected
+  admin_notes          String?
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime? @default(now()) @db.Timestamptz(6)
+  users                users     @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 /// Service requests created by parents for childcare services
@@ -214,6 +226,7 @@ model users {
   is_verified                                            Boolean?                @default(false)
   identity_verification_status                           String?                 @default("unverified") @db.VarChar(50)
   verification_rejection_reason                          String?
+  nanny_category_requests                                nanny_category_requests[]
   is_active                                              Boolean?                @default(true)
   ban_reason                                             String?
   oauth_provider                                         String?                 @db.VarChar(50)

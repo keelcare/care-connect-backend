@@ -92,4 +92,10 @@ export class SignupDto {
         message: 'Phone number must be in valid international format (e.g., +919876543210)',
     })
     phone?: string;
+
+    /**
+     * Categories for nannies - At least one category is required if role is Nanny
+     */
+    @IsOptional()
+    categories?: string[];
 }

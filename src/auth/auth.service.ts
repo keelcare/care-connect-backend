@@ -237,6 +237,26 @@ export class AuthService {
       );
     }
 
+    // Validate categories for Nannies
+    if (userDto.role === 'nanny') {
+      if (!userDto.categories || userDto.categories.length === 0) {
+        throw new BadRequestException('Nannies must select at least one category');
+      }
+
+      // Validate categories exist in services table
+      const validServices = await this.prisma.services.findMany({
+        where: {
+          name: { in: userDto.categories }
+        }
+      });
+
+      if (validServices.length !== userDto.categories.length) {
+        const validNames = validServices.map(s => s.name);
+        const invalidNames = userDto.categories.filter(c => !validNames.includes(c));
+        throw new BadRequestException(`Invalid categories: ${invalidNames.join(', ')}`);
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(userDto.password, 10);
     const user = await this.usersService.create({
       email: userDto.email,
@@ -248,6 +268,14 @@ export class AuthService {
           last_name: userDto.lastName,
         },
       },
+      nanny_details:
+        userDto.role === "nanny"
+          ? {
+            create: {
+              categories: userDto.categories,
+            },
+          }
+          : undefined,
     });
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars

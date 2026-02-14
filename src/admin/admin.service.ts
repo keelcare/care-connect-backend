@@ -1,9 +1,74 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
+
+  // Category Request Management
+  async getCategoryRequests(status: string = 'pending') {
+    return this.prisma.nanny_category_requests.findMany({
+      where: { status },
+      include: {
+        users: {
+          select: {
+            email: true,
+            profiles: {
+              select: {
+                first_name: true,
+                last_name: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  }
+
+  async updateCategoryRequestStatus(requestId: string, status: 'approved' | 'rejected', adminNotes?: string) {
+    const existingRequest = await this.prisma.nanny_category_requests.findUnique({
+      where: { id: requestId },
+    });
+
+    if (!existingRequest) {
+      throw new NotFoundException('Category request not found');
+    }
+
+    if (existingRequest.status !== 'pending') {
+      throw new BadRequestException(`Request is already ${existingRequest.status}`);
+    }
+
+    return this.prisma.$transaction(async (prisma) => {
+      const request = await prisma.nanny_category_requests.update({
+        where: { id: requestId },
+        data: {
+          status,
+          admin_notes: adminNotes,
+          updated_at: new Date(),
+        },
+      });
+
+      if (status === 'approved') {
+        // Use upsert to handle cases where nanny_details record doesn't exist yet
+        await prisma.nanny_details.upsert({
+          where: { user_id: request.nanny_id },
+          update: {
+            categories: request.requested_categories,
+            tags: request.requested_categories, // Sync to tags for backward compatibility
+            updated_at: new Date(),
+          },
+          create: {
+            user_id: request.nanny_id,
+            categories: request.requested_categories,
+            tags: request.requested_categories, // Sync to tags for backward compatibility
+          },
+        });
+      }
+
+      return request;
+    });
+  }
 
   // User Management
   async getAllUsers() {
