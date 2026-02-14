@@ -13,6 +13,7 @@ import {
   MaxLength,
 } from "class-validator";
 import { Type } from "class-transformer";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
 
 /**
@@ -32,26 +33,31 @@ export enum ServiceCategory {
 }
 
 export class CreateRequestDto {
+  @ApiProperty({ example: '2026-06-20', description: 'Date of service (YYYY-MM-DD)' })
   @IsNotEmpty()
   @IsDateString()
   date: string; // Format: YYYY-MM-DD
 
+  @ApiProperty({ example: '14:30:00', description: 'Start time of service (HH:MM:SS)' })
   @IsNotEmpty()
   @IsString()
   start_time: string; // Format: HH:MM:SS
 
+  @ApiProperty({ example: 4, description: 'Duration of service in hours' })
   @IsNotEmpty()
   @IsNumber()
   @Min(0.5)
   @Max(24)
   duration_hours: number;
 
+  @ApiProperty({ example: 2, description: 'Number of children to be cared for' })
   @IsNotEmpty()
   @IsInt()
   @Min(1)
   @Max(10)
   num_children: number;
 
+  @ApiPropertyOptional({ example: [3, 5], description: 'Ages of the children' })
   @IsOptional()
   @IsArray()
   @IsInt({ each: true })
@@ -61,12 +67,14 @@ export class CreateRequestDto {
    * SECURITY: Sanitize special requirements to prevent XSS
    * Max 1000 characters to prevent abuse
    */
+  @ApiPropertyOptional({ example: 'Allergies to nuts', description: 'Any special requirements or notes' })
   @IsOptional()
   @IsString()
   @MaxLength(1000, { message: 'Special requirements must not exceed 1000 characters' })
   @Sanitize()
   special_requirements?: string;
 
+  @ApiPropertyOptional({ example: 25, description: 'Maximum hourly rate offered' })
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -75,6 +83,7 @@ export class CreateRequestDto {
   /**
    * SECURITY: Limit skill string length to prevent abuse
    */
+  @ApiPropertyOptional({ example: ['CPR', 'First Aid'], description: 'Specific skills required' })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -84,7 +93,7 @@ export class CreateRequestDto {
   /**
    * SECURITY: Enum validation to prevent invalid categories
    */
-  @IsNotEmpty()
+  @ApiProperty({ enum: ServiceCategory, example: ServiceCategory.ST, description: 'Service category' })
   @IsNotEmpty()
   @IsEnum(ServiceCategory, { message: 'Category must be one of: CC, EC, SN, ST' })
   category: ServiceCategory;
@@ -92,6 +101,7 @@ export class CreateRequestDto {
   /**
    * SECURITY: UUID validation to prevent SQL injection via child IDs
    */
+  @ApiPropertyOptional({ example: ['550e8400-e29b-41d4-a716-446655440000'], description: 'UUIDs of the children' })
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true, message: 'Each child ID must be a valid UUID' })

@@ -37,6 +37,7 @@
     "@nestjs/platform-socket.io": "^10.4.20",
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/serve-static": "^4.0.2",
+    "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^10.4.20",
     "@prisma/client": "^6.19.2",
@@ -64,7 +65,8 @@
     "razorpay": "^2.9.6",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "@nestjs/schematics": "^10.0.0",
@@ -109,7 +111,7 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-    },
+  },
   "overrides": {
     "isomorphic-dompurify": {
       "jsdom": "22.1.0"

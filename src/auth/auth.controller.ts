@@ -8,6 +8,7 @@ import {
   Res,
   UnauthorizedException,
 } from "@nestjs/common";
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "@nestjs/passport";
 import { Response } from "express";
@@ -20,6 +21,7 @@ import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { SessionDto } from "./dto/session.dto";
 
+@ApiTags('Authentication')
 @Controller("auth")
 export class AuthController {
   constructor(
@@ -32,6 +34,9 @@ export class AuthController {
    */
   @Post("signup")
   @StrictThrottle()
+  @ApiOperation({ summary: 'Register a new user' })
+  @ApiResponse({ status: 201, description: 'User successfully registered' })
+  @ApiResponse({ status: 400, description: 'Invalid input' })
   async signup(@Body() userDto: SignupDto, @Req() req) {
     const user = await this.authService.register(userDto);
     const origin = req.headers.origin || req.headers.referer;
@@ -48,6 +53,9 @@ export class AuthController {
    */
   @Post("login")
   @StrictThrottle()
+  @ApiOperation({ summary: 'User login' })
+  @ApiResponse({ status: 200, description: 'Successfully logged in, tokens set in cookies' })
+  @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(
     @Body() loginDto: LoginDto,
     @Req() req,
@@ -92,6 +100,8 @@ export class AuthController {
   }
 
   @Post("logout")
+  @ApiOperation({ summary: 'Logout and clear session cookies' })
+  @ApiResponse({ status: 200, description: 'Successfully logged out' })
   async logout(@Res({ passthrough: true }) res: Response) {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
@@ -144,6 +154,9 @@ export class AuthController {
   }
 
   @Post("refresh")
+  @ApiOperation({ summary: 'Refresh access tokens using refresh cookie' })
+  @ApiResponse({ status: 200, description: 'Tokens refreshed successfully' })
+  @ApiResponse({ status: 401, description: 'No refresh token provided or token invalid' })
   async refresh(
     @Req() req,
     @Res({ passthrough: true }) res: Response,

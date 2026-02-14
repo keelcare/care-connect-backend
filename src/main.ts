@@ -107,8 +107,32 @@ async function bootstrap() {
   const expressApp = app.getHttpAdapter().getInstance();
   expressApp.set("trust proxy", 1); // Trust first proxy
 
+  // Swagger Documentation configuration
+  const { DocumentBuilder, SwaggerModule } = await import('@nestjs/swagger');
+  const config = new DocumentBuilder()
+    .setTitle('Care Connect API')
+    .setDescription('The API documentation for Care Connect backend services.')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .addTag('Authentication', 'User authentication and authorization')
+    .addTag('Users', 'User profile and management')
+    .addTag('Nannies', 'Nanny specific operations')
+    .addTag('Requests', 'Care service requests')
+    .addTag('Bookings', 'Booking management')
+    .addTag('Payments', 'Payment processing')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+    customSiteTitle: 'Care Connect API Docs',
+  });
+
   const port = process.env.PORT ?? 4000;
   await app.listen(port, '0.0.0.0');
   console.log(`🚀 Application is running on: http://0.0.0.0:${port}`);
+  console.log(`📖 Swagger documentation available at: http://0.0.0.0:${port}/api/docs`);
 }
 bootstrap();
