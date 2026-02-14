@@ -229,15 +229,26 @@ export class RequestsService {
     // Calculate Request End Time directly from the date object
     let requestStartTime: Date;
     try {
-      const datePart = new Date(request.date).toISOString().split('T')[0];
-      const timePart = new Date(request.start_time).toISOString().split('T')[1];
+      if (!request.date || (request as any).start_time === undefined) {
+        throw new Error("Missing date or start_time");
+      }
+
+      const dateObj = new Date(request.date);
+      const startTimeObj = new Date(request.start_time);
+
+      if (isNaN(dateObj.getTime()) || isNaN(startTimeObj.getTime())) {
+        throw new Error("Invalid date input components");
+      }
+
+      const datePart = dateObj.toISOString().split('T')[0];
+      const timePart = startTimeObj.toISOString().split('T')[1];
       requestStartTime = new Date(`${datePart}T${timePart}`);
 
       if (isNaN(requestStartTime.getTime())) {
-        throw new Error("Invalid start time result");
+        throw new Error("Resulting requestStartTime is NaN");
       }
     } catch (e) {
-      console.error("Date parsing failed, falling back to direct date field", e);
+      console.error("Date parsing failed in triggerMatching, falling back to direct date field", e);
       requestStartTime = new Date(request.date);
     }
 
@@ -489,7 +500,7 @@ export class RequestsService {
   }
 
   async findOne(id: string) {
-    const request = await this.prisma.service_requests.findUnique({
+    let request = await this.prisma.service_requests.findUnique({
       where: { id },
       include: {
         users: {
@@ -500,6 +511,30 @@ export class RequestsService {
         },
       },
     });
+
+    // FALLBACK: If not found by Request ID, check if the ID provided is a Booking ID
+    if (!request) {
+      console.log(`findOne: Request ID ${id} not found. checking if it is a Booking ID...`);
+      const booking = await this.prisma.bookings.findUnique({
+        where: { id },
+        select: { request_id: true }
+      });
+
+      if (booking && booking.request_id) {
+        console.log(`findOne: Found associated Request ID ${booking.request_id} for Booking ${id}`);
+        request = await this.prisma.service_requests.findUnique({
+          where: { id: booking.request_id },
+          include: {
+            users: {
+              include: { profiles: true },
+            },
+            assignments: {
+              include: { users: { include: { profiles: true, nanny_details: true } } },
+            },
+          },
+        });
+      }
+    }
 
     if (!request) {
       throw new NotFoundException(`Service request with ID ${id} not found`);
