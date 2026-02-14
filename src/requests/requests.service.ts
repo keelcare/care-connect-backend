@@ -296,6 +296,8 @@ export class RequestsService {
         EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${termsSql}))
         OR 
         EXISTS (SELECT 1 FROM unnest(nd.skills) s WHERE s IN (${termsSql}))
+        OR
+        EXISTS (SELECT 1 FROM unnest(nd.categories) c WHERE c IN (${termsSql}))
       )`;
     }
 
