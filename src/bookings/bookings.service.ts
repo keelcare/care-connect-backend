@@ -390,11 +390,10 @@ export class BookingsService {
         console.error("Failed to re-trigger matching", err);
       });
 
-      await this.notificationsService.createNotification(
+      await this.notificationsService.notifyNannyCancellationToParent(
         booking.parent_id,
-        "Nanny Cancelled - Re-matching",
-        `The assigned nanny had to cancel. We are looking for a new match immediately.`,
-        "warning",
+        booking.id,
+        reason,
       );
 
       return updatedBooking;
@@ -468,11 +467,10 @@ export class BookingsService {
 
       // Notify parent if nanny cancelled
       if (cancelledByUserId === booking.nanny_id) {
-        await this.notificationsService.createNotification(
+        await this.notificationsService.notifyNannyCancellationToParent(
           booking.parent_id,
-          "Booking Cancelled by Nanny",
-          `The nanny had to cancel your booking. Reason: ${reason || "No reason provided"}. We are automatically re-matching you.`,
-          "warning",
+          booking.id,
+          reason,
         );
       } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
         // Some other cancellation (admin?)

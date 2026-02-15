@@ -9,13 +9,15 @@ export class NotificationsService {
     private configService: ConfigService,
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
-  ) {}
+  ) { }
 
   async createNotification(
     userId: string,
     title: string,
     message: string,
     type: "info" | "success" | "warning" | "error" = "info",
+    category?: string,
+    relatedId?: string,
   ) {
     // 1. Save to Database
     const notification = await this.prisma.notifications.create({
@@ -24,6 +26,8 @@ export class NotificationsService {
         title,
         message,
         type,
+        category,
+        related_id: relatedId,
       },
     });
 
@@ -138,6 +142,18 @@ export class NotificationsService {
       "New Message",
       `You have a new message from ${senderName}`,
       "info",
+    );
+  }
+
+  async notifyNannyCancellationToParent(parentId: string, bookingId: string, reason?: string) {
+    const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+    await this.createNotification(
+      parentId,
+      "Booking Cancelled by Nanny",
+      `The nanny had to cancel your booking. ${reasonText}. We are automatically re-matching you.`,
+      "warning",
+      "booking",
+      bookingId,
     );
   }
 }
