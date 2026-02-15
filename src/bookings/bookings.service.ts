@@ -666,13 +666,39 @@ export class BookingsService {
       updateData.original_end_time = booking.end_time;
     }
 
-    // 7. Update the booking
-    const updatedBooking = await this.prisma.bookings.update({
-      where: { id },
-      data: updateData,
+    // 7. Update the booking and associated service request
+    const updatedBooking = await this.prisma.$transaction(async (tx) => {
+      // a. Update service_request if it exists
+      if (booking.request_id) {
+        const durationHours = (newEndDateTime.getTime() - newStartDateTime.getTime()) / (1000 * 60 * 60);
+
+        await tx.service_requests.update({
+          where: { id: booking.request_id },
+          data: {
+            date: new Date(newDate),
+            start_time: newStartDateTime,
+            duration_hours: durationHours,
+            status: booking.status === "CONFIRMED" ? "accepted" : "pending",
+          },
+        });
+      }
+
+      // b. Update the booking
+      return tx.bookings.update({
+        where: { id },
+        data: updateData,
+      });
     });
 
-    // 8. Send notifications
+    // 8. Trigger re-matching if no nanny is assigned
+    if (booking.request_id && !updatedBooking.nanny_id) {
+      console.log(`Re-triggering matching for rescheduled booking ${id} (Request ${booking.request_id})`);
+      this.requestsService.triggerMatching(booking.request_id).catch(err => {
+        console.error("Failed to re-trigger matching after reschedule", err);
+      });
+    }
+
+    // 9. Send notifications
     const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
     const nannyName = nannyProfile
       ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
@@ -690,7 +716,7 @@ export class BookingsService {
     await this.notificationsService.createNotification(
       booking.parent_id,
       "Booking Rescheduled",
-      `Your booking with ${nannyName} has been successfully rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
+      `Your booking ${nannyProfile ? `with ${nannyName}` : "request"} has been successfully rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
       "success",
     );
 
