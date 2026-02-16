@@ -27,19 +27,19 @@ export class AdminService {
   }
 
   async updateCategoryRequestStatus(requestId: string, status: 'approved' | 'rejected', adminNotes?: string) {
-    const existingRequest = await this.prisma.nanny_category_requests.findUnique({
-      where: { id: requestId },
-    });
-
-    if (!existingRequest) {
-      throw new NotFoundException('Category request not found');
-    }
-
-    if (existingRequest.status !== 'pending') {
-      throw new BadRequestException(`Request is already ${existingRequest.status}`);
-    }
-
     return this.prisma.$transaction(async (prisma) => {
+      const existingRequest = await prisma.nanny_category_requests.findUnique({
+        where: { id: requestId },
+      });
+
+      if (!existingRequest) {
+        throw new NotFoundException('Category request not found');
+      }
+
+      if (existingRequest.status !== 'pending') {
+        throw new BadRequestException(`Request is already ${existingRequest.status}`);
+      }
+
       const request = await prisma.nanny_category_requests.update({
         where: { id: requestId },
         data: {

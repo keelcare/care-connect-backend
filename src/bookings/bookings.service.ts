@@ -393,6 +393,7 @@ export class BookingsService {
       await this.notificationsService.notifyNannyCancellationToParent(
         booking.parent_id,
         booking.id,
+        true, // willRematch = true
         reason,
       );
 
@@ -470,6 +471,7 @@ export class BookingsService {
         await this.notificationsService.notifyNannyCancellationToParent(
           booking.parent_id,
           booking.id,
+          false, // willRematch = false
           reason,
         );
       } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
@@ -675,7 +677,7 @@ export class BookingsService {
         await tx.service_requests.update({
           where: { id: booking.request_id },
           data: {
-            date: new Date(newDate),
+            date: new Date(`${newDate}T00:00:00+05:30`),
             start_time: newStartDateTime,
             duration_hours: durationHours,
             status: booking.status === "CONFIRMED" ? "accepted" : "pending",
