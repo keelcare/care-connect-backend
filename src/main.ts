@@ -24,6 +24,7 @@ async function bootstrap() {
     console.log(`[ORIGIN] ${req.headers.origin}`);
     console.log(`[COOKIES (Header)]`, req.headers.cookie);
     console.log(`[COOKIES (Parsed)]`, req.cookies);
+    console.log(`[BODY]`, req.body);
     console.log("------------------------------------------------------------------");
     next();
   });

@@ -6,9 +6,12 @@ import {
     MaxLength,
     Matches,
     IsOptional,
+    IsBoolean,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Sanitize } from '../../common/decorators/sanitize.decorator';
+import { Match } from '../../common/decorators/match.decorator';
+import { Transform } from 'class-transformer';
 
 /**
  * SECURITY: Signup DTO with comprehensive validation
@@ -61,10 +64,10 @@ export class SignupDto {
     @MinLength(8, { message: 'Password must be at least 8 characters long' })
     @MaxLength(128, { message: 'Password must not exceed 128 characters' })
     @Matches(
-        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/,
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).+$/,
         {
             message:
-                'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)',
+                'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character',
         },
     )
     password: string;
@@ -131,4 +134,21 @@ export class SignupDto {
     })
     @IsOptional()
     categories?: string[];
+
+    @ApiPropertyOptional({
+        example: 'StrongP@ss123!',
+        description: 'Confirmation of the password',
+    })
+    @IsOptional()
+    @IsString()
+    @Match('password', { message: 'Passwords do not match' })
+    confirmPassword?: string;
+
+    @ApiPropertyOptional({
+        example: true,
+        description: 'Whether the user agrees to the terms and conditions',
+    })
+    @IsOptional()
+    @IsBoolean()
+    agreeToTerms?: boolean;
 }

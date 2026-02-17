@@ -145,12 +145,16 @@ export class NotificationsService {
     );
   }
 
-  async notifyNannyCancellationToParent(parentId: string, bookingId: string, reason?: string) {
+  async notifyNannyCancellationToParent(parentId: string, bookingId: string, willRematch: boolean, reason?: string) {
     const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+    const rematchText = willRematch
+      ? " We are automatically re-matching you."
+      : " Please check the app to book another nanny.";
+
     await this.createNotification(
       parentId,
       "Booking Cancelled by Nanny",
-      `The nanny had to cancel your booking. ${reasonText}. We are automatically re-matching you.`,
+      `The nanny had to cancel your booking. ${reasonText}.${rematchText}`,
       "warning",
       "booking",
       bookingId,
