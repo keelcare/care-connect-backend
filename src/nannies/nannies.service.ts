@@ -32,13 +32,20 @@ export class NanniesService {
             throw new BadRequestException('You already have a pending category change request');
         }
 
-        return this.prisma.nanny_category_requests.create({
-            data: {
-                nanny_id: userId,
-                requested_categories: dto.categories,
-                status: 'pending',
-            },
-        });
+        try {
+            return await this.prisma.nanny_category_requests.create({
+                data: {
+                    nanny_id: userId,
+                    requested_categories: dto.categories,
+                    status: 'pending',
+                },
+            });
+        } catch (error) {
+            if (error.code === 'P2002') {
+                throw new BadRequestException('You already have a pending category change request');
+            }
+            throw error;
+        }
     }
 
     async cancelCategoryRequest(userId: string, requestId: string) {

@@ -126,6 +126,9 @@ export class RequestsService {
 
       return request;
     } catch (error) {
+      if (error.code === 'P2002') {
+        throw new BadRequestException("An active booking already exists for this request or a duplicate request was detected.");
+      }
       console.error("Error creating service request flow:", error);
       throw error;
     }
@@ -464,8 +467,13 @@ export class RequestsService {
           }
         });
 
-        return assignment;
-      });
+      } catch (error) {
+        if (error.code === 'P2002') {
+          console.log(`Matching Race Condition: Nanny ${bestMatch.id} already assigned to request ${requestId}`);
+          return null; // Gracefully handle if someone else got it or this nanny was already assigned
+        }
+        throw error;
+      }
 
       console.log(`Auto-confirmed request ${requestId} with nanny ${bestMatch.id}`);
 
