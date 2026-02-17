@@ -436,37 +436,41 @@ export class RequestsService {
       );
 
       // Perform updates in a transaction for atomicity
-      const assignment = await this.prisma.$transaction(async (tx) => {
-        // 1. Create assignment (Directly as accepted)
-        const assignment = await tx.assignments.create({
-          data: {
-            request_id: requestId,
-            nanny_id: bestMatch.id,
-            response_deadline: new Date(Date.now() + 15 * 60 * 1000),
-            status: "accepted",
-            responded_at: new Date(),
-            rank_position: request.assignments.length + 1,
-          },
-        });
+      let assignment;
+      try {
+        assignment = await this.prisma.$transaction(async (tx) => {
+          // 1. Create assignment (Directly as accepted)
+          const assignment = await tx.assignments.create({
+            data: {
+              request_id: requestId,
+              nanny_id: bestMatch.id,
+              response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+              status: "accepted",
+              responded_at: new Date(),
+              rank_position: request.assignments.length + 1,
+            },
+          });
 
-        // 2. Update request status to accepted
-        await tx.service_requests.update({
-          where: { id: requestId },
-          data: {
-            status: "accepted",
-            current_assignment_id: assignment.id,
-          },
-        });
+          // 2. Update request status to accepted
+          await tx.service_requests.update({
+            where: { id: requestId },
+            data: {
+              status: "accepted",
+              current_assignment_id: assignment.id,
+            },
+          });
 
-        // 3. Update associated booking to CONFIRMED
-        await tx.bookings.updateMany({
-          where: { request_id: requestId, status: { not: "CANCELLED" } },
-          data: {
-            nanny_id: bestMatch.id,
-            status: "CONFIRMED",
-          }
-        });
+          // 3. Update associated booking to CONFIRMED
+          await tx.bookings.updateMany({
+            where: { request_id: requestId, status: { not: "CANCELLED" } },
+            data: {
+              nanny_id: bestMatch.id,
+              status: "CONFIRMED",
+            }
+          });
 
+          return assignment;
+        });
       } catch (error) {
         if (error.code === 'P2002') {
           console.log(`Matching Race Condition: Nanny ${bestMatch.id} already assigned to request ${requestId}`);
