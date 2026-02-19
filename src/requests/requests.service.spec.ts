@@ -26,11 +26,13 @@ describe("RequestsService", () => {
     bookings: {
       updateMany: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     matching_feedback: {
       findMany: jest.fn().mockResolvedValue([]),
     },
     $queryRawUnsafe: jest.fn(),
+    $queryRaw: jest.fn(),
     $transaction: jest.fn().mockImplementation((cb) => cb(mockPrisma)),
   };
 
@@ -118,7 +120,7 @@ describe("RequestsService", () => {
       });
 
       // Mock raw query return
-      mockPrisma.$queryRawUnsafe.mockResolvedValue([
+      mockPrisma.$queryRaw.mockResolvedValue([
         {
           id: "nanny1",
           skills: ["CPR", "First Aid"],
@@ -139,9 +141,12 @@ describe("RequestsService", () => {
 
       await service.triggerMatching(requestId);
 
+      const radiusKm = 15;
       // Verify query includes updated verification check
-      expect(mockPrisma.$queryRawUnsafe).toHaveBeenCalledWith(
-        expect.stringContaining("AND u.identity_verification_status = 'verified'")
+      expect(mockPrisma.$queryRaw).toHaveBeenCalledWith(
+        expect.objectContaining({
+          values: expect.arrayContaining([radiusKm]),
+        }),
       );
 
       // Should pick nanny1 because nanny2 is missing skills

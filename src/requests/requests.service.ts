@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import {
   Injectable,
   NotFoundException,
@@ -286,36 +287,12 @@ export class RequestsService {
     // Combine previous rejects and currently busy nannies
     const excludedNannyIds = [...new Set([...previouslyAssignedIds, ...busyNannyIds])];
 
-    // Format excluded IDs for SQL NOT IN clause
-    const excludedIdsSql =
-      excludedNannyIds.length > 0
-        ? `AND u.id NOT IN (${excludedNannyIds.map((id) => `'${id}'`).join(",")})`
-        : "";
-
-    // Hard Filters
     const radiusKm = 15; // Increased to 15km
-    // Pricing is now standardized by Service, so we might NOT want to filter nannies by rate strictly
-    // unless we want to ensure their base rate is within the service rate.
-    // For now, let's relax this or keep it as a loose filter.
-    const maxRateSql = "";
-
     const category = (request as any).category;
     const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
     const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
 
-    let categorySql = "";
-    if (skillSearchTerms.length > 0) {
-      const termsSql = skillSearchTerms.map(s => `'${s}'`).join(',');
-      categorySql = `AND (
-        EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${termsSql}))
-        OR 
-        EXISTS (SELECT 1 FROM unnest(nd.skills) s WHERE s IN (${termsSql}))
-        OR
-        EXISTS (SELECT 1 FROM unnest(nd.categories) c WHERE c IN (${termsSql}))
-      )`;
-    }
-
-    const nannies = (await this.prisma.$queryRawUnsafe(`
+    const nannies = (await this.prisma.$queryRaw(Prisma.sql`
       SELECT 
         u.id, 
         u.email,
@@ -329,9 +306,14 @@ export class RequestsService {
       WHERE u.role = 'nanny'
       AND u.identity_verification_status = 'verified'
       AND nd.is_available_now = true
-      ${excludedIdsSql}
-      ${maxRateSql}
-      ${categorySql}
+      ${excludedNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(excludedNannyIds)})` : Prisma.empty}
+      ${skillSearchTerms.length > 0 ? Prisma.sql`AND (
+        EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${Prisma.join(skillSearchTerms)}))
+        OR 
+        EXISTS (SELECT 1 FROM unnest(nd.skills) s WHERE s IN (${Prisma.join(skillSearchTerms)}))
+        OR
+        EXISTS (SELECT 1 FROM unnest(nd.categories) c WHERE c IN (${Prisma.join(skillSearchTerms)}))
+      )` : Prisma.empty}
       AND (6371 * acos(cos(radians(${request.location_lat})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${request.location_lng})) + sin(radians(${request.location_lat})) * sin(radians(p.lat)))) < ${radiusKm}
     `)) as any[];
 
