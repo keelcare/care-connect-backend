@@ -20,7 +20,7 @@ import { PrismaService } from "../prisma/prisma.service";
  * - At least one number
  * - At least one special character
  */
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/;
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
 
 @Injectable()
 export class AuthService {
@@ -144,7 +144,7 @@ export class AuthService {
 
     // TODO: Send email with reset link
     const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-    
+
 
     return { message: "If the email exists, a reset link has been sent" };
   }
@@ -199,7 +199,7 @@ export class AuthService {
 
     // TODO: Send email with verification link
     const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-    
+
 
     return { message: "Verification email sent" };
   }
