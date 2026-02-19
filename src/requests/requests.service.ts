@@ -429,86 +429,119 @@ export class RequestsService {
       .sort((a, b) => b.score - a.score); // Sort by Score DESC
 
     if (scoredNannies.length > 0) {
-      // Assign and Auto-Confirm the top-ranked candidate
-      const bestMatch = scoredNannies[0];
-      console.log(
-        `Best match for request ${requestId}: ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`,
-      );
+      console.log(`Found ${scoredNannies.length} potential matches for request ${requestId}. Attempting assignment...`);
 
-      // Perform updates in a transaction for atomicity
-      let assignment;
-      try {
-        assignment = await this.prisma.$transaction(async (tx) => {
-          // 1. Create assignment (Directly as accepted)
-          const assignment = await tx.assignments.create({
-            data: {
-              request_id: requestId,
-              nanny_id: bestMatch.id,
-              response_deadline: new Date(Date.now() + 15 * 60 * 1000),
-              status: "accepted",
-              responded_at: new Date(),
-              rank_position: request.assignments.length + 1,
-            },
-          });
+      for (const bestMatch of scoredNannies) {
+        console.log(`Attempting to assign request ${requestId} to nanny ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`);
 
-          // 2. Update request status to accepted
-          await tx.service_requests.update({
-            where: { id: requestId },
-            data: {
-              status: "accepted",
-              current_assignment_id: assignment.id,
-            },
-          });
+        try {
+          const assignment = await this.prisma.$transaction(async (tx) => {
+            // 1. RE-VERIFY AVAILABILITY WITHIN TRANSACTION (Lock-and-Verify)
+            // This is critical to prevent race conditions at scale.
+            const overlap = await tx.bookings.findFirst({
+              where: {
+                nanny_id: bestMatch.id,
+                status: "CONFIRMED",
+                OR: [
+                  {
+                    AND: [
+                      { start_time: { lt: requestEndTime } },
+                      { end_time: { gt: requestStartTime } },
+                    ],
+                  },
+                ],
+              },
+            });
 
-          // 3. Update associated booking to CONFIRMED
-          await tx.bookings.updateMany({
-            where: { request_id: requestId, status: { not: "CANCELLED" } },
-            data: {
-              nanny_id: bestMatch.id,
-              status: "CONFIRMED",
+            if (overlap) {
+              console.log(`Race condition detected: Nanny ${bestMatch.id} is already booked for an overlapping slot.`);
+              throw new Error("NANNY_BUSY"); // Throw to rollback and try next match
             }
+
+            // 2. Create assignment (Directly as accepted)
+            const assignment = await tx.assignments.create({
+              data: {
+                request_id: requestId,
+                nanny_id: bestMatch.id,
+                response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+                status: "accepted",
+                responded_at: new Date(),
+                rank_position: request.assignments.length + 1,
+              },
+            });
+
+            // 3. Update request status to accepted
+            await tx.service_requests.update({
+              where: { id: requestId },
+              data: {
+                status: "accepted",
+                current_assignment_id: assignment.id,
+              },
+            });
+
+            // 4. Update associated booking to CONFIRMED
+            await tx.bookings.updateMany({
+              where: { request_id: requestId, status: { not: "CANCELLED" } },
+              data: {
+                nanny_id: bestMatch.id,
+                status: "CONFIRMED",
+              }
+            });
+
+            return assignment;
+          }, {
+            isolationLevel: 'Serializable', // Use highest isolation level to ensure no phantom reads
           });
 
-          return assignment;
-        });
-      } catch (error) {
-        if (error.code === 'P2002') {
-          console.log(`Matching Race Condition: Nanny ${bestMatch.id} already assigned to request ${requestId}`);
-          return null; // Gracefully handle if someone else got it or this nanny was already assigned
+          if (assignment) {
+            console.log(`Successfully assigned request ${requestId} to nanny ${bestMatch.id}`);
+
+            // Notify Nanny
+            await this.notificationsService.createNotification(
+              bestMatch.id,
+              "New Assignment Confirmed",
+              `You have been automatically assigned to a new request! Tap to view details.`,
+              "info",
+            );
+
+            // Notify Parent about the successful match and confirmation
+            await this.notificationsService.createNotification(
+              request.parent_id,
+              "Nanny Assigned!",
+              `We found and confirmed a nanny for your request! Tap to view details.`,
+              "success",
+            );
+
+            return assignment;
+          }
+        } catch (error) {
+          if (error.message === "NANNY_BUSY") {
+            continue; // Try the next best nanny
+          }
+          if (error.code === 'P2002') {
+            console.log(`Matching Race Condition: Assignment already exists for request ${requestId}.`);
+            return null;
+          }
+          console.error(`Error during assignment for nanny ${bestMatch.id}:`, error);
+          // For other errors, we might want to continue or stop. 
+          // Let's continue for now to try other nannies if one assignment fails for transient reasons.
+          continue;
         }
-        throw error;
       }
 
-      console.log(`Auto-confirmed request ${requestId} with nanny ${bestMatch.id}`);
-
-      // Notify Nanny
-      await this.notificationsService.createNotification(
-        bestMatch.id,
-        "New Assignment Confirmed",
-        `You have been automatically assigned to a new request! Tap to view details.`,
-        "info",
-      );
-
-      // Notify Parent about the successful match and confirmation
-      await this.notificationsService.createNotification(
-        request.parent_id,
-        "Nanny Assigned!",
-        `We found and confirmed a nanny for your request! Tap to view details.`,
-        "success",
-      );
-
-      return assignment;
-    } else {
-      console.log(`No nannies found for request ${requestId}`);
-      // Notify parent no matches found
-      await this.notificationsService.createNotification(
-        request.parent_id,
-        "No Matches Found",
-        `We couldn't find a nanny for your request at this time. We will keep looking.`,
-        "warning",
-      );
-      return null;
+      console.log(`Failed to assign any of the ${scoredNannies.length} nannies to request ${requestId}`);
+      // Fall through to "No matches found" notification
     }
+
+    console.log(`No nannies found for request ${requestId}`);
+    // Notify parent no matches found
+    await this.notificationsService.createNotification(
+      request.parent_id,
+      "No Matches Found",
+      `We couldn't find a nanny for your request at this time. We will keep looking.`,
+      "warning",
+    );
+    return null;
   }
 
   async findOne(id: string) {
