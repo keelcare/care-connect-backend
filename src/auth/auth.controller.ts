@@ -211,48 +211,43 @@ export class AuthController {
       console.log("[Auth] Session Token Generated");
 
       // Parse origin from state
-      let frontendUrl = this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-      let isMobile = false;
+      let redirectUrl = `${this.configService.get("FRONTEND_URL") || "http://localhost:3000"}/auth/callback`;
 
       if (req.query.state) {
         try {
           const state = JSON.parse(req.query.state as string);
-          if (state.platform === 'mobile') {
-            isMobile = true;
-          }
-          if (state.origin &&
-            (state.origin.includes('localhost') ||
+          
+          if (state.origin) {
+            // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
+            if (state.origin.startsWith('careconnect://')) {
+              redirectUrl = state.origin;
+            } else if (
+              state.origin.includes('localhost') ||
               state.origin.includes('keelcare.netlify.app') ||
               state.origin.includes('care-connect-dev.vercel.app') ||
-              state.origin.includes('127.0.0.1'))) {
-            frontendUrl = state.origin;
-            // Remove trailing slash if present
-            if (frontendUrl.endsWith('/')) {
-              frontendUrl = frontendUrl.slice(0, -1);
+              state.origin.includes('127.0.0.1')
+            ) {
+              let urlToUse = state.origin;
+              if (urlToUse.endsWith('/')) {
+                urlToUse = urlToUse.slice(0, -1);
+              }
+              
+              if (urlToUse.endsWith('/auth/callback')) {
+                redirectUrl = urlToUse;
+              } else {
+                redirectUrl = `${urlToUse}/auth/callback`;
+              }
             }
+          } else if (state.platform === 'mobile') {
+            redirectUrl = 'careconnect://auth/callback';
           }
         } catch (e) {
           console.error("[Auth] Failed to parse state origin:", e);
         }
       }
 
-      const isProd = this.configService.get("NODE_ENV") === "production";
-      const renderEnv = this.configService.get("RENDER");
-
-      if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-        // Allow localhost redirect even in prod if explicitly requested via state
-        console.log("[Auth] Using localhost redirect in production environment via state");
-      }
-
-      if (isMobile) {
-        console.log("[Auth] Redirecting to mobile deep-link:", `careconnect://auth/callback`);
-        return res.redirect(`careconnect://auth/callback?token=${sessionToken}`);
-      }
-
-      console.log("[Auth] Redirecting to web frontend:", `${frontendUrl}/auth/callback`);
-
-      // Redirect to frontend with the session token
-      res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+      console.log(`[Auth] Redirecting to: ${redirectUrl}`);
+      return res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
 
