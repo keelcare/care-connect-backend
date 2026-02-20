@@ -18,6 +18,8 @@ import { NotificationsService } from "../notifications/notifications.service";
         "http://localhost:3000",
         "https://keelcare.netlify.app",
         "http://127.0.0.1:3000",
+        "capacitor://localhost",
+        "https://localhost",
       ].filter(Boolean);
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);

@@ -263,4 +263,10 @@ export class PaymentsService {
       }
     });
   }
+
+  async getPaymentByOrderId(orderId: string) {
+    return this.prisma.payments.findUnique({
+      where: { order_id: orderId },
+    });
+  }
 }

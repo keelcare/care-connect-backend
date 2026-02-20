@@ -36,6 +36,8 @@ async function bootstrap() {
     "https://keelcare.netlify.app",
     "https://care-connect-dev.vercel.app",
     "http://127.0.0.1:3000",
+    "capacitor://localhost",
+    "https://localhost",
   ].filter(Boolean) as string[];
 
   // Security Headers using Helmet

@@ -264,6 +264,7 @@ model users {
   service_requests                                       service_requests[]
   verification_attempts                                  verification_attempts[]
   children                                               children[]
+  fcm_token                                              String?                 @db.VarChar(255)
 
   @@unique([oauth_provider, oauth_provider_id])
 }

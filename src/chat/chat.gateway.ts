@@ -20,6 +20,8 @@ import { JwtService } from "@nestjs/jwt";
       "https://keelcare.netlify.app",
       "https://care-connect-dev.vercel.app",
       "http://127.0.0.1:3000",
+      "capacitor://localhost",
+      "https://localhost",
     ],
     credentials: true,
   },
