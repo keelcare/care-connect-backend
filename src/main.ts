@@ -36,6 +36,10 @@ async function bootstrap() {
     "https://keelcare.netlify.app",
     "https://care-connect-dev.vercel.app",
     "http://127.0.0.1:3000",
+    // Capacitor mobile origin (iOS WKWebView & Android WebView)
+    "capacitor://localhost",
+    "http://localhost",
+    "ionic://localhost",
   ].filter(Boolean) as string[];
 
   // Security Headers using Helmet

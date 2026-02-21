@@ -20,7 +20,7 @@ import { PrismaService } from "../prisma/prisma.service";
  * - At least one number
  * - At least one special character
  */
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/;
 
 @Injectable()
 export class AuthService {
@@ -155,7 +155,7 @@ export class AuthService {
      */
     if (newPassword.length < 8 || !PASSWORD_REGEX.test(newPassword)) {
       throw new BadRequestException(
-        "Password must be at least 8 characters and contain uppercase, lowercase, number, and special character",
+        "Password must be at least 8 characters and contain at least one letter and one number",
       );
     }
 
@@ -241,7 +241,7 @@ export class AuthService {
      */
     if (userDto.password.length < 8 || !PASSWORD_REGEX.test(userDto.password)) {
       throw new BadRequestException(
-        "Password must be at least 8 characters and contain uppercase, lowercase, number, and special character",
+        "Password must be at least 8 characters and contain at least one letter and one number",
       );
     }
 
