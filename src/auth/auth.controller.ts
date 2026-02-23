@@ -285,10 +285,14 @@ export class AuthController {
         console.log("[Auth] Using localhost redirect in production environment via state");
       }
 
-      console.log("[Auth] Redirecting to:", `${frontendUrl}/auth/callback`);
+      let redirectUrl = frontendUrl.includes('/auth/callback') 
+        ? frontendUrl 
+        : `${frontendUrl}/auth/callback`;
+
+      console.log("[Auth] Redirecting to:", redirectUrl);
 
       // Redirect to frontend with the session token
-      res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+      res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
 
