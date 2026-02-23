@@ -348,4 +348,11 @@ export class UsersService {
       },
     });
   }
+
+  async updatePushToken(id: string, token: string) {
+    return this.prisma.users.update({
+      where: { id },
+      data: { fcm_token: token },
+    });
+  }
 }

@@ -39,7 +39,9 @@ async function bootstrap() {
     // Capacitor mobile origin (iOS WKWebView & Android WebView)
     "capacitor://localhost",
     "http://localhost",
+    "https://localhost",
     "ionic://localhost",
+    "http://192.168.0.3:3000"
   ].filter(Boolean) as string[];
 
   // Security Headers using Helmet

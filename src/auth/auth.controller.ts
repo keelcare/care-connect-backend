@@ -70,19 +70,10 @@ export class AuthController {
     }
     const loginData = await this.authService.login(user);
 
-    const origin = req.headers.origin || req.headers.referer || "";
-    const isProd = this.configService.get("NODE_ENV") === "production";
-    const renderEnv = this.configService.get("RENDER");
-    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
-
-    // Determine if we should treat this as a secure/cross-site connection
-    // Secure ONLY IF: (Prod/Render OR HTTPS origin OR explicitly configured dev frontend) AND NOT localhost
-    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
-
     const cookieOptions = {
       httpOnly: true,
-      secure: isSecure,
-      sameSite: isSecure ? ("none" as const) : ("lax" as const),
+      secure: true,
+      sameSite: "none" as const,
       path: "/",
     };
 
@@ -112,42 +103,15 @@ export class AuthController {
       frontendUrl = "http://localhost:3000";
     }
 
-    const isSecure = isProd || renderEnv || frontendUrl.startsWith("https");
-
-    // Clear all possible variations of the cookie to ensure it is removed
-
-    // Variation 1: Secure + SameSite=None + Partitioned
-    const optionsSecurePartitioned = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
-      path: "/",
-      // @ts-ignore
-      partitioned: true,
-    };
-
-    // Variation 2: Secure + SameSite=None (No Partitioned)
     const optionsSecure = {
       httpOnly: true,
       secure: true,
       sameSite: "none" as const,
       path: "/",
-      partitioned: false,
-    };
-
-    // Variation 3: Lax + Not Secure (Localhost standard)
-    const optionsLax = {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax" as const,
-      path: "/",
-      partitioned: false,
     };
 
     ["access_token", "refresh_token"].forEach((cookie) => {
-      res.clearCookie(cookie, optionsSecurePartitioned);
       res.clearCookie(cookie, optionsSecure);
-      res.clearCookie(cookie, optionsLax);
     });
 
     return { success: true };
@@ -168,20 +132,11 @@ export class AuthController {
 
     const loginData = await this.authService.refresh(refreshToken);
 
-    const origin = req.headers.origin || req.headers.referer || "";
-    const isProd = this.configService.get("NODE_ENV") === "production";
-    const renderEnv = this.configService.get("RENDER");
-    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
-
-    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
-
     const cookieOptions = {
       httpOnly: true,
-      secure: isSecure,
-      sameSite: isSecure ? ("none" as const) : ("lax" as const),
+      secure: true,
+      sameSite: "none" as const,
       path: "/",
-      // @ts-ignore
-      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {
@@ -194,7 +149,7 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
     });
 
-    return { message: "Token refreshed successfully" };
+    return { access_token: loginData.access_token, message: "Token refreshed successfully" };
   }
 
   /**
@@ -256,21 +211,38 @@ export class AuthController {
       console.log("[Auth] Session Token Generated");
 
       // Parse origin from state
-      let frontendUrl = this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+      let redirectUrl = `${this.configService.get("FRONTEND_URL") || "http://localhost:3000"}/auth/callback`;
 
       if (req.query.state) {
         try {
           const state = JSON.parse(req.query.state as string);
-          if (state.origin &&
-            (state.origin.includes('localhost') ||
+          
+          if (state.origin) {
+            // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
+            if (state.origin.startsWith('careconnect://') || state.origin.startsWith('keel://')) {
+              redirectUrl = state.origin;
+            } else if (
+              state.origin.includes('localhost') ||
+              state.origin.includes('192.168.') ||
+              state.origin.includes('10.0.') ||
+              state.origin.includes('172.') ||
               state.origin.includes('keelcare.netlify.app') ||
               state.origin.includes('care-connect-dev.vercel.app') ||
-              state.origin.includes('127.0.0.1'))) {
-            frontendUrl = state.origin;
-            // Remove trailing slash if present
-            if (frontendUrl.endsWith('/')) {
-              frontendUrl = frontendUrl.slice(0, -1);
+              state.origin.includes('127.0.0.1')
+            ) {
+              let urlToUse = state.origin;
+              if (urlToUse.endsWith('/')) {
+                urlToUse = urlToUse.slice(0, -1);
+              }
+              
+              if (urlToUse.includes('/auth/callback')) {
+                redirectUrl = urlToUse;
+              } else {
+                redirectUrl = `${urlToUse}/auth/callback`;
+              }
             }
+          } else if (state.platform === 'mobile') {
+            redirectUrl = 'keel://auth/callback';
           }
         } catch (e) {
           console.error("[Auth] Failed to parse state origin:", e);
@@ -280,19 +252,13 @@ export class AuthController {
       const isProd = this.configService.get("NODE_ENV") === "production";
       const renderEnv = this.configService.get("RENDER");
 
-      if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
+      if ((isProd || renderEnv) && redirectUrl.includes("localhost")) {
         // Allow localhost redirect even in prod if explicitly requested via state
         console.log("[Auth] Using localhost redirect in production environment via state");
       }
 
-      let redirectUrl = frontendUrl.includes('/auth/callback') 
-        ? frontendUrl 
-        : `${frontendUrl}/auth/callback`;
-
-      console.log("[Auth] Redirecting to:", redirectUrl);
-
-      // Redirect to frontend with the session token
-      res.redirect(`${redirectUrl}?token=${sessionToken}`);
+      console.log(`[Auth] Redirecting to: ${redirectUrl}`);
+      return res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
 
@@ -320,21 +286,11 @@ export class AuthController {
   ) {
     const loginData = await this.authService.exchangeSessionToken(dto.token);
 
-    const origin = req.headers.origin || req.headers.referer || "";
-    const isProd = this.configService.get("NODE_ENV") === "production";
-    const renderEnv = this.configService.get("RENDER");
-    const isLocalhost = origin.includes("localhost") || origin.includes("127.0.0.1");
-
-    const isSecure = (isProd || renderEnv || origin.startsWith("https://") || origin.includes("netlify.app")) && !isLocalhost;
-
-    // Set cookies with Partitioned attribute for cross-site support
     const cookieOptions = {
       httpOnly: true,
-      secure: isSecure,
-      sameSite: isSecure ? ("none" as const) : ("lax" as const),
+      secure: true,
+      sameSite: "none" as const,
       path: "/",
-      // @ts-ignore
-      partitioned: isSecure,
     };
 
     res.cookie("access_token", loginData.access_token, {

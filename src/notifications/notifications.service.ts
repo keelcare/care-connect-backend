@@ -1,14 +1,18 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
+import { FcmService } from "./fcm.service";
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private configService: ConfigService,
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
+    private fcmService: FcmService,
   ) { }
 
   async createNotification(
@@ -34,8 +38,27 @@ export class NotificationsService {
     // 2. Send Real-time Update via WebSocket
     this.notificationsGateway.sendToUser(userId, notification);
 
-    // 3. Optional: Send Push/Email based on preferences (keeping existing placeholders)
-    // this.sendPushNotification(userId, title, message);
+    // 3. Send Mobile Push Notification if the user has a registered FCM token
+    try {
+      const user = await this.prisma.users.findUnique({
+        where: { id: userId },
+        select: { fcm_token: true }
+      });
+
+      if (user?.fcm_token) {
+        await this.fcmService.sendPushNotification(
+          user.fcm_token,
+          title,
+          message,
+          {
+            type: category || type,
+            relatedId: relatedId || '',
+          }
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Failed to dispatch push notification for user ${userId}`, err.stack);
+    }
 
     return notification;
   }

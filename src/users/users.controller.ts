@@ -12,6 +12,7 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from "./users.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
+import { UpdatePushTokenDto } from "./dto/update-push-token.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { OwnershipGuard, ResourceOwnership, ResourceType } from "../common/guards/ownership.guard";
 import { PermissionsGuard, RequirePermissions } from "../common/guards/permissions.guard";
@@ -69,5 +70,15 @@ export class UsersController {
       throw new ForbiddenException('Cannot upload image for another user');
     }
     return this.usersService.uploadImage(body.userId, body.imageUrl);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"))
+  @Post("push-token")
+  @ApiOperation({ summary: 'Register FCM push token for mobile device' })
+  @ApiResponse({ status: 201, description: 'Push token registered successfully' })
+  async updatePushToken(@Request() req, @Body() body: UpdatePushTokenDto) {
+    await this.usersService.updatePushToken(req.user.id, body.token);
+    return { message: 'Push token updated successfully' };
   }
 }

@@ -4,8 +4,10 @@ import {
   Body,
   Headers,
   Req,
+  Res,
   BadRequestException,
 } from "@nestjs/common";
+import { Response } from "express";
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { PaymentsService } from "./payments.service";
 import { CreateOrderDto, VerifyPaymentDto } from "./dto/create-payment.dto";
@@ -32,6 +34,31 @@ export class PaymentsController {
       verifyDto.razorpay_payment_id,
       verifyDto.razorpay_signature,
     );
+  }
+
+  @Post("callback")
+  @ApiOperation({ summary: 'Razorpay callback redirect handler for mobile app' })
+  async paymentCallback(@Body() body: any, @Res() res: Response) {
+    try {
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature, error } = body;
+      
+      if (error || !razorpay_signature) {
+         return res.redirect(`careconnect://payment/callback?status=failed`);
+      }
+
+      await this.paymentsService.verifyPayment(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature
+      );
+
+      const payment = await this.paymentsService.getPaymentByOrderId(razorpay_order_id);
+      const bookingId = payment?.booking_id || '';
+
+      return res.redirect(`careconnect://payment/callback?status=success&bookingId=${bookingId}`);
+    } catch (err) {
+      return res.redirect(`careconnect://payment/callback?status=failed`);
+    }
   }
 
   @Post("webhook")
