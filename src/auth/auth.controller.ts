@@ -219,10 +219,13 @@ export class AuthController {
           
           if (state.origin) {
             // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
-            if (state.origin.startsWith('careconnect://')) {
+            if (state.origin.startsWith('careconnect://') || state.origin.startsWith('keel://')) {
               redirectUrl = state.origin;
             } else if (
               state.origin.includes('localhost') ||
+              state.origin.includes('192.168.') ||
+              state.origin.includes('10.0.') ||
+              state.origin.includes('172.') ||
               state.origin.includes('keelcare.netlify.app') ||
               state.origin.includes('care-connect-dev.vercel.app') ||
               state.origin.includes('127.0.0.1')
@@ -232,14 +235,14 @@ export class AuthController {
                 urlToUse = urlToUse.slice(0, -1);
               }
               
-              if (urlToUse.endsWith('/auth/callback')) {
+              if (urlToUse.includes('/auth/callback')) {
                 redirectUrl = urlToUse;
               } else {
                 redirectUrl = `${urlToUse}/auth/callback`;
               }
             }
           } else if (state.platform === 'mobile') {
-            redirectUrl = 'careconnect://auth/callback';
+            redirectUrl = 'keel://auth/callback';
           }
         } catch (e) {
           console.error("[Auth] Failed to parse state origin:", e);
