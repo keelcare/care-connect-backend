@@ -38,6 +38,8 @@ async function bootstrap() {
     "http://127.0.0.1:3000",
     "capacitor://localhost",
     "https://localhost",
+    "http://localhost",
+    "http://192.168.0.3:3000"
   ].filter(Boolean) as string[];
 
   // Security Headers using Helmet
