@@ -216,14 +216,37 @@ export class AuthController {
       let frontendUrl =
         this.configService.get("FRONTEND_URL") || "http://localhost:3000";
 
+      if (req.query.state) {
+        try {
+          const state = JSON.parse(req.query.state as string);
+          if (state.origin &&
+            (state.origin.includes('localhost') ||
+              state.origin.includes('keelcare.netlify.app') ||
+              state.origin.includes('care-connect-dev.vercel.app') ||
+              state.origin.includes('127.0.0.1'))) {
+            frontendUrl = state.origin;
+            // Remove trailing slash if present
+            if (frontendUrl.endsWith('/')) {
+              frontendUrl = frontendUrl.slice(0, -1);
+            }
+          }
+        } catch (e) {
+          console.error("[Auth] Failed to parse state origin:", e);
+        }
+      }
+
       if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
         frontendUrl = "http://localhost:3000";
       }
 
-      console.log("[Auth] Redirecting to:", `${frontendUrl}/auth/callback`);
+      let redirectUrl = frontendUrl.includes('/auth/callback') 
+        ? frontendUrl 
+        : `${frontendUrl}/auth/callback`;
+
+      console.log("[Auth] Redirecting to:", redirectUrl);
 
       // Redirect to frontend with the session token
-      res.redirect(`${frontendUrl}/auth/callback?token=${sessionToken}`);
+      res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
       // Redirect to frontend with error
