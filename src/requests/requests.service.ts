@@ -9,7 +9,7 @@ import { CreateRequestDto } from "./dto/create-request.dto";
 import { UsersService } from "../users/users.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
-import { AiService } from "../ai/ai.service";
+
 
 const CATEGORY_SKILL_MAP = {
   'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
@@ -25,7 +25,6 @@ export class RequestsService {
     private usersService: UsersService,
     private notificationsService: NotificationsService,
     private favoritesService: FavoritesService,
-    private aiService: AiService,
   ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -325,39 +324,6 @@ export class RequestsService {
       request.parent_id,
     );
 
-    // Get historical matching data for AI
-    const historicalData = await this.prisma.matching_feedback.findMany({
-      where: { was_successful: true },
-      take: 50,
-      orderBy: { created_at: "desc" },
-      include: {
-        service_requests: {
-          select: { required_skills: true },
-        },
-        users: {
-          include: { nanny_details: true },
-        },
-      },
-    });
-
-    const historicalFormatted = historicalData.map((h) => ({
-      request_skills: h.service_requests.required_skills,
-      nanny_experience: h.users.nanny_details?.experience_years || 0,
-      nanny_skills: h.users.nanny_details?.skills || [],
-      was_successful: h.was_successful,
-    }));
-
-    // Get AI scores
-    const aiScores = await this.aiService.getMatchingRecommendations(
-      {
-        required_skills: request.required_skills,
-        children_ages: request.children_ages,
-        special_requirements: request.special_requirements,
-        duration_hours: request.duration_hours,
-      },
-      nannies,
-      historicalFormatted,
-    );
 
     const scoredNannies = nannies
       .map((nanny) => {
@@ -392,9 +358,7 @@ export class RequestsService {
           score += 50;
         }
 
-        // 6. AI Score (Max 30 pts)
-        const aiScore = aiScores.get(nanny.id) || 0;
-        score += (aiScore / 100) * 30;
+      
 
         console.log(`Nanny ${nanny.email} (${nanny.id}) Score Breakdown:
           Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)
@@ -402,7 +366,6 @@ export class RequestsService {
           Acc: ${acceptanceScore}
           Skills: ${skillScore.toFixed(2)} (${matchedSkills.length}/${requiredSkills.length})
           Favorite: ${favoriteNannyIds.includes(nanny.id) ? 50 : 0}
-          AI: ${(aiScore / 100) * 30}
           TOTAL: ${score.toFixed(2)}
         `);
 
