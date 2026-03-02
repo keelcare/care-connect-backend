@@ -11,7 +11,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 
 
-const CATEGORY_SKILL_MAP = {
+export const CATEGORY_SKILL_MAP = {
   'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
   'ST': ['Shadow Teacher', 'Special Education', 'Autism Support', 'ADHD Support'],
   'SN': ['Special Needs', 'Disability Care', 'Therapy Support', 'Medical Assistance'],
@@ -226,6 +226,13 @@ export class RequestsService {
 
     if (!request) throw new NotFoundException("Request not found");
 
+    // Skip auto-matching for Shadow Teacher and Special Needs categories
+    // These will be manually assigned by admins
+    if (request.category === 'ST' || request.category === 'SN') {
+      console.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Await manual assignment.`);
+      return null;
+    }
+
     // Get IDs of nannies already assigned (rejected or timeout)
     const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
 
@@ -358,7 +365,7 @@ export class RequestsService {
           score += 50;
         }
 
-      
+
 
         console.log(`Nanny ${nanny.email} (${nanny.id}) Score Breakdown:
           Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)

@@ -49,6 +49,29 @@ async function main() {
     // Hash password
     const hashedPassword = await bcrypt.hash('password', 10);
 
+    // Create an Admin User
+    const adminEmail = 'admin@example.com';
+    const admin = await prisma.users.upsert({
+        where: { email: adminEmail },
+        update: {},
+        create: {
+            email: adminEmail,
+            password_hash: hashedPassword,
+            role: 'admin',
+            is_verified: true,
+            identity_verification_status: 'verified',
+            profiles: {
+                create: {
+                    first_name: 'System',
+                    last_name: 'Admin',
+                    phone: '+1234567890',
+                    address: 'CareConnect HQ, Mumbai',
+                },
+            },
+        },
+    });
+    console.log({ admin });
+
     // Create a Parent User with location in Mumbai
     const parentEmail = 'parent@example.com';
     const parent = await prisma.users.upsert({
@@ -74,7 +97,33 @@ async function main() {
     });
     console.log({ parent });
 
-    // Create a Nanny User with location in Mumbai (Priya Patel)
+    // Create children for the parent
+    console.log('Creating children...');
+    const child1 = await prisma.children.create({
+        data: {
+            parent_id: parent.id,
+            first_name: 'Arjun',
+            last_name: 'Sharma',
+            dob: new Date('2018-05-15'),
+            gender: 'MALE',
+            profile_type: 'STANDARD',
+        }
+    });
+
+    const child2 = await prisma.children.create({
+        data: {
+            parent_id: parent.id,
+            first_name: 'Anaya',
+            last_name: 'Sharma',
+            dob: new Date('2020-09-20'),
+            gender: 'FEMALE',
+            profile_type: 'SPECIAL_NEEDS',
+            diagnosis: 'Autism Spectrum',
+            care_instructions: 'Requires gentle guidance and routine-based activities.'
+        }
+    });
+
+    // Create a Nanny User with location in Mumbai (Priya Patel) - Shadow Teacher
     const nannyEmail = 'priya.patel@example.com';
     const nanny = await prisma.users.upsert({
         where: { email: nannyEmail },
@@ -97,9 +146,9 @@ async function main() {
             },
             nanny_details: {
                 create: {
-                    skills: ['First Aid', 'Cooking', 'Hindi', 'English'],
+                    skills: ['First Aid', 'Shadow Teaching', 'Behavioral Therapy', 'English'],
                     experience_years: 5,
-                    bio: 'Experienced nanny with 5 years of childcare experience. Fluent in Hindi and English.',
+                    bio: 'Certified Shadow Teacher with experience in mainstream and special education.',
                     availability_schedule: {
                         monday: ['09:00-17:00'],
                         tuesday: ['09:00-17:00'],
@@ -108,14 +157,15 @@ async function main() {
                         friday: ['09:00-17:00'],
                     },
                     is_available_now: true,
-                    tags: ['NY'],
+                    tags: ['ST', 'Specialist'],
+                    categories: ['ST'],
                 },
             },
         },
     });
     console.log({ nanny });
 
-    // Create another nanny in Mumbai (Sunita Desai)
+    // Create another nanny in Mumbai (Sunita Desai) - Special Needs
     const nanny2Email = 'sunita.desai@example.com';
     const nanny2 = await prisma.users.upsert({
         where: { email: nanny2Email },
@@ -138,9 +188,9 @@ async function main() {
             },
             nanny_details: {
                 create: {
-                    skills: ['Music', 'Art', 'Swimming', 'Marathi', 'English'],
+                    skills: ['Special Needs care', 'Physical Therapy', '耐心', 'Marathi', 'English'],
                     experience_years: 3,
-                    bio: 'Creative nanny with background in arts and music. Great with toddlers.',
+                    bio: 'Patient care provider specializing in physical therapy and special needs support.',
                     availability_schedule: {
                         monday: ['10:00-18:00'],
                         wednesday: ['10:00-18:00'],
@@ -148,12 +198,92 @@ async function main() {
                         saturday: ['09:00-13:00'],
                     },
                     is_available_now: true,
-                    tags: ['NY'],
+                    tags: ['SN', 'Therapist'],
+                    categories: ['SN'],
                 },
             },
         },
     });
     console.log({ nanny2 });
+
+    // --- Manual Assignment Seed Data ---
+    console.log('Creating Manual Assignment requests...');
+
+    // Shadow Teacher Request
+    const stRequestDate = new Date();
+    stRequestDate.setDate(stRequestDate.getDate() + 4); // Future date
+
+    const stRequest = await prisma.service_requests.create({
+        data: {
+            parent_id: parent.id,
+            category: 'ST',
+            date: stRequestDate,
+            start_time: new Date(`${stRequestDate.toISOString().split('T')[0]}T09:00:00`),
+            duration_hours: 4.0,
+            num_children: 1,
+            children_ages: [6],
+            special_requirements: 'Needs assistance during school sessions. Patient and calm demeanor required.',
+            required_skills: ['Shadow Teaching', 'English'],
+            location_lat: 19.0596,
+            location_lng: 72.8295,
+            status: 'pending',
+            max_hourly_rate: 250.0,
+            bookings: {
+                create: {
+                    parent_id: parent.id,
+                    status: 'requested',
+                    start_time: new Date(`${stRequestDate.toISOString().split('T')[0]}T09:00:00.000Z`),
+                    end_time: new Date(`${stRequestDate.toISOString().split('T')[0]}T13:00:00.000Z`),
+                    care_location_lat: 19.0596,
+                    care_location_lng: 72.8295,
+                    booking_children: {
+                        create: {
+                            child_id: child1.id,
+                        }
+                    }
+                }
+            }
+        },
+    });
+    console.log(`Created ST request: ${stRequest.id}`);
+
+    // Special Needs Request
+    const snRequestDate = new Date();
+    snRequestDate.setDate(snRequestDate.getDate() + 5);
+
+    const snRequest = await prisma.service_requests.create({
+        data: {
+            parent_id: parent.id,
+            category: 'SN',
+            date: snRequestDate,
+            start_time: new Date(`${snRequestDate.toISOString().split('T')[0]}T14:30:00`),
+            duration_hours: 3.5,
+            num_children: 1,
+            children_ages: [4],
+            special_requirements: 'Looking for a caregiver with experience in Autism Spectrum support.',
+            required_skills: ['Special Needs care', 'Behavioral Therapy'],
+            location_lat: 19.0596,
+            location_lng: 72.8295,
+            status: 'pending',
+            max_hourly_rate: 350.0,
+            bookings: {
+                create: {
+                    parent_id: parent.id,
+                    status: 'requested',
+                    start_time: new Date(`${snRequestDate.toISOString().split('T')[0]}T14:30:00.000Z`),
+                    end_time: new Date(`${snRequestDate.toISOString().split('T')[0]}T18:00:00.000Z`),
+                    care_location_lat: 19.0596,
+                    care_location_lng: 72.8295,
+                    booking_children: {
+                        create: {
+                            child_id: child2.id,
+                        }
+                    }
+                }
+            }
+        },
+    });
+    console.log(`Created SN request: ${snRequest.id}`);
 
     // Create a nanny in Bangalore (Lakshmi Reddy)
     const nanny3Email = 'lakshmi.reddy@example.com';
@@ -190,6 +320,7 @@ async function main() {
                     },
                     is_available_now: true,
                     tags: ['SN'],
+                    categories: ['SN'],
                 },
             },
         },
@@ -364,6 +495,7 @@ async function main() {
                         },
                         is_available_now: true,
                         tags: (n as any).tags || [],
+                        categories: (n as any).tags || ['CC'],
                     },
                 },
             },
@@ -461,6 +593,7 @@ async function main() {
                         },
                         is_available_now: true,
                         tags: (n as any).tags || [],
+                        categories: (n as any).tags || ['CC'],
                     },
                 },
             },
@@ -517,6 +650,7 @@ async function main() {
                     },
                     is_available_now: true,
                     tags: ['EC'],
+                    categories: ['EC'],
                 },
             },
         },
