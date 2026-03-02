@@ -71,8 +71,10 @@ export class AdminService {
         parent_name: profile ? `${profile.first_name} ${profile.last_name}` : "Unknown Parent",
         max_hourly_rate: req.max_hourly_rate,
         created_at: req.created_at,
-        children_count: children.length,
-        children_names: children.map(c => c.first_name).join(", "),
+        children_count: req.num_children || children.length,
+        children_names: children.length > 0
+          ? children.map(c => c.first_name).join(", ")
+          : "Details not specified",
         parent: {
           id: req.parent_id,
           email: parent?.email,
