@@ -139,7 +139,7 @@ export class RequestsService {
       where: { id },
       include: {
         assignments: { where: { status: { in: ["pending", "accepted"] } } },
-        bookings: { where: { status: { not: "CANCELLED" } } }
+        bookings: true
       },
     });
 
@@ -157,7 +157,7 @@ export class RequestsService {
           where: { id: booking.request_id },
           include: {
             assignments: { where: { status: { in: ["pending", "accepted"] } } },
-            bookings: { where: { status: { not: "CANCELLED" } } }
+            bookings: true
           },
         });
       }
@@ -191,9 +191,9 @@ export class RequestsService {
     }
 
     // 2. Cancel associated booking if exists
-    if (request.bookings.length > 0) {
-      await this.prisma.bookings.updateMany({
-        where: { request_id: requestId, status: { not: "CANCELLED" } },
+    if (request.bookings && request.bookings.status !== "CANCELLED") {
+      await this.prisma.bookings.update({
+        where: { id: request.bookings.id },
         data: {
           status: "CANCELLED",
           cancellation_reason: "Request cancelled by parent",
@@ -547,9 +547,10 @@ export class RequestsService {
         // Only return requests that DO NOT have an active booking yet.
         // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
         bookings: {
-          none: {
-            status: { not: "CANCELLED" }
-          }
+          OR: [
+            { id: { equals: undefined } }, // This effectively means no booking
+            { status: "CANCELLED" }
+          ]
         }
       },
       orderBy: { created_at: "desc" },

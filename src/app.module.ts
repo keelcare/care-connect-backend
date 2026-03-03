@@ -30,6 +30,7 @@ import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
 import { ServicesModule } from './services/services.module';
 import { NanniesModule } from './nannies/nannies.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { NanniesModule } from './nannies/nannies.module';
     FamilyModule,
     ServicesModule,
     NanniesModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [
