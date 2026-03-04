@@ -79,10 +79,8 @@ export class NotificationsService {
       select: { id: true },
     });
 
-    // Fan out all notifications in parallel — much faster than sequential await
-    await Promise.all(
-      parents.map(parent => this.createNotification(parent.id, title, message, "info"))
-    );
+    // Process in batches to avoid overwhelming the DB connection pool
+    await this.sendInBatches(parents.map(p => p.id), title, message);
 
     return { count: parents.length };
   }
@@ -93,11 +91,27 @@ export class NotificationsService {
       select: { id: true },
     });
 
-    await Promise.all(
-      nannies.map(nanny => this.createNotification(nanny.id, title, message, "info"))
-    );
+    await this.sendInBatches(nannies.map(n => n.id), title, message);
 
     return { count: nannies.length };
+  }
+
+  /**
+   * Sends notifications in batches to avoid saturating the DB connection pool.
+   * Processes `batchSize` users in parallel, then moves to the next batch.
+   */
+  private async sendInBatches(
+    userIds: string[],
+    title: string,
+    message: string,
+    batchSize = 10,
+  ) {
+    for (let i = 0; i < userIds.length; i += batchSize) {
+      const batch = userIds.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(id => this.createNotification(id, title, message, "info"))
+      );
+    }
   }
 
   async getUserNotifications(userId: string) {
