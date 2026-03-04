@@ -37,41 +37,37 @@ export class NotificationsService {
       this.logger.warn(`Invalid UUID format for relatedId: "${relatedId}". Falling back to null.`);
     }
 
-    // 1. Save to Database
-    const notification = await this.prisma.notifications.create({
-      data: {
-        user_id: userId,
-        title,
-        message,
-        type,
-        category,
-        related_id: validRelatedId,
-      },
-    });
-
-    // 2. Send Real-time Update via WebSocket
-    this.notificationsGateway.sendToUser(userId, notification);
-
-    // 3. Send Mobile Push Notification if the user has a registered FCM token
-    try {
-      const user = await this.prisma.users.findUnique({
-        where: { id: userId },
-        select: { fcm_token: true }
-      });
-
-      if (user?.fcm_token) {
-        await this.fcmService.sendPushNotification(
-          user.fcm_token,
+    // 1. Fetch FCM token AND save notification in parallel (2 DB calls at once instead of 2 sequential ones)
+    const [notification, user] = await Promise.all([
+      this.prisma.notifications.create({
+        data: {
+          user_id: userId,
           title,
           message,
-          {
-            type: category || type,
-            relatedId: relatedId || '',
-          }
-        );
-      }
-    } catch (err) {
-      this.logger.error(`Failed to dispatch push notification for user ${userId}`, err.stack);
+          type,
+          category,
+          related_id: validRelatedId,
+        },
+      }),
+      this.prisma.users.findUnique({
+        where: { id: userId },
+        select: { fcm_token: true },
+      }),
+    ]);
+
+    // 2. Send Real-time Update via WebSocket (fire-and-forget — no await needed)
+    this.notificationsGateway.sendToUser(userId, notification);
+
+    // 3. Send Mobile Push Notification fire-and-forget — don't block the response
+    if (user?.fcm_token) {
+      this.fcmService.sendPushNotification(
+        user.fcm_token,
+        title,
+        message,
+        { type: category || type, relatedId: relatedId || '' },
+      ).catch(err => {
+        this.logger.error(`Failed to dispatch push notification for user ${userId}`, err.stack);
+      });
     }
 
     return notification;
@@ -83,11 +79,10 @@ export class NotificationsService {
       select: { id: true },
     });
 
-    for (const parent of parents) {
-      if (parent && parent.id) {
-        await this.createNotification(parent.id, title, message, "info");
-      }
-    }
+    // Fan out all notifications in parallel — much faster than sequential await
+    await Promise.all(
+      parents.map(parent => this.createNotification(parent.id, title, message, "info"))
+    );
 
     return { count: parents.length };
   }
@@ -98,11 +93,9 @@ export class NotificationsService {
       select: { id: true },
     });
 
-    for (const nanny of nannies) {
-      if (nanny && nanny.id) {
-        await this.createNotification(nanny.id, title, message, "info");
-      }
-    }
+    await Promise.all(
+      nannies.map(nanny => this.createNotification(nanny.id, title, message, "info"))
+    );
 
     return { count: nannies.length };
   }
