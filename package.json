@@ -41,6 +41,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^10.4.20",
     "@prisma/client": "^6.19.2",
+    "@supabase/supabase-js": "^2.98.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/dompurify": "^3.0.5",
     "@types/ioredis": "^4.28.10",

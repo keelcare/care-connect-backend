@@ -23,6 +23,20 @@ export class NotificationsService {
     category?: string,
     relatedId?: string,
   ) {
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+    // Validate userId — this is the primary key for the notification and MUST be a valid UUID
+    if (!userId || !uuidRegex.test(userId)) {
+      this.logger.error(`createNotification called with an invalid userId: "${userId}". Aborting.`);
+      throw new Error(`Invalid userId format: "${userId}". Expected a valid UUID.`);
+    }
+
+    // Defensive Check: Validate UUID format for relatedId (optional field — fall back to null if invalid)
+    const validRelatedId = relatedId && uuidRegex.test(relatedId) ? relatedId : null;
+    if (relatedId && !validRelatedId) {
+      this.logger.warn(`Invalid UUID format for relatedId: "${relatedId}". Falling back to null.`);
+    }
+
     // 1. Save to Database
     const notification = await this.prisma.notifications.create({
       data: {
@@ -31,7 +45,7 @@ export class NotificationsService {
         message,
         type,
         category,
-        related_id: relatedId,
+        related_id: validRelatedId,
       },
     });
 
@@ -66,10 +80,13 @@ export class NotificationsService {
   async sendToAllParents(title: string, message: string) {
     const parents = await this.prisma.users.findMany({
       where: { role: "parent" },
+      select: { id: true },
     });
 
     for (const parent of parents) {
-      await this.createNotification(parent.id, title, message);
+      if (parent && parent.id) {
+        await this.createNotification(parent.id, title, message, "info");
+      }
     }
 
     return { count: parents.length };
@@ -78,10 +95,13 @@ export class NotificationsService {
   async sendToAllNannies(title: string, message: string) {
     const nannies = await this.prisma.users.findMany({
       where: { role: "nanny" },
+      select: { id: true },
     });
 
     for (const nanny of nannies) {
-      await this.createNotification(nanny.id, title, message);
+      if (nanny && nanny.id) {
+        await this.createNotification(nanny.id, title, message, "info");
+      }
     }
 
     return { count: nannies.length };
