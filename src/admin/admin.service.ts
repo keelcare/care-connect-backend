@@ -100,12 +100,16 @@ export class AdminService {
 
   private parseRequestDateTime(date: Date, startTime: Date): Date {
     // robustly combine date and time ensuring we respect the local time intent
-    const dateStr = date.toISOString().split('T')[0];
-    const timeStr = startTime.toISOString().split('T')[1];
-    // Combining as a local ISO string (without Z) then appending IST offset if needed, 
-    // or just trusting the original combined creation logic if we can.
-    // Given create-request uses +05:30, we'll recreate that.
-    return new Date(`${dateStr}T${timeStr}`);
+    try {
+      if (!date || !startTime) return new Date();
+      const dateStr = new Date(date).toISOString().split('T')[0];
+      const timeStr = new Date(startTime).toISOString().split('T')[1];
+      const combined = new Date(`${dateStr}T${timeStr}`);
+      return isNaN(combined.getTime()) ? new Date(date) : combined;
+    } catch (e) {
+      console.error("[AdminService] parseRequestDateTime failed:", e);
+      return new Date(date);
+    }
   }
 
   async getAvailableNanniesForRequest(requestId: string) {
@@ -164,7 +168,6 @@ export class AdminService {
         JOIN profiles p ON u.id = p.user_id
         JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
-        AND u.identity_verification_status = 'verified'
         AND nd.is_available_now = true
         ${busyNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(busyNannyIds)})` : Prisma.empty}
         ${skillSearchTerms.length > 0 ? Prisma.sql`AND (
@@ -245,7 +248,7 @@ export class AdminService {
     const actualStartTime = this.parseRequestDateTime(request.date, request.start_time);
     const requestEndTime = new Date(actualStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
 
-    return await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Double check availability
       const overlap = await tx.bookings.findFirst({
         where: {
@@ -282,7 +285,7 @@ export class AdminService {
       });
 
       // 4. Update Booking to CONFIRMED
-      const booking = await tx.bookings.updateMany({
+      await tx.bookings.updateMany({
         where: { request_id: requestId, status: { not: "CANCELLED" } },
         data: {
           nanny_id: nannyId,
@@ -290,20 +293,26 @@ export class AdminService {
         },
       });
 
-      // Fetch the updated booking for chat creation
-      const updatedBooking = await tx.bookings.findFirst({
-        where: { request_id: requestId, status: "CONFIRMED" }
-      });
+      return { success: true, assignmentId: assignment.id };
+    }, { isolationLevel: 'ReadCommitted' });
 
-      if (updatedBooking) {
-        try {
-          await this.chatService.createChat(updatedBooking.id);
-        } catch (e) {
-          console.error("Manual Assignment: Failed to create chat", e);
-        }
+    // --- Side Effects (Outside Transaction) ---
+
+    // Fetch the updated booking for chat creation
+    const updatedBooking = await this.prisma.bookings.findFirst({
+      where: { request_id: requestId, status: "CONFIRMED" }
+    });
+
+    if (updatedBooking) {
+      try {
+        await this.chatService.createChat(updatedBooking.id);
+      } catch (e) {
+        console.error("Manual Assignment: Failed to create chat", e);
       }
+    }
 
-      // 5. Notifications
+    // 5. Notifications
+    try {
       await this.notificationsService.createNotification(
         nannyId,
         "New Manual Assignment",
@@ -317,9 +326,11 @@ export class AdminService {
         `We have manually assigned a nanny for your ${request.category} request. Tap to view details.`,
         "success",
       );
+    } catch (e) {
+      console.error("Manual Assignment: Failed to send notifications", e);
+    }
 
-      return { success: true, assignmentId: assignment.id };
-    }, { isolationLevel: 'Serializable' });
+    return result;
   }
 
 

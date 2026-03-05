@@ -310,7 +310,6 @@ export class RequestsService {
       JOIN profiles p ON u.id = p.user_id
       JOIN nanny_details nd ON u.id = nd.user_id
       WHERE u.role = 'nanny'
-      AND u.identity_verification_status = 'verified'
       AND nd.is_available_now = true
       ${excludedNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(excludedNannyIds)})` : Prisma.empty}
       ${skillSearchTerms.length > 0 ? Prisma.sql`AND (

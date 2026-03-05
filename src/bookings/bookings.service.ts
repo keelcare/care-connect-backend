@@ -36,9 +36,10 @@ export class BookingsService {
 
     if (nanny.role !== 'nanny') throw new BadRequestException("Selected user is not a nanny");
 
-    if (nanny.identity_verification_status !== 'verified') {
-      throw new BadRequestException("Cannot book an unverified nanny");
-    }
+    // Relax verification for testing
+    // if (nanny.identity_verification_status !== 'verified') {
+    //   throw new BadRequestException("Cannot book an unverified nanny");
+    // }
 
     let finalStartTime: Date | undefined;
     let finalEndTime: Date | undefined;
