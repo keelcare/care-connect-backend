@@ -470,7 +470,7 @@ model whatsapp_conversations {
   current_step WhatsAppConversationStep   @default(WELCOME)
   status       WhatsAppConversationStatus @default(ACTIVE)
   created_at   DateTime                   @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime                   @db.Timestamptz(6)
+  updated_at   DateTime                   @updatedAt @db.Timestamptz(6)
 
   @@index([phone_number])
 }
@@ -486,8 +486,8 @@ model whatsapp_enquiries {
   assigned_to  String?               @db.Uuid
   notes        String?
   created_at   DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime              @db.Timestamptz(6)
-  users        users?                @relation(fields: [assigned_to], references: [id])
+  updated_at   DateTime              @updatedAt @db.Timestamptz(6)
+  assigned_user        users?                @relation("EnquiryAssignedAgent", fields: [assigned_to], references: [id])
 
   @@index([phone_number])
   @@index([status])
