@@ -11,9 +11,10 @@ import {
 } from "@nestjs/common";
 import { ChatService } from "./chat.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @Controller("chat")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class ChatController {
   constructor(private readonly chatService: ChatService) { }
 

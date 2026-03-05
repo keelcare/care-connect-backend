@@ -14,15 +14,17 @@ import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { AdminGuard } from "../admin/admin.guard";
+import { ActiveUserGuard, SkipActiveCheck } from "../common/guards/active-user.guard";
 
 @ApiTags('Support')
 @ApiBearerAuth()
 @Controller("support")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class SupportController {
     constructor(private readonly supportService: SupportService) { }
 
     @Post("tickets")
+    @SkipActiveCheck()  // Banned users need to submit support tickets to contest their ban
     @ApiOperation({ summary: 'Create a new support ticket' })
     @ApiResponse({ status: 201, description: 'Ticket created successfully' })
     async createTicket(@Request() req, @Body() createTicketDto: CreateTicketDto) {
@@ -30,6 +32,7 @@ export class SupportController {
     }
 
     @Get("tickets")
+    @SkipActiveCheck()  // Banned users need to view their submitted tickets
     @ApiOperation({ summary: 'Get all tickets for the current user' })
     @ApiResponse({ status: 200, description: 'Return user tickets' })
     async getUserTickets(@Request() req) {
@@ -37,6 +40,7 @@ export class SupportController {
     }
 
     @Get("tickets/:id")
+    @SkipActiveCheck()  // Banned users need to view their ticket status
     @ApiOperation({ summary: 'Get ticket details' })
     @ApiResponse({ status: 200, description: 'Return ticket details' })
     @ApiResponse({ status: 404, description: 'Ticket not found' })

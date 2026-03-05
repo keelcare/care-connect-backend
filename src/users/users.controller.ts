@@ -17,6 +17,7 @@ import { AuthGuard } from "@nestjs/passport";
 import { OwnershipGuard, ResourceOwnership, ResourceType } from "../common/guards/ownership.guard";
 import { PermissionsGuard, RequirePermissions } from "../common/guards/permissions.guard";
 import { Permission } from "../common/constants/permissions.enum";
+import { ActiveUserGuard, SkipActiveCheck } from "../common/guards/active-user.guard";
 
 @ApiTags('Users')
 @Controller("users")
@@ -24,7 +25,8 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) { }
 
   @ApiBearerAuth()
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @SkipActiveCheck()  // Banned users must reach this so the frontend can show the ban popup
   @Get("me")
   @ApiOperation({ summary: 'Get current user profile' })
   @ApiResponse({ status: 200, description: 'Return current user data' })
@@ -49,7 +51,7 @@ export class UsersController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(AuthGuard("jwt"), OwnershipGuard, PermissionsGuard)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, OwnershipGuard, PermissionsGuard)
   @RequirePermissions(Permission.USER_WRITE)
   @ResourceOwnership(ResourceType.USER)
   @Put(":id")
@@ -61,7 +63,7 @@ export class UsersController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post("upload-image")
   @ApiOperation({ summary: 'Upload user profile image' })
   @ApiResponse({ status: 201, description: 'Image uploaded successfully' })
@@ -73,7 +75,7 @@ export class UsersController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post("push-token")
   @ApiOperation({ summary: 'Register FCM push token for mobile device' })
   @ApiResponse({ status: 201, description: 'Push token registered successfully' })
