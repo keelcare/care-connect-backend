@@ -144,6 +144,11 @@ export class AdminController {
   }
 
   // Analytics
+  @Get("dashboard")
+  async getDashboardData() {
+    return this.adminService.getDashboardData();
+  }
+
   @Get("stats")
   async getStats() {
     return this.adminService.getSystemStats();
