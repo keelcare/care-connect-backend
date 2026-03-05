@@ -31,6 +31,7 @@ import { LoggerModule } from "nestjs-pino";
 import { ServicesModule } from './services/services.module';
 import { NanniesModule } from './nannies/nannies.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     ServicesModule,
     NanniesModule,
     WhatsAppModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [

@@ -12,11 +12,12 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { BookingsService } from "./bookings.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @ApiTags('Bookings')
 @ApiBearerAuth()
 @Controller("bookings")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) { }
 
