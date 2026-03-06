@@ -74,6 +74,28 @@ async function main() {
     });
     console.log({ parent });
 
+    // Create an Admin User
+    const adminEmail = 'admin@example.com';
+    const admin = await prisma.users.upsert({
+        where: { email: adminEmail },
+        update: {},
+        create: {
+            email: adminEmail,
+            password_hash: hashedPassword,
+            role: 'admin',
+            is_verified: true,
+            identity_verification_status: 'verified',
+            profiles: {
+                create: {
+                    first_name: 'Super',
+                    last_name: 'Admin',
+                    phone: '+1000000000',
+                },
+            },
+        },
+    });
+    console.log({ admin });
+
     // Create a Nanny User with location in Mumbai (Priya Patel)
     const nannyEmail = 'priya.patel@example.com';
     const nanny = await prisma.users.upsert({
@@ -522,6 +544,57 @@ async function main() {
         },
     });
     console.log(`Created Hyderabad nanny: ${hyderabadNanny.firstName}`);
+    console.log(`Created Hyderabad nanny: ${hyderabadNanny.firstName}`);
+
+    // 2. Create Support Tickets
+    console.log('Creating support tickets...');
+    const ticket1 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1001' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1001',
+            user_id: parent.id,
+            role: 'parent',
+            subject: 'Issue with booking payment',
+            description: 'I was charged twice for my last booking. Please look into it.',
+            category: 'payment',
+            priority: 'high',
+            status: 'open',
+        },
+    });
+    console.log({ ticket1 });
+
+    const ticket2 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1002' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1002',
+            user_id: nanny.id,
+            role: 'nanny',
+            subject: 'App crashing on startup',
+            description: 'Every time I open the app, it crashes on the splash screen.',
+            category: 'technical',
+            priority: 'medium',
+            status: 'open',
+        },
+    });
+    console.log({ ticket2 });
+
+    const ticket3 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1003' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1003',
+            user_id: nanny2.id,
+            role: 'nanny',
+            subject: 'Inappropriate behavior from parent',
+            description: 'A parent was very rude during the last visit. I want to report them.',
+            category: 'grievance',
+            priority: 'critical',
+            status: 'open',
+        },
+    });
+    console.log({ ticket3 });
 }
 
 main()

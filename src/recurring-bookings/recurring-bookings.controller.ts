@@ -11,9 +11,10 @@ import {
 } from "@nestjs/common";
 import { RecurringBookingsService } from "./recurring-bookings.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @Controller("recurring-bookings")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class RecurringBookingsController {
   constructor(
     private readonly recurringBookingsService: RecurringBookingsService,

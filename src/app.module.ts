@@ -30,6 +30,8 @@ import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
 import { ServicesModule } from './services/services.module';
 import { NanniesModule } from './nannies/nannies.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -56,6 +58,12 @@ import { NanniesModule } from './nannies/nannies.module';
         CLOUDINARY_API_KEY: Joi.string().allow('', null).optional(),
         CLOUDINARY_API_SECRET: Joi.string().allow('', null).optional(),
         CLOUDINARY_CLOUD_NAME: Joi.string().allow('', null).optional(),
+        // WhatsApp
+        WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null).optional(),
+        WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null).optional(),
+        WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null).optional(),
+        WHATSAPP_APP_SECRET: Joi.string().allow('', null).optional(),
+        WHATSAPP_API_VERSION: Joi.string().allow('', null).optional(),
       }),
     }),
     LoggerModule.forRoot({
@@ -103,6 +111,8 @@ import { NanniesModule } from './nannies/nannies.module';
     FamilyModule,
     ServicesModule,
     NanniesModule,
+    WhatsAppModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [

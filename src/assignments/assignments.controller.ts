@@ -9,9 +9,10 @@ import {
 } from "@nestjs/common";
 import { AssignmentsService } from "./assignments.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @Controller("assignments")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
 

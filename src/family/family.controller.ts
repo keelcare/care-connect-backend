@@ -11,11 +11,12 @@ import {
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { FamilyService } from "./family.service";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 import { CreateChildDto } from "./dto/create-child.dto";
 import { UpdateChildDto } from "./dto/update-child.dto";
 
 @Controller("family/children")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class FamilyController {
   constructor(private readonly familyService: FamilyService) {}
 
