@@ -268,7 +268,6 @@ model users {
   service_requests                                       service_requests[]
   support_tickets                                        support_tickets[]
   verification_attempts                                  verification_attempts[]
-  support_tickets                                        support_tickets[]
   whatsapp_enquiries                                     whatsapp_enquiries[]    @relation("EnquiryAssignedAgent")
 
   @@unique([oauth_provider, oauth_provider_id])
@@ -489,102 +488,6 @@ model whatsapp_enquiries {
   created_at   DateTime              @default(now()) @db.Timestamptz(6)
   updated_at   DateTime              @updatedAt @db.Timestamptz(6)
   assigned_user        users?                @relation("EnquiryAssignedAgent", fields: [assigned_to], references: [id])
-
-  @@index([phone_number])
-  @@index([status])
-}
-
-model whatsapp_messages {
-  id           String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  phone_number String                   @db.VarChar(20)
-  direction    WhatsAppMessageDirection
-  message_body String
-  message_id   String?                  @unique @db.VarChar(255)
-  raw_payload  Json?
-  created_at   DateTime                 @default(now()) @db.Timestamptz(6)
-
-  @@index([phone_number])
-}
-
-enum child_profile_type {
-  STANDARD
-  SPECIAL_NEEDS
-}
-
-enum gender {
-  MALE
-  FEMALE
-  OTHER
-}
-
-enum WhatsAppConversationStatus {
-  ACTIVE
-  COMPLETED
-}
-
-enum WhatsAppConversationStep {
-  WELCOME
-  COLLECT_NAME
-  COLLECT_PHONE
-  COLLECT_EMAIL
-  COLLECT_CATEGORY
-  COLLECT_ENQUIRY
-  COMPLETED
-}
-
-enum WhatsAppEnquiryStatus {
-  NEW
-  CONTACTED
-  CLOSED
-}
-
-enum WhatsAppMessageDirection {
-  INBOUND
-  OUTBOUND
-}
-
-model support_tickets {
-  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  ticket_number String    @unique @db.VarChar(50)
-  user_id       String    @db.Uuid
-  role          String    @db.VarChar(50)
-  subject       String    @db.VarChar(255)
-  description   String
-  category      String    @db.VarChar(50)
-  priority      String    @default("medium") @db.VarChar(20)
-  status        String    @default("open") @db.VarChar(50)
-  admin_notes   String?
-  resolved_at   DateTime? @db.Timestamptz(6)
-  created_at    DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at    DateTime? @default(now()) @db.Timestamptz(6)
-  users         users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-}
-
-model whatsapp_conversations {
-  id           String                     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  phone_number String                     @unique @db.VarChar(20)
-  name         String?                    @db.VarChar(255)
-  current_step WhatsAppConversationStep   @default(WELCOME)
-  status       WhatsAppConversationStatus @default(ACTIVE)
-  created_at   DateTime                   @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime                   @db.Timestamptz(6)
-
-  @@index([phone_number])
-}
-
-model whatsapp_enquiries {
-  id           String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  name         String                @db.VarChar(255)
-  phone_number String                @db.VarChar(20)
-  email        String?               @db.VarChar(255)
-  category     String                @db.VarChar(100)
-  message      String
-  status       WhatsAppEnquiryStatus @default(NEW)
-  assigned_to  String?               @db.Uuid
-  notes        String?
-  created_at   DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime              @db.Timestamptz(6)
-  users        users?                @relation(fields: [assigned_to], references: [id])
 
   @@index([phone_number])
   @@index([status])

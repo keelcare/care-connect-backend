@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
@@ -8,6 +8,22 @@ export class SupportService {
     constructor(private prisma: PrismaService) { }
 
     async createTicket(userId: string, role: string, dto: CreateTicketDto) {
+        if (dto.category === 'account') {
+            const openBanAppeal = await this.prisma.support_tickets.findFirst({
+                where: {
+                    user_id: userId,
+                    category: 'account',
+                    status: {
+                        notIn: ['resolved', 'closed'],
+                    },
+                },
+            });
+
+            if (openBanAppeal) {
+                throw new BadRequestException('You already have an open ban appeal ticket.');
+            }
+        }
+
         const ticketCount = await this.prisma.support_tickets.count();
         const ticketNumber = `TIC-${1000 + ticketCount + 1}`;
 
