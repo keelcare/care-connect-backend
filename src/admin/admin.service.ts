@@ -568,13 +568,11 @@ export class AdminService {
   }
 
   async getPaymentStats() {
-    const totalPayments = await this.prisma.payments.count();
-    const totalAmount = await this.prisma.payments.aggregate({
-      _sum: { amount: true },
-    });
-    const pendingPayments = await this.prisma.payments.count({
-      where: { status: "pending_release" },
-    });
+    const [totalPayments, totalAmount, pendingPayments] = await Promise.all([
+      this.prisma.payments.count(),
+      this.prisma.payments.aggregate({ _sum: { amount: true } }),
+      this.prisma.payments.count({ where: { status: "pending_release" } }),
+    ]);
 
     return {
       totalPayments,
@@ -645,12 +643,26 @@ export class AdminService {
   }
 
   // Analytics
+  async getDashboardData() {
+    const [stats, advancedStats, bookings] = await Promise.all([
+      this.getSystemStats(),
+      this.getAdvancedStats(),
+      this.getAllBookings(),
+    ]);
+
+    return {
+      stats,
+      advancedStats,
+      bookings,
+    };
+  }
+
   async getSystemStats() {
-    const totalUsers = await this.prisma.users.count();
-    const totalBookings = await this.prisma.bookings.count();
-    const activeBookings = await this.prisma.bookings.count({
-      where: { status: "IN_PROGRESS" },
-    });
+    const [totalUsers, totalBookings, activeBookings] = await Promise.all([
+      this.prisma.users.count(),
+      this.prisma.bookings.count(),
+      this.prisma.bookings.count({ where: { status: "IN_PROGRESS" } }),
+    ]);
 
     return {
       totalUsers,
@@ -660,35 +672,36 @@ export class AdminService {
   }
 
   async getAdvancedStats() {
-    const totalRequests = await this.prisma.service_requests.count();
-    const completedBookings = await this.prisma.bookings.count({
-      where: { status: "COMPLETED" },
-    });
-    const cancelledBookings = await this.prisma.bookings.count({
-      where: { status: "CANCELLED" },
-    });
+    const [
+      totalRequests,
+      completedBookings,
+      cancelledBookings,
+      totalAssignments,
+      acceptedAssignments,
+      revenueData,
+      bookings
+    ] = await Promise.all([
+      this.prisma.service_requests.count(),
+      this.prisma.bookings.count({ where: { status: "COMPLETED" } }),
+      this.prisma.bookings.count({ where: { status: "CANCELLED" } }),
+      this.prisma.assignments.count(),
+      this.prisma.assignments.count({ where: { status: "accepted" } }),
+      this.prisma.payments.aggregate({ _sum: { amount: true } }),
+      this.prisma.bookings.findMany({
+        where: { start_time: { not: null } },
+        select: { start_time: true },
+      }),
+    ]);
 
     const completionRate =
       totalRequests > 0 ? (completedBookings / totalRequests) * 100 : 0;
 
-    const totalAssignments = await this.prisma.assignments.count();
-    const acceptedAssignments = await this.prisma.assignments.count({
-      where: { status: "accepted" },
-    });
     const acceptanceRate =
       totalAssignments > 0 ? (acceptedAssignments / totalAssignments) * 100 : 0;
 
-    const revenueData = await this.prisma.payments.aggregate({
-      _sum: { amount: true },
-    });
     const totalRevenue = revenueData._sum.amount || 0;
 
     // Popular service times (simplified - count by hour of day)
-    const bookings = await this.prisma.bookings.findMany({
-      where: { start_time: { not: null } },
-      select: { start_time: true },
-    });
-
     const hourCounts = new Array(24).fill(0);
     bookings.forEach((booking) => {
       if (booking.start_time) {
