@@ -191,7 +191,7 @@ export class RequestsService {
     }
 
     // 2. Cancel associated booking if exists
-    if (request.bookings.length > 0) {
+    if (request.bookings) {
       await this.prisma.bookings.updateMany({
         where: { request_id: requestId, status: { not: "CANCELLED" } },
         data: {
@@ -358,7 +358,7 @@ export class RequestsService {
           score += 50;
         }
 
-      
+
 
         console.log(`Nanny ${nanny.email} (${nanny.id}) Score Breakdown:
           Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)
@@ -539,11 +539,10 @@ export class RequestsService {
         parent_id: parentId,
         // Only return requests that DO NOT have an active booking yet.
         // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
-        bookings: {
-          none: {
-            status: { not: "CANCELLED" }
-          }
-        }
+        OR: [
+          { bookings: null },
+          { bookings: { status: "CANCELLED" } }
+        ]
       },
       orderBy: { created_at: "desc" },
       include: {
