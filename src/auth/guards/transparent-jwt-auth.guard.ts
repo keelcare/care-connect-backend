@@ -90,7 +90,7 @@ export class TransparentJwtAuthGuard extends AuthGuard('jwt') {
             response.cookie('access_token', loginData.access_token, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
             response.cookie('refresh_token', loginData.refresh_token, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
 
-            request.user = { id: loginData.user.id, email: loginData.user.email, role: loginData.user.role };
+            request.user = { id: loginData.user.id, email: loginData.user.email, role: loginData.user.role, is_active: loginData.user.is_active };
             return true;
         } catch (refreshErr) {
             throw new UnauthorizedException('Session expired');

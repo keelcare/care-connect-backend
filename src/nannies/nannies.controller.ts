@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagg
 import { NanniesService } from './nannies.service';
 import { CreateCategoryRequestDto } from './dto/create-category-request.dto';
 import { AuthGuard } from '@nestjs/passport';
+import { ActiveUserGuard } from '../common/guards/active-user.guard';
 
 @ApiTags('Nannies')
 @ApiBearerAuth()
@@ -10,7 +11,7 @@ import { AuthGuard } from '@nestjs/passport';
 export class NanniesController {
     constructor(private readonly nanniesService: NanniesService) { }
 
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), ActiveUserGuard)
     @Post('me/category-request')
     @ApiOperation({ summary: 'Submit a new category upgrade request' })
     @ApiResponse({ status: 201, description: 'Request submitted successfully' })
@@ -18,7 +19,7 @@ export class NanniesController {
         return this.nanniesService.createCategoryRequest(req.user.id, dto);
     }
 
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), ActiveUserGuard)
     @Get('me/category-request')
     @ApiOperation({ summary: 'Get current pending category upgrade request' })
     @ApiResponse({ status: 200, description: 'Return pending request if any' })
@@ -26,7 +27,7 @@ export class NanniesController {
         return this.nanniesService.getMyCategoryRequest(req.user.id);
     }
 
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), ActiveUserGuard)
     @Get('me/category-requests/history')
     @ApiOperation({ summary: 'Get history of category upgrade requests' })
     @ApiResponse({ status: 200, description: 'Return list of historical requests' })
@@ -34,7 +35,7 @@ export class NanniesController {
         return this.nanniesService.getMyCategoryRequestsHistory(req.user.id);
     }
 
-    @UseGuards(AuthGuard('jwt'))
+    @UseGuards(AuthGuard('jwt'), ActiveUserGuard)
     @Delete('me/category-request/:id')
     @ApiOperation({ summary: 'Cancel a pending category upgrade request' })
     @ApiResponse({ status: 200, description: 'Request cancelled successfully' })

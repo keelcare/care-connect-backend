@@ -7,21 +7,28 @@ import {
   Patch,
   Param,
   Request,
+  BadRequestException,
+  NotFoundException,
 } from "@nestjs/common";
 import { NotificationsService } from "./notifications.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
+import { PrismaService } from "../prisma/prisma.service";
 
 @Controller("notifications")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class NotificationsController {
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Post("send")
   async sendNotification(
     @Body()
     body: {
       target: "user" | "parents" | "nannies";
-      userId?: string; // Required if target is 'user'
+      userId?: string; // Can be a UUID or an email address
       title: string;
       message: string;
       type?: "info" | "success" | "warning" | "error";
@@ -38,8 +45,24 @@ export class NotificationsController {
         body.message,
       );
     } else if (body.target === "user" && body.userId) {
+      // Resolve email to UUID if necessary
+      const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      let resolvedUserId = body.userId;
+
+      if (!uuidRegex.test(body.userId)) {
+        // Treat it as an email — look up the user's actual UUID
+        const user = await this.prisma.users.findUnique({
+          where: { email: body.userId },
+          select: { id: true },
+        });
+        if (!user) {
+          throw new NotFoundException(`No user found with email: ${body.userId}`);
+        }
+        resolvedUserId = user.id;
+      }
+
       return this.notificationsService.createNotification(
-        body.userId,
+        resolvedUserId,
         body.title,
         body.message,
         body.type,
@@ -64,3 +87,4 @@ export class NotificationsController {
     return this.notificationsService.markAllAsRead(req.user.id);
   }
 }
+

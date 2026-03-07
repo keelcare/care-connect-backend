@@ -11,6 +11,7 @@ import {
 } from "@nestjs/common";
 import { ReviewsService } from "./reviews.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 import { CreateReviewDto } from "./dto/create-review.dto";
 import { UpdateReviewDto } from "./dto/update-review.dto";
 
@@ -19,13 +20,13 @@ export class ReviewsController {
   constructor(private readonly reviewsService: ReviewsService) {}
 
   @Post()
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   async createReview(@Body() createReviewDto: CreateReviewDto, @Request() req) {
     return this.reviewsService.createReview(createReviewDto, req.user.id);
   }
 
   @Patch(":id")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   async updateReview(
     @Param("id") id: string,
     @Body() updateReviewDto: UpdateReviewDto,
@@ -35,7 +36,7 @@ export class ReviewsController {
   }
 
   @Delete(":id")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   async deleteReview(@Param("id") id: string, @Request() req) {
     return this.reviewsService.deleteReview(id, req.user.id);
   }
@@ -61,7 +62,7 @@ export class ReviewsController {
   }
 
   @Get("booking/:bookingId/can-review")
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   async canReviewBooking(
     @Param("bookingId") bookingId: string,
     @Request() req,

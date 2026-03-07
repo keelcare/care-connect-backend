@@ -12,10 +12,28 @@ import { AdminService } from "./admin.service";
 import { AuthGuard } from "@nestjs/passport";
 import { AdminGuard } from "./admin.guard";
 
+import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
+
 @Controller("admin")
 @UseGuards(AuthGuard("jwt"), AdminGuard)
 export class AdminController {
   constructor(private readonly adminService: AdminService) { }
+
+  // Manual Assignment Management
+  @Get("manual-assignment/requests")
+  async getManualAssignmentRequests() {
+    return this.adminService.getManualAssignmentRequests();
+  }
+
+  @Get("manual-assignment/nannies/:requestId")
+  async getAvailableNanniesForRequest(@Param("requestId") requestId: string) {
+    return this.adminService.getAvailableNanniesForRequest(requestId);
+  }
+
+  @Post("manual-assignment/assign")
+  async manuallyAssignNanny(@Body() dto: AdminManualAssignmentDto) {
+    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId);
+  }
 
   // User Management
   @Get("users")
@@ -126,6 +144,11 @@ export class AdminController {
   }
 
   // Analytics
+  @Get("dashboard")
+  async getDashboardData() {
+    return this.adminService.getDashboardData();
+  }
+
   @Get("stats")
   async getStats() {
     return this.adminService.getSystemStats();

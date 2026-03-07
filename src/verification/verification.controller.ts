@@ -18,12 +18,13 @@ import { VerificationService } from "./verification.service";
 import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { RejectVerificationDto } from "./dto/reject-verification.dto";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @Controller("verification")
 export class VerificationController {
   constructor(private readonly verificationService: VerificationService) {}
 
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post("upload")
   @UseInterceptors(
     FileInterceptor("file", {
@@ -67,21 +68,21 @@ export class VerificationController {
   }
 
   // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Get("pending")
   async getPendingVerifications() {
     return this.verificationService.getPendingVerifications();
   }
 
   // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post(":id/approve")
   async approveVerification(@Param("id") id: string) {
     return this.verificationService.approveVerification(id);
   }
 
   // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post(":id/reject")
   async rejectVerification(
     @Param("id") id: string,
@@ -90,7 +91,7 @@ export class VerificationController {
     return this.verificationService.rejectVerification(id, dto);
   }
 
-  @UseGuards(AuthGuard("jwt"))
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Delete("reset")
   async resetVerification(@Req() req) {
     return this.verificationService.resetVerification(req.user.id);

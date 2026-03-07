@@ -11,7 +11,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 
 
-const CATEGORY_SKILL_MAP = {
+export const CATEGORY_SKILL_MAP = {
   'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
   'ST': ['Shadow Teacher', 'Special Education', 'Autism Support', 'ADHD Support'],
   'SN': ['Special Needs', 'Disability Care', 'Therapy Support', 'Medical Assistance'],
@@ -139,7 +139,7 @@ export class RequestsService {
       where: { id },
       include: {
         assignments: { where: { status: { in: ["pending", "accepted"] } } },
-        bookings: { where: { status: { not: "CANCELLED" } } }
+        bookings: true
       },
     });
 
@@ -157,7 +157,7 @@ export class RequestsService {
           where: { id: booking.request_id },
           include: {
             assignments: { where: { status: { in: ["pending", "accepted"] } } },
-            bookings: { where: { status: { not: "CANCELLED" } } }
+            bookings: true
           },
         });
       }
@@ -191,9 +191,9 @@ export class RequestsService {
     }
 
     // 2. Cancel associated booking if exists
-    if (request.bookings) {
-      await this.prisma.bookings.updateMany({
-        where: { request_id: requestId, status: { not: "CANCELLED" } },
+    if (request.bookings && request.bookings.status !== "CANCELLED") {
+      await this.prisma.bookings.update({
+        where: { id: request.bookings.id },
         data: {
           status: "CANCELLED",
           cancellation_reason: "Request cancelled by parent",
@@ -225,6 +225,13 @@ export class RequestsService {
     });
 
     if (!request) throw new NotFoundException("Request not found");
+
+    // Skip auto-matching for Shadow Teacher and Special Needs categories
+    // These will be manually assigned by admins
+    if (request.category === 'ST' || request.category === 'SN') {
+      console.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Await manual assignment.`);
+      return null;
+    }
 
     // Get IDs of nannies already assigned (rejected or timeout)
     const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
@@ -303,7 +310,6 @@ export class RequestsService {
       JOIN profiles p ON u.id = p.user_id
       JOIN nanny_details nd ON u.id = nd.user_id
       WHERE u.role = 'nanny'
-      AND u.identity_verification_status = 'verified'
       AND nd.is_available_now = true
       ${excludedNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(excludedNannyIds)})` : Prisma.empty}
       ${skillSearchTerms.length > 0 ? Prisma.sql`AND (
@@ -539,10 +545,12 @@ export class RequestsService {
         parent_id: parentId,
         // Only return requests that DO NOT have an active booking yet.
         // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
-        OR: [
-          { bookings: null },
-          { bookings: { status: "CANCELLED" } }
-        ]
+        bookings: {
+          OR: [
+            { id: { equals: undefined } }, // This effectively means no booking
+            { status: "CANCELLED" }
+          ]
+        }
       },
       orderBy: { created_at: "desc" },
       include: {
