@@ -7,6 +7,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ChatService } from "../chat/chat.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { RequestsService } from "../requests/requests.service";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 @Injectable()
 export class BookingsService {
@@ -15,6 +17,7 @@ export class BookingsService {
     private chatService: ChatService,
     private notificationsService: NotificationsService,
     private requestsService: RequestsService,
+    private sseService: SseService,
   ) { }
 
 
@@ -110,6 +113,14 @@ export class BookingsService {
       `Your booking has been successfully created.`,
       "success",
     );
+
+    // Emit SSE event to both parties
+    const bookingCreatedEvent = {
+      type: SSE_EVENTS.BOOKING_CREATED,
+      data: booking,
+      timestamp: new Date().toISOString(),
+    };
+    this.sseService.emitToUsers([nannyId, parentId], bookingCreatedEvent);
 
     return booking;
   }
@@ -234,6 +245,13 @@ export class BookingsService {
       "info",
     );
 
+    // Emit SSE
+    this.sseService.emitToUser(booking.parent_id, {
+      type: SSE_EVENTS.BOOKING_STARTED,
+      data: updatedBooking,
+      timestamp: new Date().toISOString(),
+    });
+
     return updatedBooking;
   }
 
@@ -317,6 +335,14 @@ export class BookingsService {
       `Great job! The booking is complete. Earnings: ₹${totalAmount.toFixed(2)}.`,
       "success",
     );
+
+    // Emit SSE
+    const completedEvent = {
+      type: SSE_EVENTS.BOOKING_COMPLETED,
+      data: { ...updatedBooking, totalAmount },
+      timestamp: new Date().toISOString(),
+    };
+    this.sseService.emitToUsers([booking.parent_id, booking.nanny_id].filter(Boolean) as string[], completedEvent);
 
     return updatedBooking;
   }
@@ -490,6 +516,15 @@ export class BookingsService {
       console.error("Failed to send cancellation notification:", error);
       // Don't fail the request if notification fails, the booking is already cancelled
     }
+
+    // Emit SSE cancellation event to both parties
+    const cancelledEvent = {
+      type: SSE_EVENTS.BOOKING_CANCELLED,
+      data: { ...updatedBooking, cancellation_reason: reason },
+      timestamp: new Date().toISOString(),
+    };
+    const recipients = [booking.parent_id, booking.nanny_id].filter(Boolean) as string[];
+    this.sseService.emitToUsers(recipients, cancelledEvent);
 
     return updatedBooking;
   }
@@ -722,6 +757,15 @@ export class BookingsService {
       `Your booking ${nannyProfile ? `with ${nannyName}` : "request"} has been successfully rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
       "success",
     );
+
+    // Emit SSE
+    const rescheduledEvent = {
+      type: SSE_EVENTS.BOOKING_RESCHEDULED,
+      data: updatedBooking,
+      timestamp: new Date().toISOString(),
+    };
+    const rescheduledRecipients = [booking.parent_id, booking.nanny_id].filter(Boolean) as string[];
+    this.sseService.emitToUsers(rescheduledRecipients, rescheduledEvent);
 
     return updatedBooking;
   }

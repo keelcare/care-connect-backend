@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
 import { FcmService } from "./fcm.service";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 @Injectable()
 export class NotificationsService {
@@ -13,6 +15,7 @@ export class NotificationsService {
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
     private fcmService: FcmService,
+    private sseService: SseService,
   ) { }
 
   async createNotification(
@@ -57,6 +60,13 @@ export class NotificationsService {
 
     // 2. Send Real-time Update via WebSocket (fire-and-forget — no await needed)
     this.notificationsGateway.sendToUser(userId, notification);
+
+    // 2b. Send via SSE stream (for clients without a WS connection or as primary path)
+    this.sseService.emitToUser(userId, {
+      type: SSE_EVENTS.NOTIFICATION,
+      data: notification,
+      timestamp: new Date().toISOString(),
+    });
 
     // 3. Send Mobile Push Notification fire-and-forget — don't block the response
     if (user?.fcm_token) {

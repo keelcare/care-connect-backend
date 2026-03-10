@@ -9,6 +9,8 @@ import { CreateRequestDto } from "./dto/create-request.dto";
 import { UsersService } from "../users/users.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 
 export const CATEGORY_SKILL_MAP = {
@@ -25,6 +27,7 @@ export class RequestsService {
     private usersService: UsersService,
     private notificationsService: NotificationsService,
     private favoritesService: FavoritesService,
+    private sseService: SseService,
   ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -124,6 +127,13 @@ export class RequestsService {
         "info",
       );
 
+      // Emit SSE — parent dashboard reacts immediately
+      this.sseService.emitToUser(parentId, {
+        type: SSE_EVENTS.REQUEST_CREATED,
+        data: request,
+        timestamp: new Date().toISOString(),
+      });
+
       return request;
     } catch (error) {
       if (error.code === 'P2002') {
@@ -214,6 +224,13 @@ export class RequestsService {
       "Your service request has been successfully cancelled.",
       "warning",
     );
+
+    // Emit SSE
+    this.sseService.emitToUser(request.parent_id, {
+      type: SSE_EVENTS.REQUEST_CANCELLED,
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
 
     return result;
   }
@@ -462,6 +479,14 @@ export class RequestsService {
               `We found and confirmed a nanny for your request! Tap to view details.`,
               "success",
             );
+
+            // Emit SSE match event to both parties
+            const matchedEvent = {
+              type: SSE_EVENTS.REQUEST_MATCHED,
+              data: { requestId, nannyId: bestMatch.id, assignment },
+              timestamp: new Date().toISOString(),
+            };
+            this.sseService.emitToUsers([request.parent_id, bestMatch.id], matchedEvent);
 
             return assignment;
           }
