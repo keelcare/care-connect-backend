@@ -5,6 +5,8 @@ import { FavoritesService } from "../favorites/favorites.service";
 import { ChatService } from "../chat/chat.service";
 import { RequestsService, CATEGORY_SKILL_MAP } from "../requests/requests.service";
 import { Prisma } from "@prisma/client";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 @Injectable()
 export class AdminService {
@@ -15,6 +17,7 @@ export class AdminService {
     private chatService: ChatService,
     @Inject(forwardRef(() => RequestsService))
     private requestsService: RequestsService,
+    private sseService: SseService,
   ) { }
 
   // Manual Assignment Management
@@ -326,8 +329,32 @@ export class AdminService {
         `We have manually assigned a nanny for your ${request.category} request. Tap to view details.`,
         "success",
       );
+
+      // 6. SSE Real-time Events
+      const timestamp = new Date().toISOString();
+
+      // Parent dashboard refreshes
+      this.sseService.emitToUser(request.parent_id, {
+        type: SSE_EVENTS.ASSIGNMENT_ACCEPTED,
+        data: { requestId: request.id, nannyId },
+        timestamp,
+      });
+
+      this.sseService.emitToUser(request.parent_id, {
+        type: SSE_EVENTS.BOOKING_UPDATED,
+        data: { requestId: request.id },
+        timestamp,
+      });
+
+      // Nanny dashboard gets new assignment
+      this.sseService.emitToUser(nannyId, {
+        type: SSE_EVENTS.ASSIGNMENT_CREATED,
+        data: { requestId: request.id },
+        timestamp,
+      });
+
     } catch (e) {
-      console.error("Manual Assignment: Failed to send notifications", e);
+      console.error("Manual Assignment: Failed to send notifications or SSE", e);
     }
 
     return result;

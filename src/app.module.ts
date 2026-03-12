@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
 import { ServeStaticModule } from "@nestjs/serve-static";
+import { EventEmitterModule } from "@nestjs/event-emitter";
 import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
@@ -32,6 +33,7 @@ import { ServicesModule } from './services/services.module';
 import { NanniesModule } from './nannies/nannies.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { SupportModule } from './support/support.module';
+import { SseModule } from './sse/sse.module';
 
 @Module({
   imports: [
@@ -91,6 +93,8 @@ import { SupportModule } from './support/support.module';
       serveRoot: "/uploads",
     }),
     ScheduleModule.forRoot(),
+    EventEmitterModule.forRoot(),
+    SseModule,
     AuthModule,
     UsersModule,
     PrismaModule,
