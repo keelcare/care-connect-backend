@@ -10,12 +10,14 @@ import { GoogleStrategy } from "./strategies/google.strategy";
 import { TransparentJwtAuthGuard } from "./guards/transparent-jwt-auth.guard";
 
 import { TokenBlacklistService } from "./token-blacklist.service";
+import { MailModule } from "../mail/mail.module";
 
 @Module({
   imports: [
     UsersModule,
     PassportModule,
     ConfigModule,
+    MailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

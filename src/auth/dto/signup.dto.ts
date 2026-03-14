@@ -26,6 +26,7 @@ import { Transform } from 'class-transformer';
 export enum UserRole {
     PARENT = 'parent',
     NANNY = 'nanny',
+    ADMIN = 'admin',
 }
 
 export class SignupDto {

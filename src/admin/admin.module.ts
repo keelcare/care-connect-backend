@@ -8,6 +8,7 @@ import { NotificationsModule } from "../notifications/notifications.module";
 import { FavoritesModule } from "../favorites/favorites.module";
 import { ChatModule } from "../chat/chat.module";
 import { RequestsModule } from "../requests/requests.module";
+import { DisputesModule } from "../disputes/disputes.module";
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { RequestsModule } from "../requests/requests.module";
     FavoritesModule,
     ChatModule,
     forwardRef(() => RequestsModule),
+    DisputesModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

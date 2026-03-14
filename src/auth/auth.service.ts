@@ -11,6 +11,7 @@ import * as bcrypt from "bcrypt";
 import * as crypto from "crypto";
 import { SignupDto } from "./dto/signup.dto";
 import { PrismaService } from "../prisma/prisma.service";
+import { MailService } from "../mail/mail.service";
 
 /**
  * SECURITY: Password Complexity Regex
@@ -29,6 +30,7 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private prisma: PrismaService,
+    private mailService: MailService,
   ) {
     if (!this.configService.get<string>("JWT_SECRET")) {
       throw new Error("JWT_SECRET must be configured");
@@ -142,9 +144,9 @@ export class AuthService {
       reset_password_token_expires: resetTokenExpires,
     });
 
-    // TODO: Send email with reset link
-    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-
+    // Send email with reset link
+    const frontendUrl = origin || this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+    await this.mailService.sendPasswordResetEmail(user.email, resetToken, frontendUrl);
 
     return { message: "If the email exists, a reset link has been sent" };
   }
@@ -197,9 +199,9 @@ export class AuthService {
       verification_token_expires: verificationTokenExpires,
     });
 
-    // TODO: Send email with verification link
-    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
-
+    // Send email with verification link
+    const frontendUrl = origin || this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+    await this.mailService.sendVerificationEmail(user.email, verificationToken, frontendUrl);
 
     return { message: "Verification email sent" };
   }
@@ -285,6 +287,14 @@ export class AuthService {
           }
           : undefined,
     });
+    
+    // Send verification email
+    try {
+      await this.sendVerificationEmail(user.id);
+    } catch (error) {
+       // Log error but don't fail registration
+       console.error("Failed to send welcome verification email", error);
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password_hash, ...result } = user;

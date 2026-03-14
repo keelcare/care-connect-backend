@@ -7,6 +7,7 @@ import { RequestsService, CATEGORY_SKILL_MAP } from "../requests/requests.servic
 import { Prisma } from "@prisma/client";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
+import { DisputesService } from "../disputes/disputes.service";
 
 @Injectable()
 export class AdminService {
@@ -18,6 +19,7 @@ export class AdminService {
     @Inject(forwardRef(() => RequestsService))
     private requestsService: RequestsService,
     private sseService: SseService,
+    private disputesService: DisputesService,
   ) { }
 
   // Manual Assignment Management
@@ -508,65 +510,17 @@ export class AdminService {
     });
   }
 
-  // Dispute Resolution
+  // Dispute Resolution (Delegated to DisputesService)
   async getAllDisputes() {
-    return this.prisma.disputes.findMany({
-      orderBy: { created_at: "desc" },
-      include: {
-        bookings: {
-          include: {
-            users_bookings_parent_idTousers: {
-              select: {
-                email: true,
-                profiles: { select: { first_name: true, last_name: true } },
-              },
-            },
-            users_bookings_nanny_idTousers: {
-              select: {
-                email: true,
-                profiles: { select: { first_name: true, last_name: true } },
-              },
-            },
-          },
-        },
-        users_disputes_raised_byTousers: {
-          select: {
-            email: true,
-            profiles: { select: { first_name: true, last_name: true } },
-          },
-        },
-        users_disputes_resolved_byTousers: {
-          select: {
-            email: true,
-            profiles: { select: { first_name: true, last_name: true } },
-          },
-        },
-      },
-    });
+    return this.disputesService.findAll();
   }
 
   async getDisputeById(id: string) {
-    return this.prisma.disputes.findUnique({
-      where: { id },
-      include: {
-        bookings: true,
-        users_disputes_raised_byTousers: {
-          select: { email: true, profiles: true },
-        },
-      },
-    });
+    return this.disputesService.findOne(id);
   }
 
   async resolveDispute(id: string, resolution: string, resolvedBy: string) {
-    return this.prisma.disputes.update({
-      where: { id },
-      data: {
-        status: "resolved",
-        resolution,
-        resolved_by: resolvedBy,
-        updated_at: new Date(),
-      },
-    });
+    return this.disputesService.resolve(id, resolvedBy, { resolution });
   }
 
   // Payment Monitoring

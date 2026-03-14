@@ -10,12 +10,15 @@ import {
 } from "@nestjs/common";
 import { AdminService } from "./admin.service";
 import { AuthGuard } from "@nestjs/passport";
-import { AdminGuard } from "./admin.guard";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 
 @Controller("admin")
-@UseGuards(AuthGuard("jwt"), AdminGuard)
+@Roles(UserRole.ADMIN)
+@UseGuards(AuthGuard("jwt"), RolesGuard)
 export class AdminController {
   constructor(private readonly adminService: AdminService) { }
 

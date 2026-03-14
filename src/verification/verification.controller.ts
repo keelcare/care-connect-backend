@@ -19,6 +19,9 @@ import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { RejectVerificationDto } from "./dto/reject-verification.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 
 @Controller("verification")
 export class VerificationController {
@@ -67,22 +70,22 @@ export class VerificationController {
     );
   }
 
-  // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
   @Get("pending")
   async getPendingVerifications() {
     return this.verificationService.getPendingVerifications();
   }
 
-  // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
   @Post(":id/approve")
   async approveVerification(@Param("id") id: string) {
     return this.verificationService.approveVerification(id);
   }
 
-  // TODO: Add Admin Role check
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
   @Post(":id/reject")
   async rejectVerification(
     @Param("id") id: string,

@@ -34,39 +34,14 @@ import { NanniesModule } from './nannies/nannies.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { SupportModule } from './support/support.module';
 import { SseModule } from './sse/sse.module';
+import { MailModule } from './mail/mail.module';
+import { DisputesModule } from './disputes/disputes.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: ".env",
-      validationSchema: Joi.object({
-        // Database
-        DATABASE_URL: Joi.string().required(),
-
-        // Authentication
-        JWT_SECRET: Joi.string().required(),
-
-        // Server
-        PORT: Joi.number().default(4000),
-        FRONTEND_URL: Joi.string().uri().optional(),
-
-        // API Keys - Optional (warnings logged in services if missing)
-        RAZORPAY_KEY_ID: Joi.string().allow('', null).optional(),
-        RAZORPAY_KEY_SECRET: Joi.string().allow('', null).optional(),
-        RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('', null).optional(),
-        GOOGLE_MAPS_API_KEY: Joi.string().allow('', null).optional(),
-        GEMINI_API_KEY: Joi.string().allow('', null).optional(),
-        CLOUDINARY_API_KEY: Joi.string().allow('', null).optional(),
-        CLOUDINARY_API_SECRET: Joi.string().allow('', null).optional(),
-        CLOUDINARY_CLOUD_NAME: Joi.string().allow('', null).optional(),
-        // WhatsApp
-        WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null).optional(),
-        WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null).optional(),
-        WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null).optional(),
-        WHATSAPP_APP_SECRET: Joi.string().allow('', null).optional(),
-        WHATSAPP_API_VERSION: Joi.string().allow('', null).optional(),
-      }),
     }),
     LoggerModule.forRoot({
       pinoHttp: {
@@ -117,6 +92,8 @@ import { SseModule } from './sse/sse.module';
     NanniesModule,
     WhatsAppModule,
     SupportModule,
+    MailModule,
+    DisputesModule,
   ],
   controllers: [AppController],
   providers: [
