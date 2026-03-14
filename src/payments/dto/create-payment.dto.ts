@@ -10,7 +10,7 @@ export class CreateOrderDto {
    */
   @IsString()
   @IsNotEmpty()
-  @IsUUID('4', { message: 'Booking ID must be a valid UUID' })
+  @IsUUID("4", { message: "Booking ID must be a valid UUID" })
   bookingId: string;
 }
 
@@ -21,16 +21,16 @@ export class VerifyPaymentDto {
    */
   @IsString()
   @IsNotEmpty()
-  @Matches(/^[a-zA-Z0-9_-]+$/, { message: 'Invalid order ID format' })
+  @Matches(/^[a-zA-Z0-9_-]+$/, { message: "Invalid order ID format" })
   razorpay_order_id: string;
 
   @IsString()
   @IsNotEmpty()
-  @Matches(/^[a-zA-Z0-9_-]+$/, { message: 'Invalid payment ID format' })
+  @Matches(/^[a-zA-Z0-9_-]+$/, { message: "Invalid payment ID format" })
   razorpay_payment_id: string;
 
   @IsString()
   @IsNotEmpty()
-  @Matches(/^[a-fA-F0-9]+$/, { message: 'Invalid signature format' })
+  @Matches(/^[a-fA-F0-9]+$/, { message: "Invalid signature format" })
   razorpay_signature: string;
 }
