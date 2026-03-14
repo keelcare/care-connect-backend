@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { Cron, CronExpression } from "@nestjs/schedule";
+import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class RecurringBookingsService {
@@ -84,53 +85,105 @@ export class RecurringBookingsService {
       where: { is_active: true },
     });
 
-    const today = new Date();
+    const today = TimeUtils.nowIST();
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     for (const recurring of activeRecurring) {
-      // Check if end_date has passed
-      if (recurring.end_date && recurring.end_date < today) {
-        await this.prisma.recurring_bookings.update({
-          where: { id: recurring.id },
-          data: { is_active: false },
-        });
-        continue;
-      }
+      try {
+        // Check if end_date has passed
+        if (recurring.end_date && recurring.end_date < today) {
+          await this.prisma.recurring_bookings.update({
+            where: { id: recurring.id },
+            data: { is_active: false },
+          });
+          continue;
+        }
 
-      // Check if tomorrow matches the recurrence pattern
-      if (this.shouldCreateBooking(tomorrow, recurring.recurrence_pattern)) {
-        // Check if booking already exists for this date
-        const existingBooking = await this.prisma.bookings.findFirst({
-          where: {
-            recurring_booking_id: recurring.id,
-            start_time: {
-              gte: new Date(tomorrow.setHours(0, 0, 0, 0)),
-              lt: new Date(tomorrow.setHours(23, 59, 59, 999)),
-            },
-          },
-        });
+        // Check if tomorrow matches the recurrence pattern
+        if (this.shouldCreateBooking(tomorrow, recurring.recurrence_pattern)) {
+          // Calculate potential booking times
+          const startTime = TimeUtils.combineDateAndTime(tomorrow, recurring.start_time);
+          const endTime = TimeUtils.getEndTime(startTime, Number(recurring.duration_hours));
 
-        if (!existingBooking) {
-          // Create booking
-          const [hours, minutes] = recurring.start_time.split(":").map(Number);
-          const startTime = new Date(tomorrow);
-          startTime.setHours(hours, minutes, 0, 0);
-
-          await this.prisma.bookings.create({
-            data: {
-              parent_id: recurring.parent_id,
+          // 1. Check for general conflicts for this nanny
+          const conflict = await this.prisma.bookings.findFirst({
+            where: {
               nanny_id: recurring.nanny_id,
-              recurring_booking_id: recurring.id,
-              start_time: startTime,
               status: "CONFIRMED",
+              AND: [
+                { start_time: { lt: endTime } },
+                { end_time: { gt: startTime } },
+              ],
             },
+          });
+
+          if (conflict) {
+            await this.prisma.recurring_booking_logs.create({
+              data: {
+                recurring_booking_id: recurring.id,
+                booking_date: tomorrow,
+                status: "CONFLICT",
+                reason: `Nanny is already booked for a confirmed slot: ${conflict.start_time.toLocaleTimeString()} - ${conflict.end_time.toLocaleTimeString()}`,
+              },
+            });
+            console.log(`Conflict detected for recurring ${recurring.id} on ${tomorrow.toDateString()}`);
+            continue;
+          }
+
+          // 2. Check if a booking FROM THIS RECURRING PATTERN already exists (Safety check)
+          const existingSamePattern = await this.prisma.bookings.findFirst({
+            where: {
+              recurring_booking_id: recurring.id,
+              start_time: {
+                gte: new Date(new Date(tomorrow).setHours(0, 0, 0, 0)),
+                lt: new Date(new Date(tomorrow).setHours(23, 59, 59, 999)),
+              },
+            },
+          });
+
+          if (existingSamePattern) {
+            console.log(`Booking for recurring ${recurring.id} already exists for ${tomorrow.toDateString()}, skipping.`);
+            continue;
+          }
+
+          // Create booking
+          await this.prisma.$transaction(async (tx) => {
+            const booking = await tx.bookings.create({
+              data: {
+                parent_id: recurring.parent_id,
+                nanny_id: recurring.nanny_id,
+                recurring_booking_id: recurring.id,
+                start_time: startTime,
+                end_time: endTime,
+                status: "CONFIRMED",
+              },
+            });
+
+            await tx.recurring_booking_logs.create({
+              data: {
+                recurring_booking_id: recurring.id,
+                booking_date: tomorrow,
+                status: "SUCCESS",
+                reason: `Successfully generated booking: ${booking.id}`,
+              },
+            });
           });
 
           console.log(
             `Created booking for recurring ${recurring.id} on ${tomorrow.toDateString()}`,
           );
         }
+      } catch (error) {
+        console.error(`Error generating booking for recurring ${recurring.id}:`, error);
+        await this.prisma.recurring_booking_logs.create({
+          data: {
+            recurring_booking_id: recurring.id,
+            booking_date: tomorrow,
+            status: "ERROR",
+            reason: error.message || "Unknown error during generation",
+          },
+        }).catch(err => console.error("Failed to log generation error to DB", err));
       }
     }
   }

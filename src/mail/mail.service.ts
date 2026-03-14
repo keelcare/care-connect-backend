@@ -76,4 +76,43 @@ export class MailService {
     `;
     await this.sendMail(to, subject, template, { resetUrl });
   }
+
+  async sendBookingConfirmationEmail(
+    to: string,
+    userName: string,
+    role: 'parent' | 'nanny',
+    details: {
+      date: string;
+      time: string;
+      duration: number;
+      location: string;
+      otherPartyName: string;
+    }
+  ) {
+    const subject = `Booking Confirmed - ${details.date}`;
+    const template = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #2c3e50;">Booking Confirmed!</h2>
+        <p>Hello ${userName},</p>
+        <p>Great news! Your booking for <strong>${details.date}</strong> has been confirmed.</p>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0; color: #34495e;">Booking Details</h3>
+          <p><strong>${role === 'parent' ? 'Nanny' : 'Parent'}:</strong> ${details.otherPartyName}</p>
+          <p><strong>Date:</strong> ${details.date}</p>
+          <p><strong>Start Time:</strong> ${details.time}</p>
+          <p><strong>Duration:</strong> ${details.duration} hours</p>
+          <p><strong>Location:</strong> ${details.location}</p>
+        </div>
+        
+        <p>You can view more details and chat with ${details.otherPartyName} in the CareConnect app.</p>
+        <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
+          Thank you for using CareConnect!<br>
+          <i>The CareConnect Team</i>
+        </p>
+      </div>
+    `;
+
+    await this.sendMail(to, subject, template, {});
+  }
 }

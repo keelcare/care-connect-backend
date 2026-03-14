@@ -9,6 +9,7 @@ import { FavoritesModule } from "../favorites/favorites.module";
 import { ChatModule } from "../chat/chat.module";
 import { RequestsModule } from "../requests/requests.module";
 import { DisputesModule } from "../disputes/disputes.module";
+import { MailModule } from "../mail/mail.module";
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { DisputesModule } from "../disputes/disputes.module";
     ChatModule,
     forwardRef(() => RequestsModule),
     DisputesModule,
+    MailModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

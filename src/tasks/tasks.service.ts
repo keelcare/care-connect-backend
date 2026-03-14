@@ -12,9 +12,9 @@ export class TasksService {
     async handleExpiredBookings() {
         this.logger.debug("Running Cron Job: Checking for expired bookings...");
         try {
-            const count = await this.bookingsService.checkExpiredBookings();
-            if (count > 0) {
-                this.logger.log(`Cancelled ${count} expired bookings.`);
+            const { expired, autoCompleted } = await this.bookingsService.checkExpiredBookings();
+            if (expired > 0 || autoCompleted > 0) {
+                this.logger.log(`Processed stale bookings: ${expired} expired, ${autoCompleted} auto-completed.`);
             }
         } catch (error) {
             this.logger.error("Error in handleExpiredBookings cron job", error);

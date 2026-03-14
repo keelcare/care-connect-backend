@@ -10,6 +10,8 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { ChatService } from "../chat/chat.service";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
+import { MailService } from "../mail/mail.service";
+import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class AssignmentsService {
@@ -19,6 +21,7 @@ export class AssignmentsService {
     private notificationsService: NotificationsService,
     private chatService: ChatService,
     private sseService: SseService,
+    private mailService: MailService,
   ) { }
 
   async findAllByNanny(nannyId: string) {
@@ -81,7 +84,12 @@ export class AssignmentsService {
           responded_at: new Date(),
         },
         include: {
-          service_requests: true,
+          service_requests: {
+            include: {
+              users: { include: { profiles: true } } // Parent
+            }
+          },
+          users: { include: { profiles: true } } // Nanny
         },
       });
 
@@ -111,20 +119,16 @@ export class AssignmentsService {
           nanny_id: nannyId,
           status: "CONFIRMED",
           // Update times from request just in case
-          start_time: new Date(
-            assignment.service_requests.date.toISOString().split("T")[0] +
-            "T" +
-            assignment.service_requests.start_time.toISOString().split("T")[1],
+          start_time: TimeUtils.combineDateAndTime(
+            updatedAssignment.service_requests.date.toISOString().split("T")[0],
+            updatedAssignment.service_requests.start_time
           ),
-          end_time: new Date(
-            new Date(
-              assignment.service_requests.date.toISOString().split("T")[0] +
-              "T" +
-              assignment.service_requests.start_time
-                .toISOString()
-                .split("T")[1],
-            ).getTime() +
-            Number(assignment.service_requests.duration_hours) * 60 * 60 * 1000,
+          end_time: TimeUtils.getEndTime(
+            TimeUtils.combineDateAndTime(
+              updatedAssignment.service_requests.date.toISOString().split("T")[0],
+              updatedAssignment.service_requests.start_time
+            ),
+            Number(updatedAssignment.service_requests.duration_hours)
           ),
         }
       });
@@ -141,20 +145,49 @@ export class AssignmentsService {
 
       // 6. Notify Parent
       await this.notificationsService.createNotification(
-        assignment.service_requests.parent_id,
+        updatedAssignment.service_requests.parent_id,
         "Booking Confirmed!",
         `A nanny has accepted your request. Tap to view booking details.`,
         "success",
       );
 
+      // 7. Send Emails (Outside the core logic but within the transaction's success scope - actually, better to do after transaction fails, but Nest will rollback if any error occurs here)
+      const parent = updatedAssignment.service_requests.users;
+      const nanny = updatedAssignment.users;
+      const parentName = `${parent.profiles?.first_name || ''} ${parent.profiles?.last_name || ''}`.trim() || 'Parent';
+      const nannyName = `${nanny.profiles?.first_name || ''} ${nanny.profiles?.last_name || ''}`.trim() || 'Nanny';
+
+      const bookingDetails = {
+        date: updatedAssignment.service_requests.date.toISOString().split('T')[0],
+        time: updatedAssignment.service_requests.start_time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        duration: Number(updatedAssignment.service_requests.duration_hours),
+        location: parent.profiles?.address || 'Location specified in profile',
+      };
+
+      // Email to Parent
+      this.mailService.sendBookingConfirmationEmail(
+        parent.email,
+        parentName,
+        'parent',
+        { ...bookingDetails, otherPartyName: nannyName }
+      ).catch(err => console.error("Failed to send parent confirmation email", err));
+
+      // Email to Nanny
+      this.mailService.sendBookingConfirmationEmail(
+        nanny.email,
+        nannyName,
+        'nanny',
+        { ...bookingDetails, otherPartyName: parentName }
+      ).catch(err => console.error("Failed to send nanny confirmation email", err));
+
       // Emit SSE to parent
-      this.sseService.emitToUser(assignment.service_requests.parent_id, {
+      this.sseService.emitToUser(updatedAssignment.service_requests.parent_id, {
         type: SSE_EVENTS.ASSIGNMENT_ACCEPTED,
         data: { assignment: updatedAssignment, booking: updatedBooking },
         timestamp: new Date().toISOString(),
       });
       // Also emit a booking update so the parent's booking list refreshes
-      this.sseService.emitToUser(assignment.service_requests.parent_id, {
+      this.sseService.emitToUser(updatedAssignment.service_requests.parent_id, {
         type: SSE_EVENTS.BOOKING_UPDATED,
         data: updatedBooking,
         timestamp: new Date().toISOString(),

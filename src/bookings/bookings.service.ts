@@ -9,6 +9,8 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { RequestsService } from "../requests/requests.service";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
+import { MailService } from "../mail/mail.service";
+import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class BookingsService {
@@ -18,6 +20,7 @@ export class BookingsService {
     private notificationsService: NotificationsService,
     private requestsService: RequestsService,
     private sseService: SseService,
+    private mailService: MailService,
   ) { }
 
 
@@ -32,7 +35,7 @@ export class BookingsService {
     // Validate nanny verification
     const nanny = await this.prisma.users.findUnique({
       where: { id: nannyId },
-      select: { identity_verification_status: true, role: true }
+      include: { profiles: true }
     });
 
     if (!nanny) throw new NotFoundException("Nanny not found");
@@ -48,20 +51,12 @@ export class BookingsService {
 
     // 1. If explicit date and times are provided, use them
     if (date && startTime && endTime) {
-      // Combine date and time strings (e.g., "2025-11-24" + "T" + "15:30" + ":00")
-      // Ensure time format is HH:MM or HH:MM:SS
-      const formatTime = (t: string) => (t.length === 5 ? `${t}:00` : t);
+      finalStartTime = TimeUtils.combineDateAndTime(date, startTime);
+      finalEndTime = TimeUtils.combineDateAndTime(date, endTime);
 
-      finalStartTime = new Date(`${date}T${formatTime(startTime)}`);
-      finalEndTime = new Date(`${date}T${formatTime(endTime)}`);
-
-      if (isNaN(finalStartTime.getTime()) || isNaN(finalEndTime.getTime())) {
-        throw new BadRequestException("Invalid date or time format");
-      }
-
-      // Handle overnight bookings: if end time is before start time, it must be the next day
       if (finalEndTime < finalStartTime) {
-        finalEndTime.setDate(finalEndTime.getDate() + 1);
+        // Handle overnight booking: if end time is earlier than start time, it's the next day
+        finalEndTime = new Date(finalEndTime.getTime() + 24 * 60 * 60 * 1000);
       }
     }
 
@@ -108,10 +103,44 @@ export class BookingsService {
     // Notify Parent
     await this.notificationsService.createNotification(
       parentId,
-      "Booking Confirmed",
-      `Your booking has been successfully created.`,
+      "Booking Confirmed!",
+      `Your booking for ${finalStartTime.toDateString()} is confirmed.`,
       "success",
     );
+
+    // Send Confirmation Emails (Outside the core logic but within the function context)
+    const parent = await this.prisma.users.findUnique({
+      where: { id: parentId },
+      include: { profiles: true }
+    });
+
+    if (parent && nanny) {
+      const parentName = `${parent.profiles?.first_name || ''} ${parent.profiles?.last_name || ''}`.trim() || 'Parent';
+      const nannyName = `${nanny.profiles?.first_name || ''} ${nanny.profiles?.last_name || ''}`.trim() || 'Nanny';
+
+      const bookingDetails = {
+        date: finalStartTime.toISOString().split('T')[0],
+        time: finalStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        duration: finalEndTime ? Math.round((finalEndTime.getTime() - finalStartTime.getTime()) / (1000 * 60 * 60)) : 0,
+        location: parent.profiles?.address || 'Location specified in profile',
+      };
+
+      // Email to Parent
+      this.mailService.sendBookingConfirmationEmail(
+        parent.email,
+        parentName,
+        'parent',
+        { ...bookingDetails, otherPartyName: nannyName }
+      ).catch(err => console.error("Failed to send direct booking parent email", err));
+
+      // Email to Nanny
+      this.mailService.sendBookingConfirmationEmail(
+        nanny.email,
+        nannyName,
+        'nanny',
+        { ...bookingDetails, otherPartyName: parentName }
+      ).catch(err => console.error("Failed to send direct booking nanny email", err));
+    }
 
     // Emit SSE event to both parties
     const bookingCreatedEvent = {
@@ -250,6 +279,29 @@ export class BookingsService {
       data: updatedBooking,
       timestamp: new Date().toISOString(),
     });
+
+    return updatedBooking;
+  }
+
+  async handleNoShow(id: string, reason: string = "Parent No-Show") {
+    const booking = await this.prisma.bookings.findUnique({ where: { id } });
+    if (!booking) throw new NotFoundException("Booking not found");
+
+    const updatedBooking = await this.prisma.bookings.update({
+      where: { id },
+      data: {
+        status: booking.status === "CONFIRMED" ? "EXPIRED" : "PARENT_NO_SHOW", // Adaptive status
+        cancellation_reason: reason,
+      },
+    });
+
+    // Notify relevant parties
+    await this.notificationsService.createNotification(
+      booking.parent_id,
+      "Booking Status Updated",
+      `Your booking was marked as: ${updatedBooking.status}`,
+      "info",
+    );
 
     return updatedBooking;
   }
@@ -581,49 +633,44 @@ export class BookingsService {
     });
   }
   async checkExpiredBookings() {
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const now = TimeUtils.nowIST();
+    const unstartedCutoff = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+    const inProgressCutoff = new Date(now.getTime() - 8 * 60 * 60 * 1000);
 
-    // Find bookings that are older than 2 hours past their end time and still 'CONFIRMED' or 'requested'
-    const expiredBookings = await this.prisma.bookings.findMany({
+    // 1. Handle Unstarted Bookings (CONFIRMED -> EXPIRED)
+    const unstartedBookings = await this.prisma.bookings.findMany({
       where: {
         status: { in: ["CONFIRMED", "requested"] },
-        end_time: { lt: twoHoursAgo },
+        start_time: { lt: unstartedCutoff },
       },
-      select: { id: true, status: true, parent_id: true, nanny_id: true }
     });
 
-    console.log(`[Cron] Found ${expiredBookings.length} expired bookings to cancel.`);
+    for (const booking of unstartedBookings) {
+      await this.handleNoShow(booking.id, "System Auto-expiration: Booking never started");
+    }
 
-    for (const booking of expiredBookings) {
+    // 2. Handle Stuck In-Progress (IN_PROGRESS -> COMPLETED)
+    const stuckBookings = await this.prisma.bookings.findMany({
+      where: {
+        status: "IN_PROGRESS",
+        end_time: { lt: inProgressCutoff },
+      },
+    });
+    for (const booking of stuckBookings) {
       await this.prisma.bookings.update({
         where: { id: booking.id },
         data: {
-          status: "CANCELLED",
-          cancellation_reason: "System Auto-cancellation: Booking expired (No Show)",
-          tags: ["noshow"],
+          status: "COMPLETED",
+          actual_end_time: now,
+          tags: ["auto-completed"],
         },
       });
-
-      // Notify users
-      if (booking.parent_id) {
-        await this.notificationsService.createNotification(
-          booking.parent_id,
-          "Booking Cancelled (Expired)",
-          "Your booking was cancelled because it was not started/completed on time.",
-          "warning"
-        );
-      }
-      if (booking.nanny_id) {
-        await this.notificationsService.createNotification(
-          booking.nanny_id,
-          "Booking Cancelled (Expired)",
-          "The booking was cancelled because it was not started/completed on time.",
-          "warning"
-        );
-      }
     }
 
-    return expiredBookings.length;
+    return {
+      expired: unstartedBookings.length,
+      autoCompleted: stuckBookings.length,
+    };
   }
 
   async rescheduleBooking(

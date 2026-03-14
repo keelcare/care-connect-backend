@@ -128,10 +128,21 @@ export class BookingsController {
   @ApiOperation({ summary: 'Manually trigger a check for expired bookings' })
   @ApiResponse({ status: 200, description: 'Expired bookings checked and processed' })
   async checkExpired() {
-    const expiredCount = await this.bookingsService.checkExpiredBookings();
+    const result = await this.bookingsService.checkExpiredBookings();
     return {
       message: `Checked for expired bookings successfully`,
-      expired_count: expiredCount,
+      data: result,
     };
+  }
+
+  @Put(":id/no-show")
+  @ApiOperation({ summary: 'Mark a booking as a parent no-show (Nanny only)' })
+  @ApiResponse({ status: 200, description: 'Booking marked as no-show successfully' })
+  async markNoShow(@Param("id") id: string, @Request() req) {
+    const booking = await this.bookingsService.getBookingById(id);
+    if (booking.nanny_id !== req.user.id) {
+      throw new ForbiddenException("Only the assigned nanny can mark a no-show");
+    }
+    return this.bookingsService.handleNoShow(id);
   }
 }

@@ -4,9 +4,10 @@ import { BookingsController } from "./bookings.controller";
 import { ChatModule } from "../chat/chat.module"; // Import ChatModule to use ChatService later
 import { RequestsModule } from "../requests/requests.module";
 import { TasksService } from "../tasks/tasks.service";
+import { MailModule } from "../mail/mail.module";
 
 @Module({
-  imports: [ChatModule, RequestsModule],
+  imports: [ChatModule, RequestsModule, MailModule],
   controllers: [BookingsController],
   providers: [BookingsService, TasksService],
   exports: [BookingsService],

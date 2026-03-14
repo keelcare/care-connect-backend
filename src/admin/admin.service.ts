@@ -8,6 +8,8 @@ import { Prisma } from "@prisma/client";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { DisputesService } from "../disputes/disputes.service";
+import { MailService } from "../mail/mail.service";
+import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class AdminService {
@@ -20,6 +22,7 @@ export class AdminService {
     private requestsService: RequestsService,
     private sseService: SseService,
     private disputesService: DisputesService,
+    private mailService: MailService,
   ) { }
 
   // Manual Assignment Management
@@ -103,20 +106,6 @@ export class AdminService {
     });
   }
 
-  private parseRequestDateTime(date: Date, startTime: Date): Date {
-    // robustly combine date and time ensuring we respect the local time intent
-    try {
-      if (!date || !startTime) return new Date();
-      const dateStr = new Date(date).toISOString().split('T')[0];
-      const timeStr = new Date(startTime).toISOString().split('T')[1];
-      const combined = new Date(`${dateStr}T${timeStr}`);
-      return isNaN(combined.getTime()) ? new Date(date) : combined;
-    } catch (e) {
-      console.error("[AdminService] parseRequestDateTime failed:", e);
-      return new Date(date);
-    }
-  }
-
   async getAvailableNanniesForRequest(requestId: string) {
     try {
       const request = await this.prisma.service_requests.findUnique({
@@ -132,8 +121,8 @@ export class AdminService {
       const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
 
       // Calculate Request Times for overlap check
-      const actualStartTime = this.parseRequestDateTime(request.date, request.start_time);
-      const requestEndTime = new Date(actualStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
+      const actualStartTime = TimeUtils.combineDateAndTime(request.date, request.start_time);
+      const requestEndTime = TimeUtils.getEndTime(actualStartTime, Number(request.duration_hours));
 
       // Find Busy Nannies
       const busyNannies = await this.prisma.bookings.findMany({
@@ -238,6 +227,7 @@ export class AdminService {
   async manuallyAssignNanny(requestId: string, nannyId: string) {
     const request = await this.prisma.service_requests.findUnique({
       where: { id: requestId },
+      include: { users: { include: { profiles: true } } }
     });
 
     if (!request) throw new NotFoundException("Request not found");
@@ -245,13 +235,16 @@ export class AdminService {
 
     const nanny = await this.prisma.users.findUnique({
       where: { id: nannyId },
-      include: { nanny_details: true }
+      include: { 
+        nanny_details: true,
+        profiles: true
+      }
     });
     if (!nanny || nanny.role !== 'nanny') throw new NotFoundException("Nanny not found");
 
     // Calculate times for overlap check
-    const actualStartTime = this.parseRequestDateTime(request.date, request.start_time);
-    const requestEndTime = new Date(actualStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
+    const actualStartTime = TimeUtils.combineDateAndTime(request.date, request.start_time);
+    const requestEndTime = TimeUtils.getEndTime(actualStartTime, Number(request.duration_hours));
 
     const result = await this.prisma.$transaction(async (tx) => {
       // 1. Double check availability
@@ -300,6 +293,34 @@ export class AdminService {
 
       return { success: true, assignmentId: assignment.id };
     }, { isolationLevel: 'ReadCommitted' });
+
+    // Send Confirmation Emails (Outside transaction but after success)
+    const parent = (request as any).users;
+    const parentName = `${parent.profiles?.first_name || ''} ${parent.profiles?.last_name || ''}`.trim() || 'Parent';
+    const nannyName = `${nanny.profiles?.first_name || ''} ${nanny.profiles?.last_name || ''}`.trim() || 'Nanny';
+
+    const bookingDetails = {
+      date: request.date.toISOString().split('T')[0],
+      time: request.start_time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      duration: Number(request.duration_hours),
+      location: parent.profiles?.address || 'Location specified in profile',
+    };
+
+    // Email to Parent
+    this.mailService.sendBookingConfirmationEmail(
+      parent.email,
+      parentName,
+      'parent',
+      { ...bookingDetails, otherPartyName: nannyName }
+    ).catch(err => console.error("Failed to send manual assignment parent email", err));
+
+    // Email to Nanny
+    this.mailService.sendBookingConfirmationEmail(
+      nanny.email,
+      nannyName,
+      'nanny',
+      { ...bookingDetails, otherPartyName: parentName }
+    ).catch(err => console.error("Failed to send manual assignment nanny email", err));
 
     // --- Side Effects (Outside Transaction) ---
 

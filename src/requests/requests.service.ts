@@ -11,6 +11,8 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
+import { MailService } from "../mail/mail.service";
+import { TimeUtils } from "../common/utils/time.utils";
 
 
 export const CATEGORY_SKILL_MAP = {
@@ -28,6 +30,7 @@ export class RequestsService {
     private notificationsService: NotificationsService,
     private favoritesService: FavoritesService,
     private sseService: SseService,
+    private mailService: MailService,
   ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -56,9 +59,7 @@ export class RequestsService {
       // 2. Wrap creation in a transaction to ensure atomicity
       const { request, booking } = await this.prisma.$transaction(async (tx) => {
         // Create the service request
-        const startTimeStr = createRequestDto.start_time.split(':').length === 2
-          ? `${createRequestDto.start_time}:00`
-          : createRequestDto.start_time;
+        const startTimeStr = createRequestDto.start_time;
 
         // Fetch service details for pricing
         const serviceSettings = await this.prisma.services.findUnique({
@@ -69,11 +70,14 @@ export class RequestsService {
           throw new BadRequestException(`Service category '${createRequestDto.category}' not found.`);
         }
 
+        const bookingStartTime = TimeUtils.combineDateAndTime(createRequestDto.date, startTimeStr);
+        const bookingEndTime = TimeUtils.getEndTime(bookingStartTime, Number(createRequestDto.duration_hours));
+
         const request = await tx.service_requests.create({
           data: {
             parent_id: parentId,
             date: new Date(createRequestDto.date),
-            start_time: new Date(`${createRequestDto.date}T${startTimeStr}+05:30`), // Explicitly Enforce IST
+            start_time: bookingStartTime,
             duration_hours: createRequestDto.duration_hours,
             num_children: createRequestDto.num_children,
             children_ages: createRequestDto.children_ages || [],
@@ -88,9 +92,6 @@ export class RequestsService {
         });
 
         // Create initial booking (Pending Assignment)
-        const bookingStartTime = new Date(`${createRequestDto.date}T${startTimeStr}+05:30`);
-        const bookingEndTime = new Date(bookingStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
-
         const booking = await tx.bookings.create({
           data: {
             job_id: null,
@@ -238,7 +239,10 @@ export class RequestsService {
   async triggerMatching(requestId: string) {
     const request = await this.prisma.service_requests.findUnique({
       where: { id: requestId },
-      include: { assignments: true }, // Include previous assignments
+      include: {
+        assignments: true,
+        users: { include: { profiles: true } }
+      }, // Include previous assignments and parent info
     });
 
     if (!request) throw new NotFoundException("Request not found");
@@ -254,32 +258,8 @@ export class RequestsService {
     const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
 
     // Calculate Request End Time directly from the date object
-    let requestStartTime: Date;
-    try {
-      if (!request.date || (request as any).start_time === undefined) {
-        throw new Error("Missing date or start_time");
-      }
-
-      const dateObj = new Date(request.date);
-      const startTimeObj = new Date(request.start_time);
-
-      if (isNaN(dateObj.getTime()) || isNaN(startTimeObj.getTime())) {
-        throw new Error("Invalid date input components");
-      }
-
-      const datePart = dateObj.toISOString().split('T')[0];
-      const timePart = startTimeObj.toISOString().split('T')[1];
-      requestStartTime = new Date(`${datePart}T${timePart}`);
-
-      if (isNaN(requestStartTime.getTime())) {
-        throw new Error("Resulting requestStartTime is NaN");
-      }
-    } catch (e) {
-      console.error("Date parsing failed in triggerMatching, falling back to direct date field", e);
-      requestStartTime = new Date(request.date);
-    }
-
-    const requestEndTime = new Date(requestStartTime.getTime() + Number(request.duration_hours) * 60 * 60 * 1000);
+    const requestStartTime = TimeUtils.combineDateAndTime(request.date, request.start_time);
+    const requestEndTime = TimeUtils.getEndTime(requestStartTime, Number(request.duration_hours));
 
     console.log(`[DEBUG] Checking Overlap for Request: ${requestId}`);
     console.log(`[DEBUG] Window: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`);
@@ -319,6 +299,9 @@ export class RequestsService {
       SELECT 
         u.id, 
         u.email,
+        p.first_name,
+        p.last_name,
+        p.address,
         nd.skills,
         nd.experience_years,
         nd.acceptance_rate,
@@ -479,6 +462,35 @@ export class RequestsService {
               `We found and confirmed a nanny for your request! Tap to view details.`,
               "success",
             );
+
+            // Send Confirmation Emails
+            const parent = (request as any).users;
+            const nanny = bestMatch;
+            const parentName = `${parent.profiles?.first_name || ''} ${parent.profiles?.last_name || ''}`.trim() || 'Parent';
+            const nannyName = `${nanny.first_name || ''} ${nanny.last_name || ''}`.trim() || 'Nanny';
+
+            const bookingDetails = {
+              date: request.date.toISOString().split('T')[0],
+              time: request.start_time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              duration: Number(request.duration_hours),
+              location: parent.profiles?.address || 'Location specified in profile',
+            };
+
+            // Email to Parent
+            this.mailService.sendBookingConfirmationEmail(
+              parent.email,
+              parentName,
+              'parent',
+              { ...bookingDetails, otherPartyName: nannyName }
+            ).catch(err => console.error("Failed to send auto-match parent email", err));
+
+            // Email to Nanny
+            this.mailService.sendBookingConfirmationEmail(
+              bestMatch.email,
+              nannyName,
+              'nanny',
+              { ...bookingDetails, otherPartyName: parentName }
+            ).catch(err => console.error("Failed to send auto-match nanny email", err));
 
             // Emit SSE match event to both parties
             const matchedEvent = {
