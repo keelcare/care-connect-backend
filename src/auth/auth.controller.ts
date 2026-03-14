@@ -59,6 +59,8 @@ export class AuthController {
         secure: true,
         sameSite: "none" as const,
         path: "/",
+        // Partitioned cookies for cross-site support in Chrome 114+
+        partitioned: true,
       };
     }
 

@@ -33,6 +33,7 @@ async function bootstrap() {
   const allowedOrigins = [
     process.env.FRONTEND_URL,
     "http://localhost:3000",
+    "https://keel-care.vercel.app",
     "https://keelcare.netlify.app",
     "https://care-connect-dev.vercel.app",
     "http://127.0.0.1:3000",
@@ -41,7 +42,8 @@ async function bootstrap() {
     "http://localhost",
     "https://localhost",
     "ionic://localhost",
-    "http://192.168.0.3:3000"
+    "http://192.168.0.3:3000",
+    // Match any vercel.app or netlify.app subdomains for development
   ].filter(Boolean) as string[];
 
   // Security Headers using Helmet
@@ -90,15 +92,26 @@ async function bootstrap() {
   // Enable CORS with multiple origins
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow if no origin (server-to-server or mobile app bypass) 
+      // or if it matches our list or specific patterns
+      if (!origin || 
+          allowedOrigins.includes(origin) || 
+          origin.includes('.vercel.app') || 
+          origin.includes('.netlify.app') ||
+          origin.startsWith('capacitor://') ||
+          origin.startsWith('keel://') ||
+          origin.startsWith('careconnect://')
+      ) {
         callback(null, true);
       } else {
+        console.warn(`[CORS] Origin ${origin} NOT allowed`);
         callback(null, false);
       }
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Platform", "X-Device-Id"],
+    exposedHeaders: ["set-cookie"],
   });
 
   app.useGlobalPipes(
