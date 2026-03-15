@@ -216,7 +216,7 @@ export class AuthController {
       if (req.query.state) {
         try {
           const state = JSON.parse(req.query.state as string);
-          
+
           if (state.origin) {
             // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
             if (state.origin.startsWith('careconnect://') || state.origin.startsWith('keel://')) {
@@ -226,15 +226,15 @@ export class AuthController {
               state.origin.includes('192.168.') ||
               state.origin.includes('10.0.') ||
               state.origin.includes('172.') ||
-              state.origin.includes('keelcare.netlify.app') ||
               state.origin.includes('care-connect-dev.vercel.app') ||
+              state.origin.includes('keel-care.vercel.app') ||
               state.origin.includes('127.0.0.1')
             ) {
               let urlToUse = state.origin;
               if (urlToUse.endsWith('/')) {
                 urlToUse = urlToUse.slice(0, -1);
               }
-              
+
               if (urlToUse.includes('/auth/callback')) {
                 redirectUrl = urlToUse;
               } else {
@@ -252,9 +252,10 @@ export class AuthController {
       const isProd = this.configService.get("NODE_ENV") === "production";
       const renderEnv = this.configService.get("RENDER");
 
-      if ((isProd || renderEnv) && redirectUrl.includes("localhost")) {
-        // Allow localhost redirect even in prod if explicitly requested via state
-        console.log("[Auth] Using localhost redirect in production environment via state");
+      if ((isProd || renderEnv) && redirectUrl.includes("localhost") && !req.query.state) {
+        // Fallback to production frontend if redirect is accidentally localhost
+        redirectUrl = `${this.configService.get("FRONTEND_URL")}/auth/callback`;
+        console.log("[Auth] Fallback redirect to production FRONTEND_URL");
       }
 
       console.log(`[Auth] Redirecting to: ${redirectUrl}`);

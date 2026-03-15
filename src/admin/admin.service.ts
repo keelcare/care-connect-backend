@@ -10,6 +10,7 @@ import { SSE_EVENTS } from "../events/sse-event.types";
 import { DisputesService } from "../disputes/disputes.service";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { AvailabilityService } from "../availability/availability.service";
 
 @Injectable()
 export class AdminService {
@@ -23,6 +24,7 @@ export class AdminService {
     private sseService: SseService,
     private disputesService: DisputesService,
     private mailService: MailService,
+    private availabilityService: AvailabilityService,
   ) { }
 
   // Manual Assignment Management
@@ -138,6 +140,22 @@ export class AdminService {
       });
       const busyNannyIds = busyNannies.map((b) => b.nanny_id);
 
+      // Also find nannies with explicit blocks
+      const blockedNannies = await this.prisma.availability_blocks.findMany();
+      const blockedNannyIds: string[] = [];
+      for (const block of blockedNannies) {
+        const isUnavailable = !await this.availabilityService.isNannyAvailable(
+          block.nanny_id,
+          actualStartTime,
+          requestEndTime
+        );
+        if (isUnavailable) {
+          blockedNannyIds.push(block.nanny_id);
+        }
+      }
+
+      const allExcludedIds = [...new Set([...busyNannyIds, ...blockedNannyIds])];
+
       // Get basic nanny list within radius and matching skills
       // Note: acos input is capped at [-1, 1] to prevent NaN due to floating point precision errors
       const nannies = (await this.prisma.$queryRaw(Prisma.sql`
@@ -163,7 +181,7 @@ export class AdminService {
         JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
         AND nd.is_available_now = true
-        ${busyNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(busyNannyIds)})` : Prisma.empty}
+        ${allExcludedIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(allExcludedIds)})` : Prisma.empty}
         ${skillSearchTerms.length > 0 ? Prisma.sql`AND (
           EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${Prisma.join(skillSearchTerms)}))
           OR 
@@ -260,6 +278,10 @@ export class AdminService {
       });
 
       if (overlap) throw new BadRequestException("Nanny is already booked for this slot");
+
+      // Check explicit blocks
+      const isAvailable = await this.availabilityService.isNannyAvailable(nannyId, actualStartTime, requestEndTime);
+      if (!isAvailable) throw new BadRequestException("Nanny has marked themselves as unavailable for this time slot");
 
       // 2. Create Assignment (directly accepted)
       const assignment = await tx.assignments.create({
@@ -703,6 +725,15 @@ export class AdminService {
 
     const totalRevenue = revenueData._sum.amount || 0;
 
+    // Matching Health Metrics
+    const matchingSuccessRate = totalAssignments > 0 ? (acceptedAssignments / totalAssignments) * 100 : 0;
+    
+    // Outcome Breakdown
+    const [timedOutAssignments, rejectedAssignments] = await Promise.all([
+      this.prisma.assignments.count({ where: { status: "timeout" } }),
+      this.prisma.assignments.count({ where: { status: "rejected" } }),
+    ]);
+
     // Popular service times (simplified - count by hour of day)
     const hourCounts = new Array(24).fill(0);
     bookings.forEach((booking) => {
@@ -720,6 +751,12 @@ export class AdminService {
     return {
       completionRate: Math.round(completionRate * 10) / 10,
       acceptanceRate: Math.round(acceptanceRate * 10) / 10,
+      matchingSuccessRate: Math.round(matchingSuccessRate * 10) / 10,
+      outcomes: {
+        accepted: acceptedAssignments,
+        timedOut: timedOutAssignments,
+        rejected: rejectedAssignments,
+      },
       totalRevenue,
       popularTimes,
       totalRequests,

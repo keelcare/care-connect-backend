@@ -10,6 +10,7 @@ import { ChatModule } from "../chat/chat.module";
 import { RequestsModule } from "../requests/requests.module";
 import { DisputesModule } from "../disputes/disputes.module";
 import { MailModule } from "../mail/mail.module";
+import { AvailabilityModule } from "../availability/availability.module";
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { MailModule } from "../mail/mail.module";
     forwardRef(() => RequestsModule),
     DisputesModule,
     MailModule,
+    AvailabilityModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

@@ -13,6 +13,7 @@ import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { AvailabilityService } from "../availability/availability.service";
 
 
 export const CATEGORY_SKILL_MAP = {
@@ -31,6 +32,7 @@ export class RequestsService {
     private favoritesService: FavoritesService,
     private sseService: SseService,
     private mailService: MailService,
+    private availabilityService: AvailabilityService,
   ) { }
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -287,8 +289,30 @@ export class RequestsService {
     const busyNannyIds = busyNannies.map((b) => b.nanny_id);
     console.log(`Busy Nannies (Overlap ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}):`, busyNannyIds);
 
-    // Combine previous rejects and currently busy nannies
-    const excludedNannyIds = [...new Set([...previouslyAssignedIds, ...busyNannyIds])];
+    // 2b. Find Nannies with overlapping availability blocks
+    // This is a new Phase 4 feature
+    const nanniesWithBlocks = await this.prisma.availability_blocks.findMany({
+      where: {
+        nanny_id: { notIn: busyNannyIds.length > 0 ? busyNannyIds : ["none"] } // No need to re-check if already busy
+      }
+    });
+
+    const blockedNannyIds: string[] = [];
+    for (const block of nanniesWithBlocks) {
+      const isUnavailable = !await this.availabilityService.isNannyAvailable(
+        block.nanny_id,
+        requestStartTime,
+        requestEndTime
+      );
+      if (isUnavailable) {
+        blockedNannyIds.push(block.nanny_id);
+      }
+    }
+
+    console.log(`Blocked Nannies (Availability Blocks):`, blockedNannyIds);
+
+    // Combine previous rejects, busy nannies, and blocked nannies
+    const excludedNannyIds = [...new Set([...previouslyAssignedIds, ...busyNannyIds, ...blockedNannyIds])];
 
     const radiusKm = 15; // Increased to 15km
     const category = (request as any).category;
