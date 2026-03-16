@@ -30,6 +30,14 @@ export class PaymentsController {
     return this.paymentsService.createOrder(createOrderDto.bookingId);
   }
 
+  @Post("retry-order/:bookingId")
+  @UseGuards(AuthGuard("jwt"))
+  @ApiOperation({ summary: "Retry a failed Razorpay order for a booking" })
+  @ApiResponse({ status: 201, description: "New order created successfully for retry" })
+  async retryOrder(@Param("bookingId") bookingId: string) {
+    return this.paymentsService.retryOrder(bookingId);
+  }
+
   @Post("verify")
   @ApiOperation({ summary: "Verify a Razorpay payment signature" })
   @ApiResponse({ status: 200, description: "Payment verified successfully" })

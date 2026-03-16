@@ -1,5 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
+import { APP_FILTER } from "@nestjs/core";
+import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
 import { ServeStaticModule } from "@nestjs/serve-static";
 import { EventEmitterModule } from "@nestjs/event-emitter";
@@ -68,6 +70,7 @@ import { SseModule } from './sse/sse.module';
         WHATSAPP_API_VERSION: Joi.string().allow('', null).optional(),
       }),
     }),
+    SentryModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
         transport:
@@ -124,6 +127,10 @@ import { SseModule } from './sse/sse.module';
     {
       provide: APP_GUARD,
       useClass: UserThrottlerGuard,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: SentryGlobalFilter,
     },
   ],
 })

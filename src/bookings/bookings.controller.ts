@@ -134,4 +134,16 @@ export class BookingsController {
       expired_count: expiredCount,
     };
   }
+
+  @Post(":id/no-show")
+  @ApiOperation({ summary: 'Report a No-Show for a confirmed booking' })
+  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
+  @ApiResponse({ status: 200, description: 'No-Show reported and booking cancelled' })
+  async reportNoShow(
+    @Param("id") id: string,
+    @Body("reason") reason: string,
+    @Request() req,
+  ) {
+    return this.bookingsService.reportNoShow(id, req.user.id, reason || "No reason provided");
+  }
 }

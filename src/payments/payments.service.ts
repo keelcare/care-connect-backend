@@ -154,6 +154,32 @@ export class PaymentsService {
     }
   }
 
+  // 1.5. Retry Failed Order
+  async retryOrder(bookingId: string) {
+    // Check if there is a failed payment for this booking
+    const failedPayment = await this.prisma.payments.findFirst({
+      where: { booking_id: bookingId, status: "failed" },
+      orderBy: { created_at: "desc" },
+    });
+
+    if (!failedPayment) {
+      throw new BadRequestException("No failed payment found for this booking to retry");
+    }
+
+    // Check if it's already paid successfully
+    const successPayment = await this.prisma.payments.findFirst({
+      where: { booking_id: bookingId, status: "captured" },
+    });
+
+    if (successPayment) {
+      throw new BadRequestException("Booking is already paid successfully.");
+    }
+
+    this.logger.log(`Retrying order calculation for booking: ${bookingId}`);
+    return this.createOrder(bookingId);
+  }
+
+
   // 2. Verify Payment (HMAC SHA256 Signature Check)
   async verifyPayment(orderId: string, paymentId: string, signature: string) {
     const secret = this.configService.get<string>("RAZORPAY_KEY_SECRET");

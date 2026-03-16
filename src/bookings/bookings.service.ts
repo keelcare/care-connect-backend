@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { ChatService } from "../chat/chat.service";
@@ -625,6 +626,47 @@ export class BookingsService {
     }
 
     return expiredBookings.length;
+  }
+
+  async reportNoShow(id: string, reportingUserId: string, reason: string) {
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id },
+    });
+
+    if (!booking) throw new NotFoundException("Booking not found");
+
+    if (booking.status !== "CONFIRMED") {
+      throw new BadRequestException("Only confirmed bookings can be reported as a no-show.");
+    }
+
+    if (booking.parent_id !== reportingUserId && booking.nanny_id !== reportingUserId) {
+      throw new ForbiddenException("Not authorized to report on this booking.");
+    }
+
+    const isNannyReporting = booking.nanny_id === reportingUserId;
+    const noShowTag = isNannyReporting ? "parent_noshow" : "nanny_noshow";
+
+    const updatedBooking = await this.prisma.bookings.update({
+      where: { id },
+      data: {
+        status: "CANCELLED",
+        cancellation_reason: `Reported No-Show by ${isNannyReporting ? 'Nanny' : 'Parent'}: ${reason}`,
+        tags: ["noshow", noShowTag],
+      },
+    });
+
+    // Notify the other party
+    const notifiedUserId = isNannyReporting ? booking.parent_id : booking.nanny_id;
+    if (notifiedUserId) {
+      await this.notificationsService.createNotification(
+        notifiedUserId,
+        "Booking Cancelled (No-Show Reported)",
+        `The other party reported a no-show for this booking. Reason: ${reason}`,
+        "warning"
+      );
+    }
+
+    return updatedBooking;
   }
 
   async rescheduleBooking(
