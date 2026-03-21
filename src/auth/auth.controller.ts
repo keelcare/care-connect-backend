@@ -48,13 +48,38 @@ export class AuthController {
     return user;
   }
 
+  private getCookieOptions(res: Response) {
+    const isProd = this.configService.get("NODE_ENV") === "production";
+    const renderEnv = this.configService.get("RENDER");
+    
+    // In production (Render/Netlify), we must use secure/none for cross-site cookies
+    if (isProd || renderEnv) {
+      return {
+        httpOnly: true,
+        secure: true,
+        sameSite: "none" as const,
+        path: "/",
+        // Partitioned cookies for cross-site support in Chrome 114+
+        partitioned: true,
+      };
+    }
+
+    // In local development, we use more relaxed settings to support mobile testing via IP
+    return {
+      httpOnly: true,
+      secure: false, // Allow non-HTTPS for mobile testing
+      sameSite: "lax" as const,
+      path: "/",
+    };
+  }
+
   /**
    * SECURITY: Strict rate limiting (10 req/min) to prevent brute force attacks
    */
   @Post("login")
   @StrictThrottle()
   @ApiOperation({ summary: 'User login' })
-  @ApiResponse({ status: 200, description: 'Successfully logged in, tokens set in cookies' })
+  @ApiResponse({ status: 200, description: 'Successfully logged in, tokens set in cookies and returned in body' })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(
     @Body() loginDto: LoginDto,
@@ -70,12 +95,7 @@ export class AuthController {
     }
     const loginData = await this.authService.login(user);
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
-      path: "/",
-    };
+    const cookieOptions = this.getCookieOptions(res);
 
     res.cookie("access_token", loginData.access_token, {
       ...cookieOptions,
@@ -87,28 +107,18 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
     });
 
-    return { user: loginData.user };
+    return { 
+      user: loginData.user,
+      access_token: loginData.access_token,
+      refresh_token: loginData.refresh_token
+    };
   }
 
   @Post("logout")
   @ApiOperation({ summary: 'Logout and clear session cookies' })
   @ApiResponse({ status: 200, description: 'Successfully logged out' })
   async logout(@Res({ passthrough: true }) res: Response) {
-    const isProd = this.configService.get("NODE_ENV") === "production";
-    const renderEnv = this.configService.get("RENDER");
-    let frontendUrl =
-      this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-
-    if ((isProd || renderEnv) && frontendUrl.includes("localhost")) {
-      frontendUrl = "http://localhost:3000";
-    }
-
-    const optionsSecure = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
-      path: "/",
-    };
+    const optionsSecure = this.getCookieOptions(res);
 
     ["access_token", "refresh_token"].forEach((cookie) => {
       res.clearCookie(cookie, optionsSecure);
@@ -118,26 +128,23 @@ export class AuthController {
   }
 
   @Post("refresh")
-  @ApiOperation({ summary: 'Refresh access tokens using refresh cookie' })
+  @ApiOperation({ summary: 'Refresh access tokens using refresh cookie or body' })
   @ApiResponse({ status: 200, description: 'Tokens refreshed successfully' })
   @ApiResponse({ status: 401, description: 'No refresh token provided or token invalid' })
   async refresh(
     @Req() req,
+    @Body() body: { refresh_token?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = req.cookies["refresh_token"];
+    // Check cookie first, then body (for mobile apps)
+    const refreshToken = req.cookies["refresh_token"] || body.refresh_token;
     if (!refreshToken) {
       throw new UnauthorizedException("No refresh token found");
     }
 
     const loginData = await this.authService.refresh(refreshToken);
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
-      path: "/",
-    };
+    const cookieOptions = this.getCookieOptions(res);
 
     res.cookie("access_token", loginData.access_token, {
       ...cookieOptions,
@@ -149,7 +156,11 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
     });
 
-    return { access_token: loginData.access_token, message: "Token refreshed successfully" };
+    return { 
+      access_token: loginData.access_token, 
+      refresh_token: loginData.refresh_token,
+      message: "Token refreshed successfully" 
+    };
   }
 
   /**
@@ -287,12 +298,7 @@ export class AuthController {
   ) {
     const loginData = await this.authService.exchangeSessionToken(dto.token);
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none" as const,
-      path: "/",
-    };
+    const cookieOptions = this.getCookieOptions(res);
 
     res.cookie("access_token", loginData.access_token, {
       ...cookieOptions,
@@ -304,6 +310,10 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    return { user: loginData.user };
+    return { 
+      user: loginData.user,
+      access_token: loginData.access_token,
+      refresh_token: loginData.refresh_token
+    };
   }
 }

@@ -135,14 +135,15 @@ export class BookingsController {
     };
   }
 
-  @Put(":id/no-show")
-  @ApiOperation({ summary: 'Mark a booking as a parent no-show (Nanny only)' })
-  @ApiResponse({ status: 200, description: 'Booking marked as no-show successfully' })
-  async markNoShow(@Param("id") id: string, @Request() req) {
-    const booking = await this.bookingsService.getBookingById(id);
-    if (booking.nanny_id !== req.user.id) {
-      throw new ForbiddenException("Only the assigned nanny can mark a no-show");
-    }
-    return this.bookingsService.handleNoShow(id);
+  @Post(":id/no-show")
+  @ApiOperation({ summary: 'Report a No-Show for a confirmed booking' })
+  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
+  @ApiResponse({ status: 200, description: 'No-Show reported and booking cancelled' })
+  async reportNoShow(
+    @Param("id") id: string,
+    @Body("reason") reason: string,
+    @Request() req,
+  ) {
+    return this.bookingsService.reportNoShow(id, req.user.id, reason || "No reason provided");
   }
 }

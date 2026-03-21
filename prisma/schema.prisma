@@ -190,6 +190,23 @@ model payments {
   signature         String?
   updated_at        DateTime? @default(now()) @db.Timestamptz(6)
   bookings          bookings  @relation(fields: [booking_id], references: [id])
+  payment_audit_log payment_audit_log[]
+}
+
+model payment_audit_log {
+  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  payment_id         String    @db.Uuid
+  order_id           String    @db.VarChar(255)
+  from_status        String?   @db.VarChar(50)
+  to_status          String    @db.VarChar(50)
+  triggered_by       String    @db.VarChar(100)
+  razorpay_payment_id String?  @db.VarChar(255)
+  metadata           Json?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  payments           payments  @relation(fields: [payment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([order_id])
+  @@index([payment_id])
 }
 
 model profiles {
