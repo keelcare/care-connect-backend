@@ -8,5 +8,6 @@ import { ConfigModule } from "@nestjs/config";
   imports: [ConfigModule, NotificationsModule],
   controllers: [PaymentsController],
   providers: [PaymentsService],
+  exports: [PaymentsService],
 })
 export class PaymentsModule {}

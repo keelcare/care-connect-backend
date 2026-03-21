@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { PricingUtils } from "../common/utils/pricing.utils";
@@ -13,6 +15,7 @@ import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { PaymentsService } from "../payments/payments.service";
 
 @Injectable()
 export class BookingsService {
@@ -23,6 +26,8 @@ export class BookingsService {
     private requestsService: RequestsService,
     private sseService: SseService,
     private mailService: MailService,
+    @Inject(forwardRef(() => PaymentsService))
+    private paymentsService: PaymentsService,
   ) { }
 
 
@@ -437,10 +442,12 @@ export class BookingsService {
     if (existingPayment) {
       if (existingPayment.status === 'captured') {
         // Parent already paid, now it's "pending_release" to the nanny
-        await this.prisma.payments.update({
-          where: { id: existingPayment.id },
-          data: { status: "pending_release" },
-        });
+        await this.paymentsService.updatePaymentStatus(
+          existingPayment.id,
+          "pending_release",
+          "bookings:booking_completed",
+          { booking_id: id }
+        );
       }
       // If payment is already pending_release or other, keep it as is
     } else {
