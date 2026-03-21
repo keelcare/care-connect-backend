@@ -133,6 +133,9 @@ export class AssignmentsService {
         }
       });
 
+      // 3.5 Create recurring booking record if subscription
+      await this.requestsService.createRecurringRecord(tx, assignment.request_id, nannyId);
+
       // 4. Create Chat for this booking (Atomically)
       try {
         await this.chatService.createChat(updatedBooking.id);

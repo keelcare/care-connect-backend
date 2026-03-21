@@ -9,6 +9,7 @@ import Razorpay from "razorpay";
 import * as crypto from "crypto";
 import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
+import { PricingUtils } from "../common/utils/pricing.utils";
 
 @Injectable()
 export class PaymentsService {
@@ -73,12 +74,15 @@ export class PaymentsService {
       durationHours += 24;
     }
 
-    const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
-    const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
-    const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
-    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+    const { totalAmount } = PricingUtils.calculateTotal(
+      hourlyRate,
+      durationHours,
+      Number(booking.service_requests?.['discount_percentage'] || 0),
+      Number(booking.service_requests?.['plan_duration_months'] || 1),
+      booking.service_requests?.['plan_type'] || 'ONE_TIME'
+    );
 
-    const amountInRupees = (hourlyRate * (1 - discount / 100)) * durationHours * sessionsPerMonth * planDuration;
+    const amountInRupees = totalAmount;
     const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);

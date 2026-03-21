@@ -10,6 +10,7 @@ import { UsersService } from "../users/users.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { SseService } from "../sse/sse.service";
+import { PricingUtils } from "../common/utils/pricing.utils";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
@@ -90,8 +91,13 @@ export class RequestsService {
           } as any,
         });
 
-        const hourlyRate = Number(serviceSettings.hourly_rate);
-        const totalAmount = Number(createRequestDto.duration_hours) * hourlyRate;
+        const { totalAmount, hourlyRate } = PricingUtils.calculateTotal(
+          Number(serviceSettings.hourly_rate),
+          Number(createRequestDto.duration_hours),
+          Number(createRequestDto.discount_percentage || 0),
+          Number(createRequestDto.plan_duration_months || 1),
+          createRequestDto.plan_type || 'ONE_TIME'
+        );
 
         // Create initial booking (Pending Assignment)
         const booking = await tx.bookings.create({
@@ -459,13 +465,18 @@ export class RequestsService {
             });
 
             // 4. Update associated booking to CONFIRMED
-            await tx.bookings.updateMany({
+            const updatedBooking = await tx.bookings.update({
               where: { request_id: requestId, status: { not: "CANCELLED" } },
               data: {
                 nanny_id: bestMatch.id,
                 status: "CONFIRMED",
               }
             });
+
+            // 5. If subscription plan, create recurring_bookings entry
+            await this.createRecurringRecord(tx, requestId, bestMatch.id);
+
+            return { assignment, booking: updatedBooking };
 
             return assignment;
           }, {
@@ -605,19 +616,65 @@ export class RequestsService {
       where: { name: request.category || 'CC' }
     });
     const hourlyRate = Number(service?.hourly_rate || 500);
-    const duration = Number(request.duration_hours || 0);
-    const discount = Number(request['discount_percentage'] || 0);
-    const planDuration = Number(request['plan_duration_months'] || 1);
-    const planType = request['plan_type'] || 'ONE_TIME';
-    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
-
-    const totalAmount = (duration * hourlyRate * (1 - discount / 100)) * sessionsPerMonth * planDuration;
+    const { totalAmount } = PricingUtils.calculateTotal(
+      hourlyRate,
+      Number(request.duration_hours || 0),
+      Number(request['discount_percentage'] || 0),
+      Number(request['plan_duration_months'] || 1),
+      request['plan_type'] || 'ONE_TIME'
+    );
 
     return {
       ...request,
       hourly_rate: hourlyRate,
       total_amount: totalAmount
     };
+  }
+
+  /**
+   * Helper to create a recurring_bookings record for subscription plans.
+   * This should be called when a nanny is assigned (auto or manual).
+   */
+  async createRecurringRecord(tx: any, requestId: string, nannyId: string) {
+    const request = await tx.service_requests.findUnique({
+      where: { id: requestId }
+    });
+
+    if (!request || !request.plan_type || request.plan_type === 'ONE_TIME') {
+      return;
+    }
+
+    const dateObj = new Date(request.date);
+    const dayName = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dateObj).toUpperCase();
+    const recurrencePattern = `WEEKLY_${dayName}`;
+
+    const endDate = new Date(dateObj);
+    endDate.setMonth(endDate.getMonth() + (request.plan_duration_months || 1));
+
+    // Convert start_time to string "HH:mm" for schema
+    // In PostgreSQL Time(6), it usually comes back as a Date or String depending on Prisma version
+    let startTimeStr = "09:00";
+    if (request.start_time instanceof Date) {
+      startTimeStr = request.start_time.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    } else if (typeof request.start_time === 'string') {
+      startTimeStr = request.start_time.slice(0, 5);
+    }
+
+    return tx.recurring_bookings.create({
+      data: {
+        parent_id: request.parent_id,
+        nanny_id: nannyId,
+        recurrence_pattern: recurrencePattern,
+        start_date: dateObj,
+        end_date: endDate,
+        start_time: startTimeStr,
+        duration_hours: Number(request.duration_hours),
+        num_children: request.num_children,
+        children_ages: request.children_ages || [],
+        special_requirements: request.special_requirements,
+        is_active: true,
+      }
+    });
   }
 
   async findAllByParent(parentId: string) {
@@ -649,13 +706,13 @@ export class RequestsService {
 
     return requests.map(req => {
       const rate = serviceMap[req.category as string] || 500;
-      const duration = Number(req.duration_hours || 0);
-      const discount = Number(req['discount_percentage'] || 0);
-      const planDuration = Number(req['plan_duration_months'] || 1);
-      const planType = req['plan_type'] || 'ONE_TIME';
-      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
-
-      const totalAmount = (duration * rate * (1 - discount / 100)) * sessionsPerMonth * planDuration;
+      const { totalAmount } = PricingUtils.calculateTotal(
+        rate,
+        Number(req.duration_hours || 0),
+        Number(req['discount_percentage'] || 0),
+        Number(req['plan_duration_months'] || 1),
+        req['plan_type'] || 'ONE_TIME'
+      );
 
       return {
         ...req,

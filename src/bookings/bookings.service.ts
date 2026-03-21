@@ -4,6 +4,7 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { PricingUtils } from "../common/utils/pricing.utils";
 import { ChatService } from "../chat/chat.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { RequestsService } from "../requests/requests.service";
@@ -196,12 +197,13 @@ export class BookingsService {
     });
     const hourlyRate = Number(service?.hourly_rate || 500);
 
-    const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
-    const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
-    const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
-    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
-
-    const totalAmount = (hourlyRate * (1 - discount / 100)) * (durationHours > 0 ? durationHours : Number(booking.service_requests?.duration_hours || 0)) * sessionsPerMonth * planDuration;
+    const { totalAmount } = PricingUtils.calculateTotal(
+      hourlyRate,
+      (durationHours > 0 ? durationHours : Number(booking.service_requests?.duration_hours || 0)),
+      Number(booking.service_requests?.['discount_percentage'] || 0),
+      Number(booking.service_requests?.['plan_duration_months'] || 1),
+      booking.service_requests?.['plan_type'] || 'ONE_TIME'
+    );
 
     return {
       ...booking,
@@ -252,12 +254,13 @@ export class BookingsService {
         ? (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / (1000 * 60 * 60)
         : Number(booking.service_requests?.duration_hours || 0);
 
-      const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
-      const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
-      const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
-      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
-
-      const totalAmount = (rate * (1 - discount / 100)) * hours * sessionsPerMonth * planDuration;
+      const { totalAmount } = PricingUtils.calculateTotal(
+        rate,
+        hours,
+        Number(booking.service_requests?.['discount_percentage'] || 0),
+        Number(booking.service_requests?.['plan_duration_months'] || 1),
+        booking.service_requests?.['plan_type'] || 'ONE_TIME'
+      );
 
       return {
         ...booking,
@@ -297,12 +300,13 @@ export class BookingsService {
         ? (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / (1000 * 60 * 60)
         : Number(booking.service_requests?.duration_hours || 0);
 
-      const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
-      const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
-      const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
-      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
-
-      const totalAmount = (rate * (1 - discount / 100)) * hours * sessionsPerMonth * planDuration;
+      const { totalAmount } = PricingUtils.calculateTotal(
+        rate,
+        hours,
+        Number(booking.service_requests?.['discount_percentage'] || 0),
+        Number(booking.service_requests?.['plan_duration_months'] || 1),
+        booking.service_requests?.['plan_type'] || 'ONE_TIME'
+      );
 
       const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
 
@@ -379,6 +383,7 @@ export class BookingsService {
           include: { nanny_details: true },
         },
         service_requests: true,
+        payments: true,
       },
     });
     if (!booking) throw new NotFoundException("Booking not found");
@@ -424,18 +429,31 @@ export class BookingsService {
       },
     });
 
-    // Create Payment Record (Pending Release)
-    // In a real flow, checking out triggers the Razorpay Order.
-    // Here we create a placeholder record that will be updated or replaced when the parent initiates payment.
-    await this.prisma.payments.create({
-      data: {
-        booking_id: id,
-        amount: totalAmount,
-        status: "pending_release",
-        order_id: `pending_${id}_${Date.now()}`, // Placeholder until parent initiates actual payment flow
-        provider: "manual_pending",
-      },
-    });
+    // 2. Handle Payment: Update existing or create pending_release
+    // Check if any payment already exists for this booking (could be captured from a subscription)
+    const existingPayment = booking.payments?.[0];
+
+    if (existingPayment) {
+      if (existingPayment.status === 'captured') {
+        // Parent already paid, now it's "pending_release" to the nanny
+        await this.prisma.payments.update({
+          where: { id: existingPayment.id },
+          data: { status: "pending_release" },
+        });
+      }
+      // If payment is already pending_release or other, keep it as is
+    } else {
+      // No payment found, create a manual pending_release record
+      await this.prisma.payments.create({
+        data: {
+          booking_id: id,
+          amount: totalAmount,
+          status: "pending_release",
+          order_id: `manual_pending_${id}_${Date.now()}`,
+          provider: "manual_pending",
+        },
+      });
+    }
 
     // Notify Parent
     await this.notificationsService.createNotification(

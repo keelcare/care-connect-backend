@@ -11,6 +11,7 @@ import { SSE_EVENTS } from "../events/sse-event.types";
 import { DisputesService } from "../disputes/disputes.service";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { PricingUtils } from "../common/utils/pricing.utils";
 import { AvailabilityService } from "../availability/availability.service";
 
 @Injectable()
@@ -84,7 +85,13 @@ export class AdminService {
         address: profile?.address || "Location not specified", // Added for direct UI mapping
         parent_name: profile ? `${profile.first_name} ${profile.last_name}` : "Unknown Parent",
         hourly_rate: serviceMap[req.category as string] || 500,
-        total_amount: Number(req.duration_hours) * (serviceMap[req.category as string] || 500),
+        total_amount: PricingUtils.calculateTotal(
+          serviceMap[req.category as string] || 500,
+          Number(req.duration_hours),
+          Number((req as any).discount_percentage || 0),
+          Number((req as any).plan_duration_months || 1),
+          (req as any).plan_type || 'ONE_TIME'
+        ).totalAmount,
         created_at: req.created_at,
         children_count: req.num_children || children.length,
         children_names: children.length > 0
@@ -317,6 +324,9 @@ export class AdminService {
           status: "CONFIRMED",
         },
       });
+
+      // 4.5 Create Recurring Booking Record if subscription
+      await this.requestsService.createRecurringRecord(tx, requestId, nannyId);
 
       return { success: true, assignmentId: assignment.id };
     }, { isolationLevel: 'ReadCommitted' });
