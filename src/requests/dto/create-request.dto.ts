@@ -32,6 +32,13 @@ export enum ServiceCategory {
   ST = 'ST',
 }
 
+export enum SubscriptionPlanType {
+  ONE_TIME = 'ONE_TIME',
+  MONTHLY = 'MONTHLY',
+  SIX_MONTH = 'SIX_MONTH',
+  YEARLY = 'YEARLY',
+}
+
 export class CreateRequestDto {
   @ApiProperty({ example: '2026-06-20', description: 'Date of service (YYYY-MM-DD)' })
   @IsNotEmpty()
@@ -74,11 +81,7 @@ export class CreateRequestDto {
   @Sanitize()
   special_requirements?: string;
 
-  @ApiPropertyOptional({ example: 25, description: 'Maximum hourly rate offered' })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  max_hourly_rate?: number;
+
 
   /**
    * SECURITY: Limit skill string length to prevent abuse
@@ -106,4 +109,21 @@ export class CreateRequestDto {
   @IsArray()
   @IsUUID('4', { each: true, message: 'Each child ID must be a valid UUID' })
   child_ids?: string[];
+
+  @ApiPropertyOptional({ enum: SubscriptionPlanType, example: SubscriptionPlanType.ONE_TIME })
+  @IsOptional()
+  @IsEnum(SubscriptionPlanType)
+  plan_type?: SubscriptionPlanType;
+
+  @ApiPropertyOptional({ example: 15 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  discount_percentage?: number;
+
+  @ApiPropertyOptional({ example: 6, description: 'Duration in months for subscriptions' })
+  @IsOptional()
+  @IsNumber()
+  plan_duration_months?: number;
 }

@@ -4,7 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { UsersService } from "../users/users.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
-import { AiService } from "../ai/ai.service";
+
 import { NotFoundException, BadRequestException } from "@nestjs/common";
 
 describe("RequestsService", () => {
@@ -52,7 +52,7 @@ describe("RequestsService", () => {
         { provide: UsersService, useValue: mockUsersService },
         { provide: NotificationsService, useValue: mockNotificationsService },
         { provide: FavoritesService, useValue: { getFavoriteNannyIds: jest.fn().mockResolvedValue([]) } },
-        { provide: AiService, useValue: { getMatchingRecommendations: jest.fn().mockResolvedValue(new Map()) } },
+
       ],
     }).compile();
 
@@ -116,7 +116,7 @@ describe("RequestsService", () => {
         date: new Date(),
         start_time: "10:00:00",
         duration_hours: 4,
-        max_hourly_rate: 200,
+        category: 'CC',
       });
 
       // Mock raw query return

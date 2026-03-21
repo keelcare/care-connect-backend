@@ -24,6 +24,7 @@ export class BookingsService {
   ) { }
 
 
+  /*
   async createBooking(
     jobId: string | undefined,
     parentId: string,
@@ -152,6 +153,7 @@ export class BookingsService {
 
     return booking;
   }
+  */
 
 
   async getBookingById(id: string) {
@@ -184,8 +186,27 @@ export class BookingsService {
     const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
     const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
 
+    const durationHours =
+      booking.start_time && booking.end_time
+        ? (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / (1000 * 60 * 60)
+        : 0;
+
+    const service = await this.prisma.services.findUnique({
+      where: { name: booking.service_requests?.category || 'CC' }
+    });
+    const hourlyRate = Number(service?.hourly_rate || 500);
+
+    const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
+    const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
+    const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
+    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+    const totalAmount = (hourlyRate * (1 - discount / 100)) * (durationHours > 0 ? durationHours : Number(booking.service_requests?.duration_hours || 0)) * sessionsPerMonth * planDuration;
+
     return {
       ...booking,
+      hourly_rate: hourlyRate,
+      total_amount: totalAmount,
       title: (booking.jobs?.title || (booking.service_requests ? `Care for ${booking.service_requests.num_children} ${Number(booking.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (nannyProfile ? ` with ${nannyProfile.first_name} ${nannyProfile.last_name}` : ''),
       nanny_name: nannyProfile
         ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
@@ -221,10 +242,27 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
+    const allServices = await this.prisma.services.findMany();
+    const serviceMap = Object.fromEntries(allServices.map(s => [s.name, Number(s.hourly_rate)]));
+
     return bookings.map((booking) => {
       const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
+      const rate = serviceMap[booking.service_requests?.category as string] || 500;
+      const hours = (booking.start_time && booking.end_time)
+        ? (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / (1000 * 60 * 60)
+        : Number(booking.service_requests?.duration_hours || 0);
+
+      const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
+      const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
+      const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
+      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+      const totalAmount = (rate * (1 - discount / 100)) * hours * sessionsPerMonth * planDuration;
+
       return {
         ...booking,
+        hourly_rate: rate,
+        total_amount: totalAmount,
         title: (booking.jobs?.title || (booking.service_requests ? `Care for ${booking.service_requests.num_children} ${Number(booking.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (nannyProfile ? ` with ${nannyProfile.first_name} ${nannyProfile.last_name}` : ''),
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
@@ -235,7 +273,7 @@ export class BookingsService {
   }
 
   async getBookingsByNanny(nannyId: string) {
-    return this.prisma.bookings.findMany({
+    const bookings = await this.prisma.bookings.findMany({
       where: { nanny_id: nannyId },
       include: {
         users_bookings_parent_idTousers: {
@@ -245,8 +283,35 @@ export class BookingsService {
           },
         },
         jobs: true,
+        service_requests: true,
       },
       orderBy: { created_at: "desc" },
+    });
+
+    const allServices = await this.prisma.services.findMany();
+    const serviceMap = Object.fromEntries(allServices.map(s => [s.name, Number(s.hourly_rate)]));
+
+    return bookings.map(booking => {
+      const rate = serviceMap[booking.service_requests?.category as string] || 500;
+      const hours = (booking.start_time && booking.end_time)
+        ? (new Date(booking.end_time).getTime() - new Date(booking.start_time).getTime()) / (1000 * 60 * 60)
+        : Number(booking.service_requests?.duration_hours || 0);
+
+      const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
+      const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
+      const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
+      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+      const totalAmount = (rate * (1 - discount / 100)) * hours * sessionsPerMonth * planDuration;
+
+      const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
+
+      return {
+        ...booking,
+        hourly_rate: rate,
+        total_amount: totalAmount,
+        title: (booking.jobs?.title || (booking.service_requests ? `Care for ${booking.service_requests.num_children} ${Number(booking.service_requests.num_children) === 1 ? 'Child' : 'Children'}` : 'Care Service')) + (parentProfile ? ` for ${parentProfile.first_name}` : ''),
+      };
     });
   }
 
@@ -344,9 +409,10 @@ export class BookingsService {
     const durationHours =
       (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
-    const hourlyRate = Number(
-      booking.service_requests?.max_hourly_rate || 200, // Default to 200 if not found
-    );
+    const service = await this.prisma.services.findUnique({
+      where: { name: booking.service_requests?.category || 'CC' }
+    });
+    const hourlyRate = Number(service?.hourly_rate || 500);
     const totalAmount = durationHours * hourlyRate;
 
     const updatedBooking = await this.prisma.bookings.update({
@@ -512,10 +578,12 @@ export class BookingsService {
         (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
       if (hoursUntilStart < 24 && booking.service_requests) {
-        const hourlyRateStr = booking.service_requests.max_hourly_rate;
-        const hourlyRate = hourlyRateStr ? Number(hourlyRateStr) : 0;
+        const service = await this.prisma.services.findUnique({
+          where: { name: booking.service_requests.category || 'CC' }
+        });
+        const hourlyRate = Number(service?.hourly_rate || 500);
 
-        cancellationFee = isNaN(hourlyRate) ? 0 : hourlyRate;
+        cancellationFee = hourlyRate;
         feeStatus = "pending";
       }
     }

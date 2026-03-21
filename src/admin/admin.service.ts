@@ -3,7 +3,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { ChatService } from "../chat/chat.service";
-import { RequestsService, CATEGORY_SKILL_MAP } from "../requests/requests.service";
+import { RequestsService } from "../requests/requests.service";
+import { CATEGORY_SKILL_MAP } from "../constants";
 import { Prisma } from "@prisma/client";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
@@ -62,6 +63,9 @@ export class AdminService {
       orderBy: { created_at: 'desc' },
     });
 
+    const allServices = await this.prisma.services.findMany();
+    const serviceMap = Object.fromEntries(allServices.map(s => [s.name, Number(s.hourly_rate)]));
+
     return requests.map(req => {
       const parent = req.users;
       const profile = parent?.profiles;
@@ -79,7 +83,8 @@ export class AdminService {
         location_lng: req.location_lng,
         address: profile?.address || "Location not specified", // Added for direct UI mapping
         parent_name: profile ? `${profile.first_name} ${profile.last_name}` : "Unknown Parent",
-        max_hourly_rate: req.max_hourly_rate,
+        hourly_rate: serviceMap[req.category as string] || 500,
+        total_amount: Number(req.duration_hours) * (serviceMap[req.category as string] || 500),
         created_at: req.created_at,
         children_count: req.num_children || children.length,
         children_names: children.length > 0

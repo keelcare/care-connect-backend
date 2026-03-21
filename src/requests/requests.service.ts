@@ -16,12 +16,7 @@ import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 
 
-export const CATEGORY_SKILL_MAP = {
-  'CC': ['Infant Care', 'Toddlers', 'Child Care', 'Babysitting', 'Nanny'],
-  'ST': ['Shadow Teacher', 'Special Education', 'Autism Support', 'ADHD Support'],
-  'SN': ['Special Needs', 'Disability Care', 'Therapy Support', 'Medical Assistance'],
-  'EC': ['Elderly Care', 'Geriatric Support', 'Companion Care'],
-};
+import { CATEGORY_SKILL_MAP } from "../constants";
 
 @Injectable()
 export class RequestsService {
@@ -59,7 +54,7 @@ export class RequestsService {
 
     try {
       // 2. Wrap creation in a transaction to ensure atomicity
-      const { request, booking } = await this.prisma.$transaction(async (tx) => {
+      const { request, booking, totalAmount, hourlyRate } = await this.prisma.$transaction(async (tx) => {
         // Create the service request
         const startTimeStr = createRequestDto.start_time;
 
@@ -85,13 +80,18 @@ export class RequestsService {
             children_ages: createRequestDto.children_ages || [],
             special_requirements: createRequestDto.special_requirements,
             required_skills: createRequestDto.required_skills || [],
-            max_hourly_rate: createRequestDto.max_hourly_rate || serviceSettings.hourly_rate, // Use Service Rate
             location_lat: parent.profiles.lat,
             location_lng: parent.profiles.lng,
             category: createRequestDto.category,
             status: "pending",
+            plan_type: createRequestDto.plan_type || "ONE_TIME",
+            plan_duration_months: createRequestDto.plan_duration_months || 1,
+            discount_percentage: createRequestDto.discount_percentage || 0,
           } as any,
         });
+
+        const hourlyRate = Number(serviceSettings.hourly_rate);
+        const totalAmount = Number(createRequestDto.duration_hours) * hourlyRate;
 
         // Create initial booking (Pending Assignment)
         const booking = await tx.bookings.create({
@@ -116,7 +116,7 @@ export class RequestsService {
           });
         }
 
-        return { request, booking };
+        return { request, booking, totalAmount, hourlyRate };
       });
 
       // 3. Trigger auto-matching (Outside transaction)
@@ -137,7 +137,11 @@ export class RequestsService {
         timestamp: new Date().toISOString(),
       });
 
-      return request;
+      return {
+        ...request,
+        hourly_rate: hourlyRate,
+        total_amount: totalAmount
+      };
     } catch (error) {
       if (error.code === 'P2002') {
         throw new BadRequestException("An active booking already exists for this request or a duplicate request was detected.");
@@ -597,29 +601,67 @@ export class RequestsService {
       throw new NotFoundException(`Service request with ID ${id} not found`);
     }
 
-    return request;
+    const service = await this.prisma.services.findUnique({
+      where: { name: request.category || 'CC' }
+    });
+    const hourlyRate = Number(service?.hourly_rate || 500);
+    const duration = Number(request.duration_hours || 0);
+    const discount = Number(request['discount_percentage'] || 0);
+    const planDuration = Number(request['plan_duration_months'] || 1);
+    const planType = request['plan_type'] || 'ONE_TIME';
+    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+    const totalAmount = (duration * hourlyRate * (1 - discount / 100)) * sessionsPerMonth * planDuration;
+
+    return {
+      ...request,
+      hourly_rate: hourlyRate,
+      total_amount: totalAmount
+    };
   }
 
   async findAllByParent(parentId: string) {
-    return this.prisma.service_requests.findMany({
-      where: {
-        parent_id: parentId,
-        // Only return requests that DO NOT have an active booking yet.
-        // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
-        bookings: {
-          OR: [
-            { id: { equals: undefined } }, // This effectively means no booking
-            { status: "CANCELLED" }
-          ]
-        }
-      },
-      orderBy: { created_at: "desc" },
-      include: {
-        assignments: {
-          where: { status: "pending" },
-          include: { users: { include: { profiles: true, nanny_details: true } } },
+    const [requests, allServices] = await Promise.all([
+      this.prisma.service_requests.findMany({
+        where: {
+          parent_id: parentId,
+          // Only return requests that DO NOT have an active booking yet.
+          // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
+          bookings: {
+            OR: [
+              { id: { equals: undefined } }, // This effectively means no booking
+              { status: "CANCELLED" }
+            ]
+          }
         },
-      },
+        orderBy: { created_at: "desc" },
+        include: {
+          assignments: {
+            where: { status: "pending" },
+            include: { users: { include: { profiles: true, nanny_details: true } } },
+          },
+        },
+      }),
+      this.prisma.services.findMany()
+    ]);
+
+    const serviceMap = Object.fromEntries(allServices.map(s => [s.name, Number(s.hourly_rate)]));
+
+    return requests.map(req => {
+      const rate = serviceMap[req.category as string] || 500;
+      const duration = Number(req.duration_hours || 0);
+      const discount = Number(req['discount_percentage'] || 0);
+      const planDuration = Number(req['plan_duration_months'] || 1);
+      const planType = req['plan_type'] || 'ONE_TIME';
+      const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+      const totalAmount = (duration * rate * (1 - discount / 100)) * sessionsPerMonth * planDuration;
+
+      return {
+        ...req,
+        hourly_rate: rate,
+        total_amount: totalAmount
+      };
     });
   }
 }

@@ -140,7 +140,10 @@ model service_requests {
   location_lng          Decimal             @db.Decimal(11, 8)
   status                String              @default("pending") @db.VarChar(50)
   current_assignment_id String?             @db.Uuid
-  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
+  plan_type             String?             @db.VarChar(50)
+  plan_duration_months  Int?                @default(1)
+  discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
+
   created_at            DateTime?           @default(now()) @db.Timestamptz(6)
   updated_at            DateTime?           @default(now()) @db.Timestamptz(6)
   required_skills       String[]

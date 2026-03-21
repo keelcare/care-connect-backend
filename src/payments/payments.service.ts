@@ -56,8 +56,10 @@ export class PaymentsService {
     if (!booking) throw new NotFoundException("Booking not found");
 
     // Calculate Amount
-    const hourlyRate =
-      Number(booking.service_requests?.max_hourly_rate || 200); // Default fallback should be rarely used if service_requests exists
+    const service = await this.prisma.services.findUnique({
+      where: { name: booking.service_requests?.category || 'CC' }
+    });
+    const hourlyRate = Number(service?.hourly_rate || 500);
 
     if (!booking.start_time || !booking.end_time) {
       throw new BadRequestException("Booking start or end time is missing");
@@ -71,7 +73,12 @@ export class PaymentsService {
       durationHours += 24;
     }
 
-    const amountInRupees = hourlyRate * durationHours;
+    const discount = Number(booking.service_requests?.['discount_percentage'] || 0);
+    const planDuration = Number(booking.service_requests?.['plan_duration_months'] || 1);
+    const planType = booking.service_requests?.['plan_type'] || 'ONE_TIME';
+    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+
+    const amountInRupees = (hourlyRate * (1 - discount / 100)) * durationHours * sessionsPerMonth * planDuration;
     const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
