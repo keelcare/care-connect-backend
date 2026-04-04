@@ -296,8 +296,22 @@ export class AdminService {
       if (!isAvailable) throw new BadRequestException("Nanny has marked themselves as unavailable for this time slot");
 
       // 2. Create Assignment (directly accepted)
-      const assignment = await tx.assignments.create({
-        data: {
+      // Use upsert to handle cases where the nanny was previously assigned and rejected/cancelled
+      const assignment = await tx.assignments.upsert({
+        where: {
+          request_id_nanny_id: {
+            request_id: requestId,
+            nanny_id: nannyId,
+          }
+        },
+        update: {
+          status: "accepted",
+          response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+          responded_at: new Date(),
+          rank_position: 1,
+          rejection_reason: null, // Clear any previous rejection
+        },
+        create: {
           request_id: requestId,
           nanny_id: nannyId,
           response_deadline: new Date(Date.now() + 15 * 60 * 1000), // Standard deadline even if pre-accepted

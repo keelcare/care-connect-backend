@@ -115,4 +115,40 @@ export class MailService {
 
     await this.sendMail(to, subject, template, {});
   }
+
+  async sendCancellationEmail(
+    to: string,
+    userName: string,
+    role: 'parent' | 'nanny',
+    details: {
+      date: string;
+      reason: string;
+      otherPartyName: string;
+      cancelledBy: 'parent' | 'nanny';
+    }
+  ) {
+    const subject = `Booking Cancelled - ${details.date}`;
+    const cancelledByRole = details.cancelledBy === 'parent' ? 'Parent' : 'Nanny';
+    
+    const template = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #e74c3c;">Booking Cancelled</h2>
+        <p>Hello ${userName},</p>
+        <p>Unfortunately, your booking for <strong>${details.date}</strong> has been cancelled by the ${cancelledByRole} (${details.otherPartyName}).</p>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0; color: #34495e;">Cancellation Details</h3>
+          <p><strong>Reason provided:</strong> ${details.reason || 'No reason provided'}</p>
+        </div>
+        
+        <p>If you have any questions or need further assistance, please reach out to CareConnect support.</p>
+        <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
+          Thank you for using CareConnect,<br>
+          <i>The CareConnect Team</i>
+        </p>
+      </div>
+    `;
+
+    await this.sendMail(to, subject, template, {});
+  }
 }

@@ -7,6 +7,9 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "npx prisma generate && npx prisma migrate deploy && nest build",
+    "db:migrate:dev": "npx prisma migrate dev",
+    "db:migrate:prod": "npx prisma migrate deploy",
+    "db:push": "npx prisma db push",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "node dist/main",
     "start:local": "nest start",

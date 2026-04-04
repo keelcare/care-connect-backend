@@ -496,7 +496,10 @@ export class BookingsService {
       where: { id },
       include: {
         users_bookings_nanny_idTousers: {
-          include: { nanny_details: true },
+          include: { profiles: true, nanny_details: true },
+        },
+        users_bookings_parent_idTousers: {
+          include: { profiles: true },
         },
         service_requests: true,
       },
@@ -626,6 +629,12 @@ export class BookingsService {
 
     // Notify both parties
     try {
+      const parentUser = booking.users_bookings_parent_idTousers;
+      const nannyUser = booking.users_bookings_nanny_idTousers;
+      const parentName = `${parentUser?.profiles?.first_name || ''} ${parentUser?.profiles?.last_name || ''}`.trim() || 'Parent';
+      const nannyName = `${nannyUser?.profiles?.first_name || ''} ${nannyUser?.profiles?.last_name || ''}`.trim() || 'Nanny';
+      const bookingDate = booking.start_time ? booking.start_time.toLocaleDateString() : 'Scheduled Date';
+
       if (booking.nanny_id) {
         // If parent cancelled, notify nanny. If nanny cancelled herself, she knows.
         if (cancelledByUserId === booking.parent_id) {
@@ -635,6 +644,21 @@ export class BookingsService {
             `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
             "warning",
           );
+
+          // Send email to Nanny Since Parent Cancelled
+          if (nannyUser?.email) {
+            this.mailService.sendCancellationEmail(
+              nannyUser.email,
+              nannyName,
+              'nanny',
+              {
+                date: bookingDate,
+                reason: reason || 'No reason provided',
+                otherPartyName: parentName,
+                cancelledBy: 'parent',
+              }
+            ).catch(err => console.error("Failed to send cancellation email to nanny", err));
+          }
         }
       }
 
@@ -646,6 +670,21 @@ export class BookingsService {
           false, // willRematch = false
           reason,
         );
+
+        // Send email to Parent Since Nanny Cancelled
+        if (parentUser?.email) {
+          this.mailService.sendCancellationEmail(
+            parentUser.email,
+            parentName,
+            'parent',
+            {
+              date: bookingDate,
+              reason: reason || 'No reason provided',
+              otherPartyName: nannyName,
+              cancelledBy: 'nanny',
+            }
+          ).catch(err => console.error("Failed to send cancellation email to parent", err));
+        }
       } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
         // Some other cancellation (admin?)
         if (booking.parent_id) {
