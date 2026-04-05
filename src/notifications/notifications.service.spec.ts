@@ -3,6 +3,8 @@ import { NotificationsService } from "./notifications.service";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
+import { FcmService } from "./fcm.service";
+import { SseService } from "../sse/sse.service";
 
 describe("NotificationsService", () => {
   let service: NotificationsService;
@@ -30,6 +32,19 @@ describe("NotificationsService", () => {
           provide: NotificationsGateway,
           useValue: {
             sendNotification: jest.fn(),
+          },
+        },
+        {
+          provide: FcmService,
+          useValue: {
+            sendPushNotification: jest.fn(),
+          },
+        },
+        {
+          provide: SseService,
+          useValue: {
+            emitToUser: jest.fn(),
+            emitToUsers: jest.fn(),
           },
         },
       ],

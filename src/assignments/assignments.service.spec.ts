@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { RequestsService } from "../requests/requests.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ChatService } from "../chat/chat.service";
+import { SseService } from "../sse/sse.service";
 
 describe("AssignmentsService", () => {
   let service: AssignmentsService;
@@ -25,10 +26,18 @@ describe("AssignmentsService", () => {
             },
             bookings: {
               create: jest.fn(),
+              findFirst: jest.fn(),
+              update: jest.fn(),
             },
             nanny_details: {
               update: jest.fn(),
             },
+            $transaction: jest.fn().mockImplementation((cb) => cb({
+              assignments: { update: jest.fn() },
+              service_requests: { update: jest.fn() },
+              bookings: { findFirst: jest.fn(), update: jest.fn() },
+              nanny_details: { update: jest.fn() },
+            })),
           },
         },
         {
@@ -41,12 +50,20 @@ describe("AssignmentsService", () => {
           provide: NotificationsService,
           useValue: {
             sendPushNotification: jest.fn(),
+            createNotification: jest.fn(),
           },
         },
         {
           provide: ChatService,
           useValue: {
             createChat: jest.fn(),
+          },
+        },
+        {
+          provide: SseService,
+          useValue: {
+            emitToUser: jest.fn(),
+            emitToUsers: jest.fn(),
           },
         },
       ],

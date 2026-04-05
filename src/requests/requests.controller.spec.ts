@@ -1,6 +1,9 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { RequestsController } from "./requests.controller";
 import { RequestsService } from "./requests.service";
+import { AuthService } from "../auth/auth.service";
+import { ConfigService } from "@nestjs/config";
+import { JwtService } from "@nestjs/jwt";
 
 describe("RequestsController", () => {
   let controller: RequestsController;
@@ -16,6 +19,20 @@ describe("RequestsController", () => {
             findOne: jest.fn(),
             findAllByParent: jest.fn(),
           },
+        },
+        {
+          provide: AuthService,
+          useValue: {},
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn(),
+          },
+        },
+        {
+          provide: JwtService,
+          useValue: {},
         },
       ],
     }).compile();
