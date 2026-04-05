@@ -4,7 +4,7 @@ import { GeocodeAddressDto, NearbySearchDto } from "./dto";
 
 @Controller("location")
 export class LocationController {
-  constructor(private readonly locationService: LocationService) {}
+  constructor(private readonly locationService: LocationService) { }
 
   /**
    * POST /location/geocode
@@ -64,6 +64,30 @@ export class LocationController {
       count: jobs.length,
       radius: `${radius}km`,
       data: jobs,
+    };
+  }
+
+  /**
+   * Post /location/reverse-geocode
+   * Convert coordinates to address
+   */
+  @Post("reverse-geocode")
+  async reverseGeocode(@Body() body: { lat: number; lng: number }) {
+    const address = await this.locationService.reverseGeocode(
+      body.lat,
+      body.lng,
+    );
+
+    if (!address) {
+      return {
+        success: false,
+        message: "Could not reverse geocode the provided coordinates",
+      };
+    }
+
+    return {
+      success: true,
+      data: { address },
     };
   }
 }

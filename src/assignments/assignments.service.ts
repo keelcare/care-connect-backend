@@ -8,6 +8,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { RequestsService } from "../requests/requests.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ChatService } from "../chat/chat.service";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 @Injectable()
 export class AssignmentsService {
@@ -16,6 +18,7 @@ export class AssignmentsService {
     private requestsService: RequestsService,
     private notificationsService: NotificationsService,
     private chatService: ChatService,
+    private sseService: SseService,
   ) { }
 
   async findAllByNanny(nannyId: string) {
@@ -144,6 +147,19 @@ export class AssignmentsService {
         "success",
       );
 
+      // Emit SSE to parent
+      this.sseService.emitToUser(assignment.service_requests.parent_id, {
+        type: SSE_EVENTS.ASSIGNMENT_ACCEPTED,
+        data: { assignment: updatedAssignment, booking: updatedBooking },
+        timestamp: new Date().toISOString(),
+      });
+      // Also emit a booking update so the parent's booking list refreshes
+      this.sseService.emitToUser(assignment.service_requests.parent_id, {
+        type: SSE_EVENTS.BOOKING_UPDATED,
+        data: updatedBooking,
+        timestamp: new Date().toISOString(),
+      });
+
       return { assignment: updatedAssignment, booking: updatedBooking };
     });
   }
@@ -181,6 +197,13 @@ export class AssignmentsService {
         `Error triggering matching for request ${assignment.request_id}:`,
         err,
       );
+    });
+
+    // Emit SSE to nanny (their assignment list should update)
+    this.sseService.emitToUser(nannyId, {
+      type: SSE_EVENTS.ASSIGNMENT_REJECTED,
+      data: { assignmentId: id, requestId: assignment.request_id },
+      timestamp: new Date().toISOString(),
     });
 
     return { success: true };

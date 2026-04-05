@@ -24,37 +24,42 @@ model applications {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model bookings {
-  id                              String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  job_id                          String?    @db.Uuid
-  request_id                      String?    @db.Uuid
-  parent_id                       String?    @db.Uuid
-  nanny_id                        String?    @db.Uuid
-  status                          String?    @default("requested") @db.VarChar(50)
-  start_time                      DateTime?  @db.Timestamptz(6)
-  end_time                        DateTime?  @db.Timestamptz(6)
-  actual_start_time               DateTime?  @db.Timestamptz(6)
-  actual_end_time                 DateTime?  @db.Timestamptz(6)
-  created_at                      DateTime?  @default(now()) @db.Timestamptz(6)
-  updated_at                      DateTime?  @default(now()) @db.Timestamptz(6)
+  id                              String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  job_id                          String?             @db.Uuid
+  parent_id                       String?             @db.Uuid
+  nanny_id                        String?             @db.Uuid
+  status                          String?             @default("requested") @db.VarChar(50)
+  start_time                      DateTime?           @db.Timestamptz(6)
+  end_time                        DateTime?           @db.Timestamptz(6)
+  created_at                      DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at                      DateTime?           @default(now()) @db.Timestamptz(6)
+  request_id                      String?             @unique @db.Uuid
+  cancellation_fee                Decimal?            @db.Decimal(10, 2)
+  cancellation_fee_status         String?             @db.VarChar(50)
   cancellation_reason             String?
-  cancellation_fee                Decimal?   @db.Decimal(10, 2)
-  cancellation_fee_status         String?    @db.VarChar(50)
-  is_review_prompted              Boolean?   @default(false)
-  care_location_lat               Decimal?   @db.Decimal(10, 8)
-  care_location_lng               Decimal?   @db.Decimal(11, 8)
-  geofence_radius                 Int?       @default(100)
-  recurring_booking_id            String?    @db.Uuid
-  jobs                            jobs?      @relation(fields: [job_id], references: [id], onUpdate: NoAction)
-  service_requests                service_requests? @relation(fields: [request_id], references: [id], onUpdate: NoAction)
-  users_bookings_nanny_idTousers  users?     @relation("bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_bookings_parent_idTousers users?     @relation("bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  care_location_lat               Decimal?            @db.Decimal(10, 8)
+  care_location_lng               Decimal?            @db.Decimal(11, 8)
+  geofence_radius                 Int?                @default(100)
+  is_review_prompted              Boolean?            @default(false)
+  recurring_booking_id            String?             @db.Uuid
+  actual_end_time                 DateTime?           @db.Timestamptz(6)
+  actual_start_time               DateTime?           @db.Timestamptz(6)
+  last_rescheduled_at             DateTime?           @db.Timestamptz(6)
+  original_end_time               DateTime?           @db.Timestamptz(6)
+  original_start_time             DateTime?           @db.Timestamptz(6)
+  reschedule_count                Int?                @default(0)
+  tags                            String[]            @default([])
+  booking_children                booking_children[]
+  jobs                            jobs?               @relation(fields: [job_id], references: [id], onUpdate: NoAction)
+  users_bookings_nanny_idTousers  users?              @relation("bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_bookings_parent_idTousers users?              @relation("bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recurring_bookings              recurring_bookings? @relation(fields: [recurring_booking_id], references: [id], onUpdate: NoAction)
+  service_requests                service_requests?   @relation(fields: [request_id], references: [id], onUpdate: NoAction)
   chats                           chats[]
-  payments                        payments[]
-  reviews                         reviews[]
   disputes                        disputes[]
   location_updates                location_updates[]
-  recurring_bookings              recurring_bookings? @relation(fields: [recurring_booking_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  booking_children                booking_children[]
+  payments                        payments[]
+  reviews                         reviews[]
 }
 
 model chats {
@@ -99,87 +104,106 @@ model nanny_details {
   user_id               String    @id @db.Uuid
   skills                String[]
   experience_years      Int?
-  hourly_rate           Decimal?  @db.Decimal(10, 2)
   bio                   String?
   availability_schedule Json?
-  acceptance_rate       Decimal?  @default(0) @db.Decimal(5, 2)
-  is_available_now      Boolean?  @default(true)
   created_at            DateTime? @default(now()) @db.Timestamptz(6)
   updated_at            DateTime? @default(now()) @db.Timestamptz(6)
+  acceptance_rate       Decimal?  @default(0) @db.Decimal(5, 2)
+  is_available_now      Boolean?  @default(true)
+  categories            String[]  @default([])
+  tags                  String[]  @default([])
   users                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model nanny_category_requests {
+  id                   String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id             String    @db.Uuid
+  requested_categories String[]
+  status               String    @default("pending") @db.VarChar(50)
+  admin_notes          String?
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime? @default(now()) @db.Timestamptz(6)
+  users                users     @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 /// Service requests created by parents for childcare services
 model service_requests {
-  id                     String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  parent_id              String       @db.Uuid
-  date                   DateTime     @db.Date
-  start_time             DateTime     @db.Time(6)
-  duration_hours         Decimal      @db.Decimal(4, 2)
-  num_children           Int
-  children_ages          Json?
-  special_requirements   String?
-  required_skills        String[]
-  location_lat           Decimal      @db.Decimal(10, 8)
-  location_lng           Decimal      @db.Decimal(11, 8)
-  status                 String       @default("pending") @db.VarChar(50)
-  current_assignment_id  String?      @db.Uuid
-  max_hourly_rate        Decimal?     @db.Decimal(10, 2)
-  created_at             DateTime?    @default(now()) @db.Timestamptz(6)
-  updated_at             DateTime?    @default(now()) @db.Timestamptz(6)
-  users                  users        @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  assignments            assignments[]
-  bookings               bookings[]
-  matching_feedback      matching_feedback[]
+  id                    String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id             String              @db.Uuid
+  date                  DateTime            @db.Date
+  start_time            DateTime            @db.Time(6)
+  duration_hours        Decimal             @db.Decimal(4, 2)
+  num_children          Int
+  children_ages         Json?
+  special_requirements  String?
+  location_lat          Decimal             @db.Decimal(10, 8)
+  location_lng          Decimal             @db.Decimal(11, 8)
+  status                String              @default("pending") @db.VarChar(50)
+  current_assignment_id String?             @db.Uuid
+  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
+  created_at            DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime?           @default(now()) @db.Timestamptz(6)
+  required_skills       String[]
+  category              String?             @db.VarChar(50)
+  assignments           assignments[]
+  bookings              bookings?
+  matching_feedback     matching_feedback[]
+  users                 users               @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 /// Assignments of service requests to nannies
 model assignments {
-  id                 String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  request_id         String            @db.Uuid
-  nanny_id           String            @db.Uuid
-  assigned_at        DateTime          @default(now()) @db.Timestamptz(6)
-  response_deadline  DateTime          @db.Timestamptz(6)
-  status             String            @default("pending") @db.VarChar(50)
-  rejection_reason   String?
-  responded_at       DateTime?         @db.Timestamptz(6)
-  rank_position      Int
-  created_at         DateTime?         @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime?         @default(now()) @db.Timestamptz(6)
-  service_requests   service_requests  @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users              users             @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  request_id        String           @db.Uuid
+  nanny_id          String           @db.Uuid
+  assigned_at       DateTime         @default(now()) @db.Timestamptz(6)
+  response_deadline DateTime         @db.Timestamptz(6)
+  status            String           @default("pending") @db.VarChar(50)
+  rejection_reason  String?
+  responded_at      DateTime?        @db.Timestamptz(6)
+  rank_position     Int
+  created_at        DateTime?        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime?        @default(now()) @db.Timestamptz(6)
+  users             users            @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  service_requests  service_requests @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([request_id, nanny_id])
 }
 
-
-// Payments Model (Razorpay Webhook-First Architecture)
 model payments {
-  id                  String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  booking_id          String    @db.Uuid
-  
-  // Money
-  amount              Decimal   @db.Decimal(12, 2) 
-  currency            String    @default("inr") @db.VarChar(10)
-  
-  // Razorpay Specifics
-  provider            String    @default("razorpay")
-  order_id            String    @unique @db.VarChar(255) // Razorpay Order ID (rp_order_xyz)
-  payment_id          String?   @unique @db.VarChar(255) // Razorpay Payment ID (pay_xyz)
-  signature           String?   // For audit trails
-  
-  // State Machine
-  status              String    @db.VarChar(50) // created, authorized, captured, failed, refunded
-  
-  // Error Tracking
-  error_code          String?
-  error_description   String?
-  
-  refund_id           String?
-  transaction_id      String?    @unique @db.VarChar(255) // Keep for backward compatibility or unique constraints if needed
+  id                String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id        String    @db.Uuid
+  amount            Decimal   @db.Decimal(12, 2)
+  status            String    @db.VarChar(50)
+  transaction_id    String?   @unique @db.VarChar(255)
+  created_at        DateTime? @default(now()) @db.Timestamptz(6)
+  currency          String    @default("inr") @db.VarChar(10)
+  error_code        String?
+  error_description String?
+  order_id          String    @unique @db.VarChar(255)
+  payment_id        String?   @unique @db.VarChar(255)
+  provider          String    @default("razorpay")
+  refund_id         String?
+  signature         String?
+  updated_at        DateTime? @default(now()) @db.Timestamptz(6)
+  bookings          bookings  @relation(fields: [booking_id], references: [id])
+  payment_audit_log payment_audit_log[]
+}
 
-  created_at          DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
-  
-  bookings            bookings  @relation(fields: [booking_id], references: [id])
+model payment_audit_log {
+  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  payment_id         String    @db.Uuid
+  order_id           String    @db.VarChar(255)
+  from_status        String?   @db.VarChar(50)
+  to_status          String    @db.VarChar(50)
+  triggered_by       String    @db.VarChar(100)
+  razorpay_payment_id String?  @db.VarChar(255)
+  metadata           Json?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  payments           payments  @relation(fields: [payment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([order_id])
+  @@index([payment_id])
 }
 
 model profiles {
@@ -204,9 +228,9 @@ model reviews {
   reviewee_id                      String?   @db.Uuid
   rating                           Int?
   comment                          String?
+  created_at                       DateTime? @default(now()) @db.Timestamptz(6)
   is_approved                      Boolean?  @default(true)
   moderation_status                String?   @default("approved") @db.VarChar(50)
-  created_at                       DateTime? @default(now()) @db.Timestamptz(6)
   bookings                         bookings? @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
   users_reviews_reviewee_idTousers users?    @relation("reviews_reviewee_idTousers", fields: [reviewee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   users_reviews_reviewer_idTousers users?    @relation("reviews_reviewer_idTousers", fields: [reviewer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -214,53 +238,73 @@ model reviews {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model users {
-  id                                 String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  email                              String             @unique @db.VarChar(255)
-  password_hash                      String?            @db.VarChar(255)
-  role                               String             @db.VarChar(50)
-  is_verified                        Boolean?           @default(false)
-  identity_verification_status       String?            @default("unverified") @db.VarChar(50) // unverified, pending, verified, rejected
-
-  verification_rejection_reason      String?
-  is_active                          Boolean?           @default(true)
-  ban_reason                         String?
-  identity_documents                 identity_documents[]
-  oauth_provider                     String?            @db.VarChar(50)
-  oauth_provider_id                  String?            @db.VarChar(255)
-  oauth_access_token                 String?
-  oauth_refresh_token                String?
-  refresh_token_hash                 String?            @db.VarChar(255)
-  verification_token                 String?            @db.VarChar(255)
-  verification_token_expires         DateTime?          @db.Timestamptz(6)
-  reset_password_token               String?            @db.VarChar(255)
-  reset_password_token_expires       DateTime?          @db.Timestamptz(6)
-  created_at                         DateTime?          @default(now()) @db.Timestamptz(6)
-  updated_at                         DateTime?          @default(now()) @db.Timestamptz(6)
-  applications                       applications[]
-  bookings_bookings_nanny_idTousers  bookings[]         @relation("bookings_nanny_idTousers")
-  bookings_bookings_parent_idTousers bookings[]         @relation("bookings_parent_idTousers")
-  jobs                               jobs[]
-  messages                           messages[]
-  nanny_details                      nanny_details?
-  profiles                           profiles?
-  reviews_reviews_reviewee_idTousers reviews[]          @relation("reviews_reviewee_idTousers")
-  reviews_reviews_reviewer_idTousers reviews[]          @relation("reviews_reviewer_idTousers")
-  service_requests                   service_requests[]
-  assignments                        assignments[]
-  notifications                      notifications[]
-  disputes_disputes_raised_byTousers disputes[]         @relation("disputes_raised_byTousers")
-  disputes_disputes_resolved_byTousers disputes[]       @relation("disputes_resolved_byTousers")
-  favorite_nannies_favorite_nannies_parent_idTousers favorite_nannies[] @relation("favorite_nannies_parent_idTousers")
-  favorite_nannies_favorite_nannies_nanny_idTousers  favorite_nannies[] @relation("favorite_nannies_nanny_idTousers")
-  location_updates                   location_updates[]
-  matching_feedback                  matching_feedback[]
-  recurring_bookings_recurring_bookings_parent_idTousers recurring_bookings[] @relation("recurring_bookings_parent_idTousers")
-  recurring_bookings_recurring_bookings_nanny_idTousers  recurring_bookings[] @relation("recurring_bookings_nanny_idTousers")
-  availability_blocks                availability_blocks[]
-  verification_attempts              verification_attempts[]
-  children                           children[]
+  id                                                     String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  email                                                  String                    @unique @db.VarChar(255)
+  password_hash                                          String?                   @db.VarChar(255)
+  role                                                   String                    @db.VarChar(50)
+  is_verified                                            Boolean?                  @default(false)
+  oauth_provider                                         String?                   @db.VarChar(50)
+  oauth_provider_id                                      String?                   @db.VarChar(255)
+  oauth_access_token                                     String?
+  oauth_refresh_token                                    String?
+  created_at                                             DateTime?                 @default(now()) @db.Timestamptz(6)
+  updated_at                                             DateTime?                 @default(now()) @db.Timestamptz(6)
+  reset_password_token                                   String?                   @db.VarChar(255)
+  verification_token                                     String?                   @db.VarChar(255)
+  reset_password_token_expires                           DateTime?                 @db.Timestamptz(6)
+  verification_token_expires                             DateTime?                 @db.Timestamptz(6)
+  ban_reason                                             String?
+  identity_verification_status                           String?                   @default("unverified") @db.VarChar(50)
+  is_active                                              Boolean?                  @default(true)
+  refresh_token_hash                                     String?                   @db.VarChar(255)
+  verification_rejection_reason                          String?
+  fcm_token                                              String?                   @db.VarChar(255)
+  applications                                           applications[]
+  assignments                                            assignments[]
+  availability_blocks                                    availability_blocks[]
+  bookings_bookings_nanny_idTousers                      bookings[]                @relation("bookings_nanny_idTousers")
+  bookings_bookings_parent_idTousers                     bookings[]                @relation("bookings_parent_idTousers")
+  children                                               children[]
+  disputes_disputes_raised_byTousers                     disputes[]                @relation("disputes_raised_byTousers")
+  disputes_disputes_resolved_byTousers                   disputes[]                @relation("disputes_resolved_byTousers")
+  favorite_nannies_favorite_nannies_nanny_idTousers      favorite_nannies[]        @relation("favorite_nannies_nanny_idTousers")
+  favorite_nannies_favorite_nannies_parent_idTousers     favorite_nannies[]        @relation("favorite_nannies_parent_idTousers")
+  identity_documents                                     identity_documents[]
+  jobs                                                   jobs[]
+  location_updates                                       location_updates[]
+  matching_feedback                                      matching_feedback[]
+  messages                                               messages[]
+  nanny_category_requests                                nanny_category_requests[]
+  nanny_details                                          nanny_details?
+  notifications                                          notifications[]
+  profiles                                               profiles?
+  recurring_bookings_recurring_bookings_nanny_idTousers  recurring_bookings[]      @relation("recurring_bookings_nanny_idTousers")
+  recurring_bookings_recurring_bookings_parent_idTousers recurring_bookings[]      @relation("recurring_bookings_parent_idTousers")
+  reviews_reviews_reviewee_idTousers                     reviews[]                 @relation("reviews_reviewee_idTousers")
+  reviews_reviews_reviewer_idTousers                     reviews[]                 @relation("reviews_reviewer_idTousers")
+  service_requests                                       service_requests[]
+  support_tickets                                        support_tickets[]
+  verification_attempts                                  verification_attempts[]
+  whatsapp_enquiries                                     whatsapp_enquiries[]    @relation("EnquiryAssignedAgent")
 
   @@unique([oauth_provider, oauth_provider_id])
+}
+
+model support_tickets {
+  id             String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ticket_number  String    @unique @db.VarChar(50)
+  user_id        String    @db.Uuid
+  role           String    @db.VarChar(50) 
+  subject        String    @db.VarChar(255)
+  description    String    @db.Text
+  category       String    @db.VarChar(50) 
+  priority       String    @default("medium") @db.VarChar(20) 
+  status         String    @default("open") @db.VarChar(50) 
+  admin_notes    String?   @db.Text
+  resolved_at    DateTime? @db.Timestamptz(6)
+  created_at     DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime? @default(now()) @db.Timestamptz(6)
+  users          users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model notifications {
@@ -271,23 +315,25 @@ model notifications {
   type       String    @default("info") @db.VarChar(50)
   is_read    Boolean   @default(false)
   created_at DateTime? @default(now()) @db.Timestamptz(6)
+  category   String?   @db.VarChar(50)
+  related_id String?   @db.Uuid
   users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model disputes {
-  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  booking_id  String    @db.Uuid
-  raised_by   String    @db.Uuid
-  reason      String    @db.VarChar(255)
-  description String?
-  status      String    @default("open") @db.VarChar(50)
-  resolution  String?
-  resolved_by String?   @db.Uuid
-  created_at  DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at  DateTime? @default(now()) @db.Timestamptz(6)
-  bookings    bookings  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_disputes_raised_byTousers    users @relation("disputes_raised_byTousers", fields: [raised_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_disputes_resolved_byTousers  users? @relation("disputes_resolved_byTousers", fields: [resolved_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  id                                String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id                        String    @db.Uuid
+  raised_by                         String    @db.Uuid
+  reason                            String    @db.VarChar(255)
+  description                       String?
+  status                            String    @default("open") @db.VarChar(50)
+  resolution                        String?
+  resolved_by                       String?   @db.Uuid
+  created_at                        DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at                        DateTime? @default(now()) @db.Timestamptz(6)
+  bookings                          bookings  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_disputes_raised_byTousers   users     @relation("disputes_raised_byTousers", fields: [raised_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_disputes_resolved_byTousers users?    @relation("disputes_resolved_byTousers", fields: [resolved_by], references: [id], onUpdate: NoAction)
 }
 
 model system_settings {
@@ -297,56 +343,64 @@ model system_settings {
   updated_at DateTime? @default(now()) @db.Timestamptz(6)
 }
 
+model services {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String   @unique @db.VarChar(100)
+  hourly_rate Decimal  @db.Decimal(10, 2)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+}
+
 model favorite_nannies {
-  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  parent_id  String    @db.Uuid
-  nanny_id   String    @db.Uuid
-  created_at DateTime? @default(now()) @db.Timestamptz(6)
-  users_favorite_nannies_parent_idTousers users @relation("favorite_nannies_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_favorite_nannies_nanny_idTousers  users @relation("favorite_nannies_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                                      String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id                               String    @db.Uuid
+  nanny_id                                String    @db.Uuid
+  created_at                              DateTime? @default(now()) @db.Timestamptz(6)
+  users_favorite_nannies_nanny_idTousers  users     @relation("favorite_nannies_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_favorite_nannies_parent_idTousers users     @relation("favorite_nannies_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([parent_id, nanny_id])
 }
 
 model location_updates {
-  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  booking_id String    @db.Uuid
-  nanny_id   String    @db.Uuid
-  lat        Decimal   @db.Decimal(10, 8)
-  lng        Decimal   @db.Decimal(11, 8)
-  timestamp  DateTime  @default(now()) @db.Timestamptz(6)
-  bookings   bookings  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users      users     @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id String   @db.Uuid
+  nanny_id   String   @db.Uuid
+  lat        Decimal  @db.Decimal(10, 8)
+  lng        Decimal  @db.Decimal(11, 8)
+  timestamp  DateTime @default(now()) @db.Timestamptz(6)
+  bookings   bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users      users    @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model matching_feedback {
-  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  request_id      String    @db.Uuid
-  nanny_id        String    @db.Uuid
-  was_successful  Boolean
-  feedback_data   Json?
-  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+  id               String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  request_id       String           @db.Uuid
+  nanny_id         String           @db.Uuid
+  was_successful   Boolean
+  feedback_data    Json?
+  created_at       DateTime?        @default(now()) @db.Timestamptz(6)
+  users            users            @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   service_requests service_requests @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users           users            @relation(fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model recurring_bookings {
-  id                   String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  parent_id            String    @db.Uuid
-  nanny_id             String    @db.Uuid
-  recurrence_pattern   String    @db.VarChar(100)
-  start_date           DateTime  @db.Date
-  end_date             DateTime? @db.Date
-  start_time           String    @db.VarChar(10)
-  duration_hours       Decimal   @db.Decimal(4, 2)
-  num_children         Int
-  children_ages        Json?
-  special_requirements String?
-  is_active            Boolean   @default(true)
-  created_at           DateTime? @default(now()) @db.Timestamptz(6)
-  users_recurring_bookings_parent_idTousers users @relation("recurring_bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_recurring_bookings_nanny_idTousers  users @relation("recurring_bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  bookings             bookings[]
+  id                                        String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id                                 String     @db.Uuid
+  nanny_id                                  String     @db.Uuid
+  recurrence_pattern                        String     @db.VarChar(100)
+  start_date                                DateTime   @db.Date
+  end_date                                  DateTime?  @db.Date
+  start_time                                String     @db.VarChar(10)
+  duration_hours                            Decimal    @db.Decimal(4, 2)
+  num_children                              Int
+  children_ages                             Json?
+  special_requirements                      String?
+  is_active                                 Boolean    @default(true)
+  created_at                                DateTime?  @default(now()) @db.Timestamptz(6)
+  bookings                                  bookings[]
+  users_recurring_bookings_nanny_idTousers  users      @relation("recurring_bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_recurring_bookings_parent_idTousers users      @relation("recurring_bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model availability_blocks {
@@ -362,13 +416,13 @@ model availability_blocks {
 }
 
 model identity_documents {
-  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id    String   @db.Uuid
-  type       String   @db.VarChar(50) // AADHAR, PAN, VOTER_ID, DRIVING_LICENSE
-  id_number  String   @db.VarChar(50)
-  file_path  String
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String   @db.Uuid
+  type        String   @db.VarChar(50)
+  id_number   String   @db.VarChar(50)
+  file_path   String
   uploaded_at DateTime @default(now()) @db.Timestamptz(6)
-  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users       users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model verification_attempts {
@@ -385,13 +439,87 @@ model verification_attempts {
 }
 
 model revoked_tokens {
-  id        String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  token     String   @unique
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  token      String   @unique
   expires_at DateTime @db.Timestamptz(6)
   created_at DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([token])
   @@index([expires_at])
+}
+
+model children {
+  id                String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id         String             @db.Uuid
+  first_name        String             @db.VarChar(100)
+  last_name         String             @db.VarChar(100)
+  dob               DateTime           @db.Date
+  gender            gender
+  profile_type      child_profile_type @default(STANDARD)
+  allergies         String[]           @default([])
+  dietary_notes     String?
+  diagnosis         String?
+  care_instructions String?
+  emergency_contact Json?
+  school_details    Json?
+  learning_goals    String[]           @default([])
+  created_at        DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
+  booking_children  booking_children[]
+  users             users              @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([parent_id])
+}
+
+model booking_children {
+  booking_id String   @db.Uuid
+  child_id   String   @db.Uuid
+  bookings   bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  children   children @relation(fields: [child_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([booking_id, child_id])
+}
+
+model whatsapp_conversations {
+  id           String                     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  phone_number String                     @unique @db.VarChar(20)
+  name         String?                    @db.VarChar(255)
+  current_step WhatsAppConversationStep   @default(WELCOME)
+  status       WhatsAppConversationStatus @default(ACTIVE)
+  created_at   DateTime                   @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime                   @updatedAt @db.Timestamptz(6)
+
+  @@index([phone_number])
+}
+
+model whatsapp_enquiries {
+  id           String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name         String                @db.VarChar(255)
+  phone_number String                @db.VarChar(20)
+  email        String?               @db.VarChar(255)
+  category     String                @db.VarChar(100)
+  message      String
+  status       WhatsAppEnquiryStatus @default(NEW)
+  assigned_to  String?               @db.Uuid
+  notes        String?
+  created_at   DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime              @updatedAt @db.Timestamptz(6)
+  assigned_user        users?                @relation("EnquiryAssignedAgent", fields: [assigned_to], references: [id])
+
+  @@index([phone_number])
+  @@index([status])
+}
+
+model whatsapp_messages {
+  id           String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  phone_number String                   @db.VarChar(20)
+  direction    WhatsAppMessageDirection
+  message_body String
+  message_id   String?                  @unique @db.VarChar(255)
+  raw_payload  Json?
+  created_at   DateTime                 @default(now()) @db.Timestamptz(6)
+
+  @@index([phone_number])
 }
 
 enum child_profile_type {
@@ -405,35 +533,28 @@ enum gender {
   OTHER
 }
 
-model children {
-  id                 String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  parent_id          String             @db.Uuid
-  first_name         String             @db.VarChar(100)
-  last_name          String             @db.VarChar(100)
-  dob                DateTime           @db.Date
-  gender             gender
-  profile_type       child_profile_type @default(STANDARD)
-  allergies          String[]           @default([])
-  dietary_notes      String?
-  diagnosis          String?
-  care_instructions  String?            @db.Text
-  emergency_contact  Json?
-  school_details     Json?
-  learning_goals     String[]           @default([])
-  created_at         DateTime?          @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime?          @default(now()) @db.Timestamptz(6)
-
-  users              users              @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  booking_children   booking_children[]
-
-  @@index([parent_id])
+enum WhatsAppConversationStatus {
+  ACTIVE
+  COMPLETED
 }
 
-model booking_children {
-  booking_id String   @db.Uuid
-  child_id   String   @db.Uuid
-  bookings   bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  children   children @relation(fields: [child_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+enum WhatsAppConversationStep {
+  WELCOME
+  COLLECT_NAME
+  COLLECT_PHONE
+  COLLECT_EMAIL
+  COLLECT_CATEGORY
+  COLLECT_ENQUIRY
+  COMPLETED
+}
 
-  @@id([booking_id, child_id])
+enum WhatsAppEnquiryStatus {
+  NEW
+  CONTACTED
+  CLOSED
+}
+
+enum WhatsAppMessageDirection {
+  INBOUND
+  OUTBOUND
 }

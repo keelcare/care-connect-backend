@@ -9,9 +9,10 @@ import {
 } from "@nestjs/common";
 import { FavoritesService } from "./favorites.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @Controller("favorites")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class FavoritesController {
   constructor(private readonly favoritesService: FavoritesService) {}
 

@@ -1,7 +1,10 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
+import { APP_FILTER } from "@nestjs/core";
+import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
 import { ServeStaticModule } from "@nestjs/serve-static";
+import { EventEmitterModule } from "@nestjs/event-emitter";
 import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
@@ -17,30 +20,57 @@ import { AdminModule } from "./admin/admin.module";
 import { RequestsModule } from "./requests/requests.module";
 import { AssignmentsModule } from "./assignments/assignments.module";
 import { FavoritesModule } from "./favorites/favorites.module";
-import { AiModule } from "./ai/ai.module";
 import { RecurringBookingsModule } from "./recurring-bookings/recurring-bookings.module";
 import { AvailabilityModule } from "./availability/availability.module";
 import { VerificationModule } from "./verification/verification.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { CommonModule } from "./common/common.module";
 import { FamilyModule } from "./family/family.module";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { ThrottlerModule } from "@nestjs/throttler";
 import { APP_GUARD } from "@nestjs/core";
+import { UserThrottlerGuard } from "./common/guards/user-throttler.guard";
 import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
+import { ServicesModule } from './services/services.module';
+import { NanniesModule } from './nannies/nannies.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { SupportModule } from './support/support.module';
+import { SseModule } from './sse/sse.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: "prisma.env",
+      envFilePath: ".env",
       validationSchema: Joi.object({
+        // Database
         DATABASE_URL: Joi.string().required(),
+
+        // Authentication
         JWT_SECRET: Joi.string().required(),
+
+        // Server
         PORT: Joi.number().default(4000),
-        FRONTEND_URL: Joi.string().uri().optional(), // Marking optional only to avoid breaking dev if not set
+        FRONTEND_URL: Joi.string().uri().optional(),
+
+        // API Keys - Optional (warnings logged in services if missing)
+        RAZORPAY_KEY_ID: Joi.string().allow('', null).optional(),
+        RAZORPAY_KEY_SECRET: Joi.string().allow('', null).optional(),
+        RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('', null).optional(),
+        GOOGLE_MAPS_API_KEY: Joi.string().allow('', null).optional(),
+        GEMINI_API_KEY: Joi.string().allow('', null).optional(),
+        CLOUDINARY_API_KEY: Joi.string().allow('', null).optional(),
+        CLOUDINARY_API_SECRET: Joi.string().allow('', null).optional(),
+        CLOUDINARY_CLOUD_NAME: Joi.string().allow('', null).optional(),
+        // WhatsApp
+        WHATSAPP_ACCESS_TOKEN: Joi.string().allow('', null).optional(),
+        WHATSAPP_PHONE_NUMBER_ID: Joi.string().allow('', null).optional(),
+        WHATSAPP_VERIFY_TOKEN: Joi.string().allow('', null).optional(),
+        WHATSAPP_APP_SECRET: Joi.string().allow('', null).optional(),
+        WHATSAPP_API_VERSION: Joi.string().allow('', null).optional(),
       }),
     }),
+    SentryModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
         transport:
@@ -56,15 +86,18 @@ import { LoggerModule } from "nestjs-pino";
     }),
     ThrottlerModule.forRoot([
       {
-        ttl: 60000, // 1 minute
-        limit: 100, // Reduced to 100 for better security
-      },
+        name: 'default',
+        ttl: 60000,
+        limit: 300, // Balanced global limit for SPA usage
+      }
     ]),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), "uploads"),
       serveRoot: "/uploads",
     }),
     ScheduleModule.forRoot(),
+    EventEmitterModule.forRoot(),
+    SseModule,
     AuthModule,
     UsersModule,
     PrismaModule,
@@ -77,20 +110,27 @@ import { LoggerModule } from "nestjs-pino";
     RequestsModule,
     AssignmentsModule,
     FavoritesModule,
-    AiModule,
     RecurringBookingsModule,
     AvailabilityModule,
     VerificationModule,
     PaymentsModule,
     CommonModule,
     FamilyModule,
+    ServicesModule,
+    NanniesModule,
+    WhatsAppModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: SentryGlobalFilter,
     },
   ],
 })

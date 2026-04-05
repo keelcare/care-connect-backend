@@ -48,9 +48,6 @@ export class UpdateUserDto {
   @IsNumber()
   experienceYears?: number;
 
-  @IsOptional()
-  @IsNumber()
-  hourlyRate?: number;
 
   @IsOptional()
   @IsString()

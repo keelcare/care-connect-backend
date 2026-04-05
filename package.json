@@ -30,6 +30,7 @@
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^10.0.0",
+    "@nestjs/event-emitter": "^3.0.1",
     "@nestjs/jwt": "^11.0.1",
     "@nestjs/mapped-types": "^2.1.0",
     "@nestjs/passport": "^11.0.5",
@@ -37,9 +38,13 @@
     "@nestjs/platform-socket.io": "^10.4.20",
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/serve-static": "^4.0.2",
+    "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^10.4.20",
     "@prisma/client": "^6.19.2",
+    "@sentry/nestjs": "^10.43.0",
+    "@sentry/profiling-node": "^10.43.0",
+    "@supabase/supabase-js": "^2.98.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/dompurify": "^3.0.5",
     "@types/ioredis": "^4.28.10",
@@ -52,6 +57,7 @@
     "cookie-parser": "^1.4.7",
     "crypto": "^1.0.1",
     "dotenv": "^17.2.3",
+    "firebase-admin": "^13.6.1",
     "helmet": "^8.1.0",
     "isomorphic-dompurify": "^2.35.0",
     "joi": "^18.0.2",
@@ -64,7 +70,8 @@
     "razorpay": "^2.9.6",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
     "@nestjs/schematics": "^10.0.0",
@@ -109,7 +116,7 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-    },
+  },
   "overrides": {
     "isomorphic-dompurify": {
       "jsdom": "22.1.0"

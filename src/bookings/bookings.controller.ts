@@ -9,65 +9,46 @@ import {
   Request,
   ForbiddenException,
 } from "@nestjs/common";
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
 import { BookingsService } from "./bookings.service";
 import { AuthGuard } from "@nestjs/passport";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
+@ApiTags('Bookings')
+@ApiBearerAuth()
 @Controller("bookings")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class BookingsController {
   constructor(private readonly bookingsService: BookingsService) { }
 
-  // Temporary endpoint for testing creation until Feature 5 is ready
-  /*
-  @Post()
-  async createBooking(
-    @Body()
-    body: {
-      jobId?: string;
-      nannyId: string;
-      date?: string;
-      startTime?: string;
-      endTime?: string;
-    },
-    @Request() req,
-  ) {
-    console.log("Received booking request body:", body);
-    // Assuming the creator is the parent
-    return this.bookingsService.createBooking(
-      body.jobId,
-      req.user.id,
-      body.nannyId,
-      body.date,
-      body.startTime,
-      body.endTime,
-    );
-  }
-  */
-
   @Get("active")
+  @ApiOperation({ summary: 'Get all active bookings for the current user' })
+  @ApiResponse({ status: 200, description: 'Return list of active bookings' })
   async getActiveBookings(@Request() req) {
     const role = req.user.role === "nanny" ? "nanny" : "parent";
     return this.bookingsService.getActiveBookings(req.user.id, role);
   }
 
   @Get("parent/me")
+  @ApiOperation({ summary: 'Get all bookings for the current parent' })
+  @ApiResponse({ status: 200, description: 'Return list of parent bookings' })
   async getMyParentBookings(@Request() req) {
-    if (req.user.role !== "parent") {
-      // In a real app, maybe allow admin or check logic. For now strict.
-      // Actually, a user might be both? Let's just trust the token's ID.
-    }
     return this.bookingsService.getBookingsByParent(req.user.id);
   }
 
   @Get("nanny/me")
+  @ApiOperation({ summary: 'Get all bookings for the current nanny' })
+  @ApiResponse({ status: 200, description: 'Return list of nanny bookings' })
   async getMyNannyBookings(@Request() req) {
     return this.bookingsService.getBookingsByNanny(req.user.id);
   }
 
   @Get(":id")
+  @ApiOperation({ summary: 'Get detailed information about a specific booking' })
+  @ApiResponse({ status: 200, description: 'Return booking details' })
+  @ApiResponse({ status: 403, description: 'Forbidden - not apart of this booking' })
   async getBooking(@Param("id") id: string, @Request() req) {
     const booking = await this.bookingsService.getBookingById(id);
-    // Security check: ensure user is part of the booking
     if (
       booking.parent_id !== req.user.id &&
       booking.nanny_id !== req.user.id &&
@@ -81,8 +62,10 @@ export class BookingsController {
   }
 
   @Put(":id/start")
+  @ApiOperation({ summary: 'Start a booking (Nanny only)' })
+  @ApiResponse({ status: 200, description: 'Booking started successfully' })
+  @ApiResponse({ status: 403, description: 'Forbidden - only the assigned nanny can start' })
   async startBooking(@Param("id") id: string, @Request() req) {
-    // Only nanny can start? Or maybe parent too? Usually nanny upon arrival.
     const booking = await this.bookingsService.getBookingById(id);
     if (booking.nanny_id !== req.user.id) {
       throw new ForbiddenException(
@@ -93,8 +76,9 @@ export class BookingsController {
   }
 
   @Put(":id/complete")
+  @ApiOperation({ summary: 'Mark a booking as completed' })
+  @ApiResponse({ status: 200, description: 'Booking completed successfully' })
   async completeBooking(@Param("id") id: string, @Request() req) {
-    // Only nanny can complete? Or parent?
     const booking = await this.bookingsService.getBookingById(id);
     if (booking.nanny_id !== req.user.id && booking.parent_id !== req.user.id) {
       throw new ForbiddenException("Not authorized to complete this booking");
@@ -103,6 +87,9 @@ export class BookingsController {
   }
 
   @Put(":id/cancel")
+  @ApiOperation({ summary: 'Cancel a booking' })
+  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
+  @ApiResponse({ status: 200, description: 'Booking cancelled successfully' })
   async cancelBooking(
     @Param("id") id: string,
     @Body("reason") reason: string,
@@ -113,5 +100,50 @@ export class BookingsController {
       throw new ForbiddenException("Not authorized to cancel this booking");
     }
     return this.bookingsService.cancelBooking(id, reason, req.user.id);
+  }
+
+  @Put(":id/reschedule")
+  @ApiOperation({ summary: 'Reschedule a booking' })
+  @ApiResponse({ status: 200, description: 'Booking rescheduled successfully' })
+  async rescheduleBooking(
+    @Param("id") id: string,
+    @Body()
+    body: {
+      date: string;
+      startTime: string;
+      endTime: string;
+    },
+    @Request() req,
+  ) {
+    return this.bookingsService.rescheduleBooking(
+      id,
+      body.date,
+      body.startTime,
+      body.endTime,
+      req.user.id,
+    );
+  }
+
+  @Post("check-expired")
+  @ApiOperation({ summary: 'Manually trigger a check for expired bookings' })
+  @ApiResponse({ status: 200, description: 'Expired bookings checked and processed' })
+  async checkExpired() {
+    const expiredCount = await this.bookingsService.checkExpiredBookings();
+    return {
+      message: `Checked for expired bookings successfully`,
+      expired_count: expiredCount,
+    };
+  }
+
+  @Post(":id/no-show")
+  @ApiOperation({ summary: 'Report a No-Show for a confirmed booking' })
+  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
+  @ApiResponse({ status: 200, description: 'No-Show reported and booking cancelled' })
+  async reportNoShow(
+    @Param("id") id: string,
+    @Body("reason") reason: string,
+    @Request() req,
+  ) {
+    return this.bookingsService.reportNoShow(id, req.user.id, reason || "No reason provided");
   }
 }

@@ -23,11 +23,13 @@ export const ROLES_PERSMISSIONS = {
     ],
     parent: [
         Permission.USER_READ,
+        Permission.USER_WRITE,
         Permission.BOOKING_READ,
         Permission.BOOKING_WRITE
     ],
     nanny: [
         Permission.USER_READ,
+        Permission.USER_WRITE,
         Permission.BOOKING_READ,
         Permission.BOOKING_WRITE
     ]

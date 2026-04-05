@@ -79,6 +79,7 @@ describe("BookingsService", () => {
         users_bookings_nanny_idTousers: {
           nanny_details: { hourly_rate: hourlyRate },
         },
+        service_requests: { max_hourly_rate: hourlyRate },
       });
 
       mockPrisma.bookings.update.mockResolvedValue({

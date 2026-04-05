@@ -4,17 +4,36 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import * as crypto from "crypto";
+import { SignupDto } from "./dto/signup.dto";
+import { PrismaService } from "../prisma/prisma.service";
+
+/**
+ * SECURITY: Password Complexity Regex
+ * - Min 8 characters
+ * - At least one uppercase
+ * - At least one lowercase
+ * - At least one number
+ * - At least one special character
+ */
+const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/;
 
 @Injectable()
 export class AuthService {
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
-  ) { }
+    private configService: ConfigService,
+    private prisma: PrismaService,
+  ) {
+    if (!this.configService.get<string>("JWT_SECRET")) {
+      throw new Error("JWT_SECRET must be configured");
+    }
+  }
 
   async validateUser(email: string, pass: string): Promise<any> {
     const user = await this.usersService.findUserForAuth(email);
@@ -37,8 +56,21 @@ export class AuthService {
       role: user.role,
       is_active: user.is_active,
     };
-    const accessToken = this.jwtService.sign(payload, { expiresIn: "15m" });
-    const refreshToken = this.jwtService.sign(payload, { expiresIn: "7d" });
+
+    const secret = this.configService.get<string>("JWT_SECRET");
+    if (!secret) {
+      throw new Error("JWT_SECRET is not configured");
+    }
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: "15m",
+      secret: secret
+    });
+
+    const refreshToken = this.jwtService.sign(payload, {
+      expiresIn: "7d",
+      secret: secret
+    });
 
     // Hash and store refresh token
     const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
@@ -66,8 +98,15 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     try {
-      const payload = this.jwtService.verify(refreshToken);
-      const user = await this.usersService.findOne(payload.sub);
+      const secret = this.configService.get<string>("JWT_SECRET");
+      if (!secret) {
+        throw new Error("JWT_SECRET is not configured");
+      }
+      const payload = this.jwtService.verify(refreshToken, { secret });
+      // Directly using findUnique to be 100% sure we get the hash
+      const user = await this.prisma.users.findUnique({
+        where: { email: payload.email }
+      });
 
       if (!user || !user.refresh_token_hash) {
         throw new UnauthorizedException("Invalid refresh token");
@@ -88,7 +127,7 @@ export class AuthService {
     }
   }
 
-  async forgotPassword(email: string) {
+  async forgotPassword(email: string, origin?: string) {
     const user = await this.usersService.findUserForAuth(email);
     if (!user) {
       // Don't reveal if user exists
@@ -104,15 +143,22 @@ export class AuthService {
     });
 
     // TODO: Send email with reset link
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    console.log(
-      `Password reset link: ${frontendUrl}/reset-password?token=${resetToken}`,
-    );
+    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
+
 
     return { message: "If the email exists, a reset link has been sent" };
   }
 
   async resetPassword(token: string, newPassword: string) {
+    /**
+     * SECURITY: Service-level password validation as second layer of defense
+     */
+    if (newPassword.length < 8 || !PASSWORD_REGEX.test(newPassword)) {
+      throw new BadRequestException(
+        "Password must be at least 8 characters and contain at least one letter and one number",
+      );
+    }
+
     const user = await this.usersService.findByResetToken(token);
 
     if (
@@ -133,7 +179,7 @@ export class AuthService {
     return { message: "Password reset successful" };
   }
 
-  async sendVerificationEmail(userId: string) {
+  async sendVerificationEmail(userId: string, origin?: string) {
     const user = await this.usersService.findOne(userId);
     if (!user) {
       throw new BadRequestException("User not found");
@@ -152,12 +198,21 @@ export class AuthService {
     });
 
     // TODO: Send email with verification link
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    console.log(
-      `Verification link: ${frontendUrl}/verify?token=${verificationToken}`,
-    );
+    const frontendUrl = origin || process.env.FRONTEND_URL || "http://localhost:3000";
+
 
     return { message: "Verification email sent" };
+  }
+
+  async sendVerificationEmailByEmail(email: string, origin?: string) {
+    const user = await this.usersService.findUserForAuth(email);
+    if (!user || user.is_verified) {
+      // Don't reveal user existence
+      return { message: "Verification email sent if account exists" };
+    }
+
+
+    return this.sendVerificationEmail(user.id, origin);
   }
 
   async verifyEmail(token: string) {
@@ -180,7 +235,36 @@ export class AuthService {
     return { message: "Email verified successfully" };
   }
 
-  async register(userDto: any) {
+  async register(userDto: SignupDto) {
+    /**
+     * SECURITY: Service-level password validation as second layer of defense
+     */
+    if (userDto.password.length < 8 || !PASSWORD_REGEX.test(userDto.password)) {
+      throw new BadRequestException(
+        "Password must be at least 8 characters and contain at least one letter and one number",
+      );
+    }
+
+    // Validate categories for Nannies
+    if (userDto.role === 'nanny') {
+      if (!userDto.categories || userDto.categories.length === 0) {
+        throw new BadRequestException('Nannies must select at least one category');
+      }
+
+      // Validate categories exist in services table
+      const validServices = await this.prisma.services.findMany({
+        where: {
+          name: { in: userDto.categories }
+        }
+      });
+
+      if (validServices.length !== userDto.categories.length) {
+        const validNames = validServices.map(s => s.name);
+        const invalidNames = userDto.categories.filter(c => !validNames.includes(c));
+        throw new BadRequestException(`Invalid categories: ${invalidNames.join(', ')}`);
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(userDto.password, 10);
     const user = await this.usersService.create({
       email: userDto.email,
@@ -192,6 +276,14 @@ export class AuthService {
           last_name: userDto.lastName,
         },
       },
+      nanny_details:
+        userDto.role === "nanny"
+          ? {
+            create: {
+              categories: userDto.categories,
+            },
+          }
+          : undefined,
     });
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars

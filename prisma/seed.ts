@@ -6,6 +6,36 @@ const prisma = new PrismaClient();
 async function main() {
     console.log('Starting seed...');
 
+    // 0. Create Services with pricing
+    console.log('Creating services...');
+    const ccService = await prisma.services.upsert({
+        where: { name: 'CC' },
+        update: { hourly_rate: 200.0 },
+        create: { name: 'CC', hourly_rate: 200.0 },
+    });
+    console.log({ ccService });
+
+    const stService = await prisma.services.upsert({
+        where: { name: 'ST' },
+        update: { hourly_rate: 200.0 },
+        create: { name: 'ST', hourly_rate: 200.0 },
+    });
+    console.log({ stService });
+
+    const snService = await prisma.services.upsert({
+        where: { name: 'SN' },
+        update: { hourly_rate: 300.0 },
+        create: { name: 'SN', hourly_rate: 300.0 },
+    });
+    console.log({ snService });
+
+    const ecService = await prisma.services.upsert({
+        where: { name: 'EC' },
+        update: { hourly_rate: 200.0 }, // Defaulting EC to 200
+        create: { name: 'EC', hourly_rate: 200.0 },
+    });
+    console.log({ ecService });
+
     // 1. Clean up existing demo users
     console.log('Cleaning up existing demo users...');
     await prisma.users.deleteMany({
@@ -44,6 +74,28 @@ async function main() {
     });
     console.log({ parent });
 
+    // Create an Admin User
+    const adminEmail = 'admin@example.com';
+    const admin = await prisma.users.upsert({
+        where: { email: adminEmail },
+        update: {},
+        create: {
+            email: adminEmail,
+            password_hash: hashedPassword,
+            role: 'admin',
+            is_verified: true,
+            identity_verification_status: 'verified',
+            profiles: {
+                create: {
+                    first_name: 'Super',
+                    last_name: 'Admin',
+                    phone: '+1000000000',
+                },
+            },
+        },
+    });
+    console.log({ admin });
+
     // Create a Nanny User with location in Mumbai (Priya Patel)
     const nannyEmail = 'priya.patel@example.com';
     const nanny = await prisma.users.upsert({
@@ -69,7 +121,6 @@ async function main() {
                 create: {
                     skills: ['First Aid', 'Cooking', 'Hindi', 'English'],
                     experience_years: 5,
-                    hourly_rate: 300.0, // INR per hour
                     bio: 'Experienced nanny with 5 years of childcare experience. Fluent in Hindi and English.',
                     availability_schedule: {
                         monday: ['09:00-17:00'],
@@ -79,6 +130,7 @@ async function main() {
                         friday: ['09:00-17:00'],
                     },
                     is_available_now: true,
+                    tags: ['NY'],
                 },
             },
         },
@@ -110,7 +162,6 @@ async function main() {
                 create: {
                     skills: ['Music', 'Art', 'Swimming', 'Marathi', 'English'],
                     experience_years: 3,
-                    hourly_rate: 250.0, // INR per hour
                     bio: 'Creative nanny with background in arts and music. Great with toddlers.',
                     availability_schedule: {
                         monday: ['10:00-18:00'],
@@ -119,6 +170,7 @@ async function main() {
                         saturday: ['09:00-13:00'],
                     },
                     is_available_now: true,
+                    tags: ['NY'],
                 },
             },
         },
@@ -150,7 +202,6 @@ async function main() {
                 create: {
                     skills: ['First Aid', 'Cooking', 'Kannada', 'English', 'Tamil'],
                     experience_years: 7,
-                    hourly_rate: 350.0, // INR per hour
                     bio: 'Highly experienced nanny with excellent references. Specialized in infant care.',
                     availability_schedule: {
                         monday: ['08:00-16:00'],
@@ -160,6 +211,7 @@ async function main() {
                         friday: ['08:00-16:00'],
                     },
                     is_available_now: true,
+                    tags: ['SN'],
                 },
             },
         },
@@ -240,6 +292,7 @@ async function main() {
             exp: 4,
             rate: 300.0,
             bio: 'Energetic nanny who loves engaging kids in creative arts and crafts.',
+            tags: ['Standard'],
         },
         {
             email: 'ananya.gupta@example.com',
@@ -253,6 +306,7 @@ async function main() {
             exp: 2,
             rate: 200.0,
             bio: 'University student available for part-time babysitting and homework help.',
+            tags: ['Standard'],
         },
         {
             email: 'kavita.singh@example.com',
@@ -266,6 +320,7 @@ async function main() {
             exp: 8,
             rate: 400.0,
             bio: 'Reliable and experienced. Can manage household chores along with childcare.',
+            tags: ['Premium'],
         },
         {
             email: 'deepa.rao@example.com',
@@ -279,6 +334,7 @@ async function main() {
             exp: 10,
             rate: 450.0,
             bio: 'Certified caregiver with a decade of experience in both child and elderly care.',
+            tags: ['Premium'],
         },
         {
             email: 'manju.thomas@example.com',
@@ -292,6 +348,7 @@ async function main() {
             exp: 6,
             rate: 350.0,
             bio: 'Specialized in newborn care and post-partum support for mothers.',
+            tags: ['Premium'],
         },
     ];
 
@@ -319,7 +376,6 @@ async function main() {
                     create: {
                         skills: n.skills,
                         experience_years: n.exp,
-                        hourly_rate: n.rate,
                         bio: n.bio,
                         availability_schedule: {
                             monday: ['09:00-18:00'],
@@ -329,6 +385,7 @@ async function main() {
                             friday: ['09:00-18:00'],
                         },
                         is_available_now: true,
+                        tags: (n as any).tags || [],
                     },
                 },
             },
@@ -376,6 +433,7 @@ async function main() {
             exp: 12,
             rate: 300.0,
             bio: 'Mature and responsible nanny. Very good with cooking healthy meals.',
+            tags: ['Standard'],
         },
         {
             email: 'pooja.rani@example.com',
@@ -389,6 +447,7 @@ async function main() {
             exp: 3,
             rate: 250.0,
             bio: 'Active and energetic. Loves taking kids to the park and playing sports.',
+            tags: ['Standard'],
         },
     ];
 
@@ -416,7 +475,6 @@ async function main() {
                     create: {
                         skills: n.skills,
                         experience_years: n.exp,
-                        hourly_rate: n.rate,
                         bio: n.bio,
                         availability_schedule: {
                             monday: ['10:00-19:00'],
@@ -424,6 +482,7 @@ async function main() {
                             friday: ['10:00-19:00'],
                         },
                         is_available_now: true,
+                        tags: (n as any).tags || [],
                     },
                 },
             },
@@ -469,7 +528,6 @@ async function main() {
                 create: {
                     skills: hyderabadNanny.skills,
                     experience_years: hyderabadNanny.exp,
-                    hourly_rate: hyderabadNanny.rate,
                     bio: hyderabadNanny.bio,
                     availability_schedule: {
                         monday: ['08:00-20:00'],
@@ -480,11 +538,63 @@ async function main() {
                         saturday: ['09:00-14:00'],
                     },
                     is_available_now: true,
+                    tags: ['EC'],
                 },
             },
         },
     });
     console.log(`Created Hyderabad nanny: ${hyderabadNanny.firstName}`);
+    console.log(`Created Hyderabad nanny: ${hyderabadNanny.firstName}`);
+
+    // 2. Create Support Tickets
+    console.log('Creating support tickets...');
+    const ticket1 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1001' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1001',
+            user_id: parent.id,
+            role: 'parent',
+            subject: 'Issue with booking payment',
+            description: 'I was charged twice for my last booking. Please look into it.',
+            category: 'payment',
+            priority: 'high',
+            status: 'open',
+        },
+    });
+    console.log({ ticket1 });
+
+    const ticket2 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1002' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1002',
+            user_id: nanny.id,
+            role: 'nanny',
+            subject: 'App crashing on startup',
+            description: 'Every time I open the app, it crashes on the splash screen.',
+            category: 'technical',
+            priority: 'medium',
+            status: 'open',
+        },
+    });
+    console.log({ ticket2 });
+
+    const ticket3 = await prisma.support_tickets.upsert({
+        where: { ticket_number: 'TIC-1003' },
+        update: {},
+        create: {
+            ticket_number: 'TIC-1003',
+            user_id: nanny2.id,
+            role: 'nanny',
+            subject: 'Inappropriate behavior from parent',
+            description: 'A parent was very rude during the last visit. I want to report them.',
+            category: 'grievance',
+            priority: 'critical',
+            status: 'open',
+        },
+    });
+    console.log({ ticket3 });
 }
 
 main()

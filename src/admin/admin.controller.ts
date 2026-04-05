@@ -6,15 +6,34 @@ import {
   Param,
   Body,
   UseGuards,
+  Query,
 } from "@nestjs/common";
 import { AdminService } from "./admin.service";
 import { AuthGuard } from "@nestjs/passport";
 import { AdminGuard } from "./admin.guard";
 
+import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
+
 @Controller("admin")
 @UseGuards(AuthGuard("jwt"), AdminGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(private readonly adminService: AdminService) { }
+
+  // Manual Assignment Management
+  @Get("manual-assignment/requests")
+  async getManualAssignmentRequests() {
+    return this.adminService.getManualAssignmentRequests();
+  }
+
+  @Get("manual-assignment/nannies/:requestId")
+  async getAvailableNanniesForRequest(@Param("requestId") requestId: string) {
+    return this.adminService.getAvailableNanniesForRequest(requestId);
+  }
+
+  @Post("manual-assignment/assign")
+  async manuallyAssignNanny(@Body() dto: AdminManualAssignmentDto) {
+    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId);
+  }
 
   // User Management
   @Get("users")
@@ -35,6 +54,24 @@ export class AdminController {
   @Put("users/:id/unban")
   async unbanUser(@Param("id") userId: string) {
     return this.adminService.unbanUser(userId);
+  }
+
+
+
+  // Category Request Management
+  @Get("category-requests")
+  async getCategoryRequests(@Query("status") status?: string) {
+    return this.adminService.getCategoryRequests(status);
+  }
+
+  @Put("category-requests/:id/approve")
+  async approveCategoryRequest(@Param("id") id: string, @Body("notes") notes?: string) {
+    return this.adminService.updateCategoryRequestStatus(id, "approved", notes);
+  }
+
+  @Put("category-requests/:id/reject")
+  async rejectCategoryRequest(@Param("id") id: string, @Body("notes") notes?: string) {
+    return this.adminService.updateCategoryRequestStatus(id, "rejected", notes);
   }
 
   // Booking Management
@@ -107,6 +144,11 @@ export class AdminController {
   }
 
   // Analytics
+  @Get("dashboard")
+  async getDashboardData() {
+    return this.adminService.getDashboardData();
+  }
+
   @Get("stats")
   async getStats() {
     return this.adminService.getSystemStats();

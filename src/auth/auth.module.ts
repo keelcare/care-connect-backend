@@ -7,6 +7,7 @@ import { JwtModule } from "@nestjs/jwt";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { JwtStrategy } from "./strategies/jwt.strategy";
 import { GoogleStrategy } from "./strategies/google.strategy";
+import { TransparentJwtAuthGuard } from "./guards/transparent-jwt-auth.guard";
 
 import { TokenBlacklistService } from "./token-blacklist.service";
 
@@ -25,7 +26,13 @@ import { TokenBlacklistService } from "./token-blacklist.service";
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, TokenBlacklistService],
-  exports: [AuthService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    GoogleStrategy,
+    TokenBlacklistService,
+    TransparentJwtAuthGuard,
+  ],
+  exports: [AuthService, TransparentJwtAuthGuard],
 })
 export class AuthModule { }

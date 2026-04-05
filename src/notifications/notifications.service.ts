@@ -1,37 +1,84 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
+import { FcmService } from "./fcm.service";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private configService: ConfigService,
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
-  ) {}
+    private fcmService: FcmService,
+    private sseService: SseService,
+  ) { }
 
   async createNotification(
     userId: string,
     title: string,
     message: string,
     type: "info" | "success" | "warning" | "error" = "info",
+    category?: string,
+    relatedId?: string,
   ) {
-    // 1. Save to Database
-    const notification = await this.prisma.notifications.create({
-      data: {
-        user_id: userId,
-        title,
-        message,
-        type,
-      },
-    });
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-    // 2. Send Real-time Update via WebSocket
+    // Validate userId — this is the primary key for the notification and MUST be a valid UUID
+    if (!userId || !uuidRegex.test(userId)) {
+      this.logger.error(`createNotification called with an invalid userId: "${userId}". Aborting.`);
+      throw new Error(`Invalid userId format: "${userId}". Expected a valid UUID.`);
+    }
+
+    // Defensive Check: Validate UUID format for relatedId (optional field — fall back to null if invalid)
+    const validRelatedId = relatedId && uuidRegex.test(relatedId) ? relatedId : null;
+    if (relatedId && !validRelatedId) {
+      this.logger.warn(`Invalid UUID format for relatedId: "${relatedId}". Falling back to null.`);
+    }
+
+    // 1. Fetch FCM token AND save notification in parallel (2 DB calls at once instead of 2 sequential ones)
+    const [notification, user] = await Promise.all([
+      this.prisma.notifications.create({
+        data: {
+          user_id: userId,
+          title,
+          message,
+          type,
+          category,
+          related_id: validRelatedId,
+        },
+      }),
+      this.prisma.users.findUnique({
+        where: { id: userId },
+        select: { fcm_token: true },
+      }),
+    ]);
+
+    // 2. Send Real-time Update via WebSocket (fire-and-forget — no await needed)
     this.notificationsGateway.sendToUser(userId, notification);
 
-    // 3. Optional: Send Push/Email based on preferences (keeping existing placeholders)
-    // this.sendPushNotification(userId, title, message);
+    // 2b. Send via SSE stream (for clients without a WS connection or as primary path)
+    this.sseService.emitToUser(userId, {
+      type: SSE_EVENTS.NOTIFICATION,
+      data: notification,
+      timestamp: new Date().toISOString(),
+    });
+
+    // 3. Send Mobile Push Notification fire-and-forget — don't block the response
+    if (user?.fcm_token) {
+      this.fcmService.sendPushNotification(
+        user.fcm_token,
+        title,
+        message,
+        { type: category || type, relatedId: relatedId || '' },
+      ).catch(err => {
+        this.logger.error(`Failed to dispatch push notification for user ${userId}`, err.stack);
+      });
+    }
 
     return notification;
   }
@@ -39,11 +86,11 @@ export class NotificationsService {
   async sendToAllParents(title: string, message: string) {
     const parents = await this.prisma.users.findMany({
       where: { role: "parent" },
+      select: { id: true },
     });
 
-    for (const parent of parents) {
-      await this.createNotification(parent.id, title, message);
-    }
+    // Process in batches to avoid overwhelming the DB connection pool
+    await this.sendInBatches(parents.map(p => p.id), title, message);
 
     return { count: parents.length };
   }
@@ -51,13 +98,30 @@ export class NotificationsService {
   async sendToAllNannies(title: string, message: string) {
     const nannies = await this.prisma.users.findMany({
       where: { role: "nanny" },
+      select: { id: true },
     });
 
-    for (const nanny of nannies) {
-      await this.createNotification(nanny.id, title, message);
-    }
+    await this.sendInBatches(nannies.map(n => n.id), title, message);
 
     return { count: nannies.length };
+  }
+
+  /**
+   * Sends notifications in batches to avoid saturating the DB connection pool.
+   * Processes `batchSize` users in parallel, then moves to the next batch.
+   */
+  private async sendInBatches(
+    userIds: string[],
+    title: string,
+    message: string,
+    batchSize = 10,
+  ) {
+    for (let i = 0; i < userIds.length; i += batchSize) {
+      const batch = userIds.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(id => this.createNotification(id, title, message, "info"))
+      );
+    }
   }
 
   async getUserNotifications(userId: string) {
@@ -138,6 +202,22 @@ export class NotificationsService {
       "New Message",
       `You have a new message from ${senderName}`,
       "info",
+    );
+  }
+
+  async notifyNannyCancellationToParent(parentId: string, bookingId: string, willRematch: boolean, reason?: string) {
+    const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+    const rematchText = willRematch
+      ? " We are automatically re-matching you."
+      : " Please check the app to book another nanny.";
+
+    await this.createNotification(
+      parentId,
+      "Booking Cancelled by Nanny",
+      `The nanny had to cancel your booking. ${reasonText}.${rematchText}`,
+      "warning",
+      "booking",
+      bookingId,
     );
   }
 }

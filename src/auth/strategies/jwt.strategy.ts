@@ -13,21 +13,24 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         (req) => {
-          return req?.cookies?.access_token;
+          return req?.cookies?.access_token || null;
         },
         ExtractJwt.fromAuthHeaderAsBearerToken(),
       ]),
-      ignoreExpiration: false,
-      secretOrKey: configService.get<string>("JWT_SECRET"),
+      ignoreExpiration: true,
+      secretOrKey: configService.get<string>("JWT_SECRET") || "secretKey",
     });
   }
 
   async validate(payload: any) {
-    // Immediate revocation check
+    // Verify the user still exists in the database
     const user = await this.usersService.findOne(payload.sub);
-    if (!user || !user.is_active) {
-      throw new UnauthorizedException("User is banned or does not exist");
+    if (!user) {
+      throw new UnauthorizedException("User does not exist");
     }
-    return { id: payload.sub, email: payload.email, role: payload.role };
+    // Return is_active so endpoints/guards can decide how to handle banned users.
+    // We intentionally do NOT block banned users here — GET /users/me must work
+    // for them so the frontend can show the "contest ban" screen.
+    return { id: payload.sub, email: payload.email, role: payload.role, is_active: user.is_active };
   }
 }

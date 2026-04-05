@@ -16,6 +16,11 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
       scope: ["email", "profile"],
       passReqToCallback: true,
     });
+    console.log(
+      "Google Strategy Initialized with Callback URL:",
+      configService.get<string>("GOOGLE_CALLBACK_URL") ||
+      "http://localhost:4000/auth/google/callback"
+    );
   }
 
   async validate(
