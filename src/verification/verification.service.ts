@@ -4,19 +4,52 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { SupabaseStorageService } from "../supabase-storage/supabase-storage.service";
 import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { RejectVerificationDto } from "./dto/reject-verification.dto";
 
 @Injectable()
 export class VerificationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storageService: SupabaseStorageService,
+  ) {}
 
   async uploadDocuments(
     userId: string,
     dto: UploadDocumentDto,
-    filePath: string,
+    file: Express.Multer.File,
   ) {
-    // Remove any existing document of the same type for this user
+    // 1. Get user profile for naming the folder
+    const userProfile = await this.prisma.profiles.findUnique({
+      where: { user_id: userId },
+      select: { first_name: true, last_name: true },
+    });
+    const nannyName = (userProfile?.first_name || userProfile?.last_name)
+      ? `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim()
+      : "Unknown Nanny";
+    
+    // Sanitize nanny name for storage path
+    const sanitizedNannyName = nannyName.replace(/[^a-zA-Z0-9]/g, '_');
+    const folderName = `${sanitizedNannyName}_${userId}`;
+
+    // 2. Upload to Supabase Storage
+    const storagePath = await this.storageService.uploadFile(folderName, file);
+
+    // 2. Remove existing same-type documents (and cleanup storage)
+    const existingDocs = await this.prisma.identity_documents.findMany({
+      where: {
+        user_id: userId,
+        type: dto.idType,
+      },
+    });
+
+    for (const doc of existingDocs) {
+      if (doc.supabase_storage_path) {
+        await this.storageService.deleteFile(doc.supabase_storage_path);
+      }
+    }
+
     await this.prisma.identity_documents.deleteMany({
       where: {
         user_id: userId,
@@ -24,17 +57,18 @@ export class VerificationService {
       },
     });
 
-    // Create the identity document record
+    // 3. Create the identity document record
     await this.prisma.identity_documents.create({
       data: {
         user_id: userId,
         type: dto.idType,
         id_number: dto.idNumber,
-        file_path: filePath,
+        file_path: file.originalname,
+        supabase_storage_path: storagePath,
       },
     });
 
-    // Update user status and profile
+    // 4. Update user status and profile
     return this.prisma.users.update({
       where: { id: userId },
       data: {
@@ -61,13 +95,25 @@ export class VerificationService {
     });
   }
 
+  async getDocumentStream(documentId: string) {
+    const doc = await this.prisma.identity_documents.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!doc || !doc.supabase_storage_path) {
+      throw new NotFoundException("Document not found or has no storage path");
+    }
+
+    return this.storageService.getFileStream(doc.supabase_storage_path);
+  }
+
   async getPendingVerifications() {
     return this.prisma.users.findMany({
       where: { identity_verification_status: "pending" },
       select: {
         id: true,
         email: true,
-        identity_documents: true, // This will now fetch the related IdentityDocument records
+        identity_documents: true,
         profiles: {
           select: {
             first_name: true,
@@ -136,14 +182,15 @@ export class VerificationService {
             type: doc.type,
             id_number: doc.id_number,
             file_path: doc.file_path,
+            supabase_storage_path: doc.supabase_storage_path,
             uploaded_at: doc.uploaded_at,
             status: user?.identity_verification_status || "unknown",
-            rejection_reason: "User Withdrew Application", // Set specific withdrawal reason
+            rejection_reason: "User Withdrew Application",
           })),
         });
       }
 
-      // Delete current documents
+      // Delete current documents from DB
       await tx.identity_documents.deleteMany({
         where: { user_id: userId },
       });
@@ -152,12 +199,19 @@ export class VerificationService {
       await tx.users.update({
         where: { id: userId },
         data: {
-          identity_verification_status: "unverified", // Explicitly set to 'unverified'
+          identity_verification_status: "unverified",
           verification_rejection_reason: null,
           is_verified: false,
         },
       });
     });
+
+    // 3. Delete files from Supabase Storage (after transaction succeeds)
+    for (const doc of currentDocs) {
+      if (doc.supabase_storage_path) {
+        await this.storageService.deleteFile(doc.supabase_storage_path);
+      }
+    }
 
     return { success: true, message: "Application withdrawn successfully" };
   }

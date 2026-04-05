@@ -10,10 +10,11 @@ import {
   UploadedFile,
   BadRequestException,
   Delete,
+  Res,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { diskStorage } from "multer";
-import { extname } from "path";
+import { memoryStorage } from "multer";
+import { Response } from "express";
 import { VerificationService } from "./verification.service";
 import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { RejectVerificationDto } from "./dto/reject-verification.dto";
@@ -28,16 +29,7 @@ export class VerificationController {
   @Post("upload")
   @UseInterceptors(
     FileInterceptor("file", {
-      storage: diskStorage({
-        destination: "./uploads/verification",
-        filename: (req, file, cb) => {
-          const randomName = Array(32)
-            .fill(null)
-            .map(() => Math.round(Math.random() * 16).toString(16))
-            .join("");
-          return cb(null, `${randomName}${extname(file.originalname)}`);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: (req, file, cb) => {
         if (!file.mimetype.match(/\/(jpg|jpeg|png|pdf)$/)) {
           return cb(
@@ -63,8 +55,17 @@ export class VerificationController {
     return this.verificationService.uploadDocuments(
       req.user.id,
       dto,
-      file.path,
+      file,
     );
+  }
+
+  // Admin proxy endpoint to stream document from Drive
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("document/:id")
+  async getDocument(@Param("id") id: string, @Res() res: Response) {
+    const { stream, mimeType } = await this.verificationService.getDocumentStream(id);
+    res.set("Content-Type", mimeType);
+    stream.pipe(res);
   }
 
   // TODO: Add Admin Role check
