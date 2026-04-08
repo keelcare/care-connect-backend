@@ -5,6 +5,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ChatService } from "../chat/chat.service";
 import { RequestsService } from "../requests/requests.service";
+import { SseService } from "../sse/sse.service";
 import { BadRequestException } from "@nestjs/common";
 
 describe("BookingsService - Reassignment Logic", () => {
@@ -25,6 +26,9 @@ describe("BookingsService - Reassignment Logic", () => {
         service_requests: {
             update: jest.fn(),
         },
+        users: {
+            findUnique: jest.fn(),
+        },
     };
 
     const mockRequestsService = {
@@ -33,11 +37,17 @@ describe("BookingsService - Reassignment Logic", () => {
 
     const mockNotificationsService = {
         createNotification: jest.fn(),
+        notifyNannyCancellationToParent: jest.fn(),
     };
 
     const mockChatService = {
         createChat: jest.fn(),
         deleteChatByBookingId: jest.fn(),
+    };
+
+    const mockSseService = {
+        emitToUser: jest.fn(),
+        emitToUsers: jest.fn(),
     };
 
     beforeEach(async () => {
@@ -48,6 +58,7 @@ describe("BookingsService - Reassignment Logic", () => {
                 { provide: NotificationsService, useValue: mockNotificationsService },
                 { provide: ChatService, useValue: mockChatService },
                 { provide: RequestsService, useValue: mockRequestsService },
+                { provide: SseService, useValue: mockSseService },
             ],
         }).compile();
 

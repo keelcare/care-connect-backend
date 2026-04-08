@@ -3,6 +3,9 @@ import { AuthService } from "./auth.service";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 
+import { ConfigService } from "@nestjs/config";
+import { PrismaService } from "../prisma/prisma.service";
+
 describe("AuthService", () => {
   let service: AuthService;
 
@@ -16,12 +19,33 @@ describe("AuthService", () => {
             findOneByEmail: jest.fn(),
             findByOAuth: jest.fn(),
             create: jest.fn(),
+            findUserForAuth: jest.fn(),
+            update: jest.fn(),
           },
         },
         {
           provide: JwtService,
           useValue: {
             sign: jest.fn(),
+            verify: jest.fn(),
+          },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockReturnValue("secret"),
+          },
+        },
+        {
+          provide: PrismaService,
+          useValue: {
+            users: {
+              findUnique: jest.fn(),
+              update: jest.fn(),
+            },
+            services: {
+              findMany: jest.fn(),
+            },
           },
         },
       ],

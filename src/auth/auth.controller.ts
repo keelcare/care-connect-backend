@@ -51,7 +51,7 @@ export class AuthController {
   private getCookieOptions(res: Response) {
     const isProd = this.configService.get("NODE_ENV") === "production";
     const renderEnv = this.configService.get("RENDER");
-    
+
     // In production (Render/Netlify), we must use secure/none for cross-site cookies
     if (isProd || renderEnv) {
       return {
@@ -107,7 +107,7 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
     });
 
-    return { 
+    return {
       user: loginData.user,
       access_token: loginData.access_token,
       refresh_token: loginData.refresh_token
@@ -156,10 +156,10 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7d
     });
 
-    return { 
-      access_token: loginData.access_token, 
+    return {
+      access_token: loginData.access_token,
       refresh_token: loginData.refresh_token,
-      message: "Token refreshed successfully" 
+      message: "Token refreshed successfully"
     };
   }
 
@@ -227,7 +227,6 @@ export class AuthController {
       if (req.query.state) {
         try {
           const state = JSON.parse(req.query.state as string);
-
           if (state.origin) {
             // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
             if (state.origin.startsWith('careconnect://') || state.origin.startsWith('keel://')) {
@@ -310,7 +309,7 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    return { 
+    return {
       user: loginData.user,
       access_token: loginData.access_token,
       refresh_token: loginData.refresh_token

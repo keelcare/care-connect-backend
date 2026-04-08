@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ChatService } from "../chat/chat.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { RequestsService } from "../requests/requests.service";
+import { SseService } from "../sse/sse.service";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
 
 describe("BookingsService", () => {
@@ -31,6 +32,7 @@ describe("BookingsService", () => {
 
   const mockNotificationsService = {
     createNotification: jest.fn(),
+    notifyNannyCancellationToParent: jest.fn(),
   };
 
   const mockChatService = {
@@ -41,6 +43,11 @@ describe("BookingsService", () => {
     triggerMatching: jest.fn(),
   };
 
+  const mockSseService = {
+    emitToUser: jest.fn(),
+    emitToUsers: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -49,6 +56,7 @@ describe("BookingsService", () => {
         { provide: NotificationsService, useValue: mockNotificationsService },
         { provide: ChatService, useValue: mockChatService },
         { provide: RequestsService, useValue: mockRequestsService },
+        { provide: SseService, useValue: mockSseService },
       ],
     }).compile();
 

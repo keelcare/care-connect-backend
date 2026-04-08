@@ -149,6 +149,10 @@ model service_requests {
   discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
+  discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
+  plan_duration_months  Int?                @default(1)
+  plan_type             String?             @db.VarChar(50)
+  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
   assignments           assignments[]
   bookings              bookings?
   matching_feedback     matching_feedback[]
@@ -194,45 +198,6 @@ model payments {
   payment_audit_log    payment_audit_log[]
   payment_installments payment_installments[]
   bookings             bookings               @relation(fields: [booking_id], references: [id])
-}
-
-model payment_installments {
-  id                   String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  booking_id           String              @db.Uuid
-  subscription_plan_id String?             @db.Uuid
-  installment_no       Int
-  amount_due           Decimal             @db.Decimal(12, 2)
-  due_date             DateTime            @db.Timestamptz(6)
-  status               String              @default("pending") @db.VarChar(50)
-  payment_id           String?             @db.Uuid
-  created_at           DateTime?           @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime?           @default(now()) @db.Timestamptz(6)
-  bookings             bookings            @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  payments             payments?           @relation(fields: [payment_id], references: [id], onUpdate: NoAction)
-  subscription_plans   subscription_plans? @relation(fields: [subscription_plan_id], references: [id], onUpdate: NoAction)
-
-  @@index([booking_id])
-  @@index([subscription_plan_id])
-}
-
-model subscription_plans {
-  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  request_id           String                 @unique @db.Uuid
-  booking_id           String                 @unique @db.Uuid
-  parent_id            String                 @db.Uuid
-  status               String                 @default("active") @db.VarChar(50)
-  total_months         Int
-  monthly_amount       Decimal                @db.Decimal(12, 2)
-  start_date           DateTime               @db.Timestamptz(6)
-  next_due_date        DateTime               @db.Timestamptz(6)
-  created_at           DateTime?              @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime?              @default(now()) @db.Timestamptz(6)
-  payment_installments payment_installments[]
-  bookings             bookings               @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users                users                  @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  service_requests     service_requests       @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([parent_id])
 }
 
 model payment_audit_log {
@@ -431,14 +396,14 @@ model matching_feedback {
 }
 
 model recurring_bookings {
-  id                                        String                   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  parent_id                                 String                   @db.Uuid
-  nanny_id                                  String                   @db.Uuid
-  recurrence_pattern                        String                   @db.VarChar(100)
-  start_date                                DateTime                 @db.Date
-  end_date                                  DateTime?                @db.Date
-  start_time                                String                   @db.VarChar(10)
-  duration_hours                            Decimal                  @db.Decimal(4, 2)
+  id                                        String                                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  parent_id                                 String                                 @db.Uuid
+  nanny_id                                  String                                 @db.Uuid
+  recurrence_pattern                        String                                 @db.VarChar(100)
+  start_date                                DateTime                               @db.Date
+  end_date                                  DateTime?                              @db.Date
+  start_time                                String                                 @db.VarChar(10)
+  duration_hours                            Decimal                                @db.Decimal(4, 2)
   num_children                              Int
   children_ages                             Json?
   special_requirements                      String?
@@ -446,8 +411,9 @@ model recurring_bookings {
   created_at                                DateTime?                @default(now()) @db.Timestamptz(6)
   bookings                                  bookings[]
   generation_logs                           recurring_booking_logs[]
-  users_recurring_bookings_nanny_idTousers  users                    @relation("recurring_bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_recurring_bookings_parent_idTousers users                    @relation("recurring_bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recurring_booking_logs                    recurring_booking_logs[]
+  users_recurring_bookings_nanny_idTousers  users                                  @relation("recurring_bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_recurring_bookings_parent_idTousers users                                  @relation("recurring_bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model recurring_booking_logs {
@@ -473,26 +439,28 @@ model availability_blocks {
 }
 
 model identity_documents {
-  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id     String   @db.Uuid
-  type        String   @db.VarChar(50)
-  id_number   String   @db.VarChar(50)
-  file_path   String
-  uploaded_at DateTime @default(now()) @db.Timestamptz(6)
-  users       users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id               String   @db.Uuid
+  type                  String   @db.VarChar(50)
+  id_number             String   @db.VarChar(50)
+  file_path             String
+  supabase_storage_path String?  @db.VarChar(500)
+  uploaded_at           DateTime @default(now()) @db.Timestamptz(6)
+  users                 users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model verification_attempts {
-  id               String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  user_id          String   @db.Uuid
-  type             String   @db.VarChar(50)
-  id_number        String   @db.VarChar(50)
-  file_path        String
-  uploaded_at      DateTime @db.Timestamptz(6)
-  archived_at      DateTime @default(now()) @db.Timestamptz(6)
-  status           String?  @db.VarChar(50)
-  rejection_reason String?
-  users            users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id               String   @db.Uuid
+  type                  String   @db.VarChar(50)
+  id_number             String   @db.VarChar(50)
+  file_path             String
+  supabase_storage_path String?  @db.VarChar(500)
+  uploaded_at           DateTime @db.Timestamptz(6)
+  archived_at           DateTime @default(now()) @db.Timestamptz(6)
+  status                String?  @db.VarChar(50)
+  rejection_reason      String?
+  users                 users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 model revoked_tokens {
@@ -577,6 +545,55 @@ model whatsapp_messages {
   created_at   DateTime                 @default(now()) @db.Timestamptz(6)
 
   @@index([phone_number])
+}
+
+model payment_installments {
+  id                   String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id           String              @db.Uuid
+  subscription_plan_id String?             @db.Uuid
+  installment_no       Int
+  amount_due           Decimal             @db.Decimal(12, 2)
+  due_date             DateTime            @db.Timestamptz(6)
+  status               String              @default("pending") @db.VarChar(50)
+  payment_id           String?             @db.Uuid
+  created_at           DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime?           @default(now()) @db.Timestamptz(6)
+  bookings             bookings            @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payments             payments?           @relation(fields: [payment_id], references: [id], onUpdate: NoAction)
+  subscription_plans   subscription_plans? @relation(fields: [subscription_plan_id], references: [id], onUpdate: NoAction)
+
+  @@index([booking_id])
+  @@index([subscription_plan_id])
+}
+
+model recurring_booking_logs {
+  id                   String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  recurring_booking_id String             @db.Uuid
+  booking_date         DateTime           @db.Date
+  status               String             @db.VarChar(50)
+  reason               String?
+  created_at           DateTime?          @default(now()) @db.Timestamptz(6)
+  recurring_bookings   recurring_bookings @relation(fields: [recurring_booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model subscription_plans {
+  id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  request_id           String                 @unique @db.Uuid
+  booking_id           String                 @unique @db.Uuid
+  parent_id            String                 @db.Uuid
+  status               String                 @default("active") @db.VarChar(50)
+  total_months         Int
+  monthly_amount       Decimal                @db.Decimal(12, 2)
+  start_date           DateTime               @db.Timestamptz(6)
+  next_due_date        DateTime               @db.Timestamptz(6)
+  created_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime?              @default(now()) @db.Timestamptz(6)
+  payment_installments payment_installments[]
+  bookings             bookings               @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                users                  @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  service_requests     service_requests       @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([parent_id])
 }
 
 enum child_profile_type {
