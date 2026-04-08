@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsUUID, Matches } from "class-validator";
+import { IsString, IsNotEmpty, IsUUID, Matches, IsOptional } from "class-validator";
 
 /**
  * SECURITY: Payment DTOs with validation
@@ -12,6 +12,11 @@ export class CreateOrderDto {
   @IsNotEmpty()
   @IsUUID("4", { message: "Booking ID must be a valid UUID" })
   bookingId: string;
+
+  @IsString()
+  @IsUUID("4", { message: "Installment ID must be a valid UUID" })
+  @IsOptional()
+  installmentId?: string;
 }
 
 export class VerifyPaymentDto {

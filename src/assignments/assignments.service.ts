@@ -12,6 +12,7 @@ import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { PricingUtils } from "../common/utils/pricing.utils";
 
 @Injectable()
 export class AssignmentsService {

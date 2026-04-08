@@ -4,9 +4,9 @@ import * as bcrypt from "bcrypt";
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = "admin@careconnect.com";
-  const password = "password123"; // Default password
-  
+  const email = "admin@keelcare.com";
+  const password = "keelcarecon123";
+
   // Check if admin exists
   const existing = await prisma.users.findUnique({
     where: { email },

@@ -213,9 +213,10 @@ export class AdminService {
 
       const availableNannies = nannies.map((n) => {
         // Calculate Score Breakdown
-        const matchingSkills = n.skills.filter((s: string) => skillSearchTerms.includes(s));
+        const skillsArr = n.skills || [];
+        const matchingSkills = skillsArr.filter((s: string) => skillSearchTerms.includes(s));
         const skillScore = matchingSkills.length * 10;
-        const experienceScore = Math.min(n.experience_years * 2, 20);
+        const experienceScore = Math.min((n.experience_years || 0) * 2, 20);
         const acceptanceScore = (n.acceptance_rate || 0) / 10;
         const favoriteBonus = favoriteNannyIds.includes(n.id) ? 15 : 0;
 
@@ -229,9 +230,9 @@ export class AdminService {
           profile_image_url: n.profile_image_url,
           address: n.address,
           bio: n.bio,
-          skills: n.skills,
-          experience_years: n.experience_years,
-          acceptance_rate: n.acceptance_rate,
+          skills: skillsArr,
+          experience_years: n.experience_years || 0,
+          acceptance_rate: n.acceptance_rate || 0,
           distance_km: n.distance ? Number(Number(n.distance).toFixed(2)) : 0,
           is_favorite: favoriteNannyIds.includes(n.id),
           match_details: {

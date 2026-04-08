@@ -112,7 +112,6 @@ export class RequestsService {
           },
         });
 
-        // Link children to the booking if child_ids were provided
         if (createRequestDto.child_ids && createRequestDto.child_ids.length > 0) {
           await tx.booking_children.createMany({
             data: createRequestDto.child_ids.map((childId) => ({
@@ -122,8 +121,52 @@ export class RequestsService {
           });
         }
 
+        // Create Payment Installments and Plan if subscription and opted-in
+        if (createRequestDto.use_installments && (createRequestDto.plan_duration_months || 1) > 1) {
+          const { monthlyCost } = PricingUtils.calculateTotal(
+            Number(serviceSettings.hourly_rate),
+            Number(createRequestDto.duration_hours),
+            Number(createRequestDto.discount_percentage || 0),
+            Number(createRequestDto.plan_duration_months || 1),
+            createRequestDto.plan_type || 'ONE_TIME'
+          );
+
+          const planMonths = Number(createRequestDto.plan_duration_months);
+
+          // 1. Create the Subscription Plan contract
+          const plan = await tx.subscription_plans.create({
+            data: {
+              request_id: request.id,
+              booking_id: booking.id,
+              parent_id: parentId,
+              status: "active",
+              total_months: planMonths,
+              monthly_amount: monthlyCost,
+              start_date: new Date(createRequestDto.date),
+              next_due_date: new Date(createRequestDto.date), // First installment is due now
+            }
+          });
+
+          // 2. Create the individual Installments linked to the plan
+          const installments = Array.from({ length: planMonths }).map((_, index) => {
+            const dueDate = new Date(createRequestDto.date);
+            dueDate.setMonth(dueDate.getMonth() + index);
+            return {
+              booking_id: booking.id,
+              subscription_plan_id: plan.id,
+              installment_no: index + 1,
+              amount_due: monthlyCost,
+              due_date: dueDate,
+              status: "pending",
+            };
+          });
+
+          await tx.payment_installments.createMany({ data: installments });
+        }
+
         return { request, booking, totalAmount, hourlyRate };
       });
+
 
       // 3. Trigger auto-matching (Outside transaction)
       await this.triggerMatching(request.id);

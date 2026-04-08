@@ -5,6 +5,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsBoolean,
   IsArray,
   IsEnum,
   IsUUID,
@@ -126,4 +127,9 @@ export class CreateRequestDto {
   @IsOptional()
   @IsNumber()
   plan_duration_months?: number;
+
+  @ApiPropertyOptional({ example: true, description: 'Whether the parent opted to pay in monthly installments' })
+  @IsOptional()
+  @IsBoolean()
+  use_installments?: boolean;
 }

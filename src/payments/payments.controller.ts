@@ -9,8 +9,9 @@ import {
   Res,
   BadRequestException,
   UseGuards,
+  Req,
 } from "@nestjs/common";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
 import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { AdminGuard } from "../admin/admin.guard";
@@ -24,10 +25,11 @@ export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   @Post("create-order")
+  @UseGuards(AuthGuard("jwt"))
   @ApiOperation({ summary: "Create a new Razorpay order for a booking" })
   @ApiResponse({ status: 201, description: "Order created successfully" })
-  async createOrder(@Body() createOrderDto: CreateOrderDto) {
-    return this.paymentsService.createOrder(createOrderDto.bookingId);
+  async createOrder(@Req() req: any, @Body() createOrderDto: CreateOrderDto) {
+    return this.paymentsService.createOrder(createOrderDto.bookingId, createOrderDto.installmentId, req.user.id);
   }
 
   @Post("retry-order/:bookingId")
@@ -67,7 +69,7 @@ export class PaymentsController {
       } = body;
 
       if (error || !razorpay_signature) {
-        return res.redirect(`careconnect://payment/callback?status=failed`);
+        return res.redirect(`keel://payment/callback?status=failed`);
       }
 
       await this.paymentsService.verifyPayment(
@@ -81,10 +83,10 @@ export class PaymentsController {
       const bookingId = payment?.booking_id || "";
 
       return res.redirect(
-        `careconnect://payment/callback?status=success&bookingId=${bookingId}`,
+        `keel://payment/callback?status=success&bookingId=${bookingId}`,
       );
     } catch (err) {
-      return res.redirect(`careconnect://payment/callback?status=failed`);
+      return res.redirect(`keel://payment/callback?status=failed`);
     }
   }
 
@@ -137,5 +139,13 @@ export class PaymentsController {
   })
   async getPaymentAudit(@Param("orderId") orderId: string) {
     return this.paymentsService.getAuditLog(orderId);
+  }
+
+  @Get("plans")
+  @UseGuards(AuthGuard("jwt"))
+  @ApiOperation({ summary: "Get all subscription plans for the authenticated user" })
+  @ApiResponse({ status: 200, description: "Subscription plans fetched successfully" })
+  async getSubscriptionPlans(@Req() req: any) {
+    return this.paymentsService.getSubscriptionPlans(req.user.id);
   }
 }

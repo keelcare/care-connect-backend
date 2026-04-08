@@ -40,7 +40,7 @@ export class PaymentsService {
   }
 
   // 1. Create Order (Server-Side Price Calculation)
-  async createOrder(bookingId: string) {
+  async createOrder(bookingId: string, installmentId?: string, requestingUserId?: string) {
     if (!this.configService.get("RAZORPAY_KEY_ID")) {
       this.logger.error("Cannot create order: RAZORPAY_KEY_ID missing");
       throw new BadRequestException("Payment service is currently unavailable");
@@ -57,6 +57,11 @@ export class PaymentsService {
     });
 
     if (!booking) throw new NotFoundException("Booking not found");
+
+    // Security: ensure the user requesting payment is the booking's parent
+    if (requestingUserId && booking.parent_id !== requestingUserId) {
+      throw new BadRequestException("You are not authorised to pay for this booking");
+    }
 
     // Calculate Amount
     const service = await this.prisma.services.findUnique({
@@ -77,7 +82,7 @@ export class PaymentsService {
       durationHours += 24;
     }
 
-    const { totalAmount } = PricingUtils.calculateTotal(
+    const { totalAmount, monthlyCost, planDurationMonths } = PricingUtils.calculateTotal(
       hourlyRate,
       durationHours,
       Number(booking.service_requests?.['discount_percentage'] || 0),
@@ -85,7 +90,35 @@ export class PaymentsService {
       booking.service_requests?.['plan_type'] || 'ONE_TIME'
     );
 
-    const amountInRupees = totalAmount;
+    let amountInRupees = totalAmount;
+
+    // Default to first pending installment if planDurationMonths > 1
+    let activeInstallmentId = installmentId;
+    if (planDurationMonths > 1) {
+      amountInRupees = monthlyCost;
+      
+      let installment;
+      if (installmentId) {
+        installment = await this.prisma.payment_installments.findUnique({
+          where: { id: installmentId }
+        });
+        if (!installment || installment.booking_id !== bookingId) {
+          throw new BadRequestException("Invalid installment specified");
+        }
+      } else {
+        installment = await this.prisma.payment_installments.findFirst({
+          where: { booking_id: bookingId, status: "pending" },
+          orderBy: { installment_no: 'asc' }
+        });
+        if (!installment) {
+          throw new BadRequestException("No pending installments found for this booking.");
+        }
+      }
+
+      amountInRupees = Number(installment.amount_due);
+      activeInstallmentId = installment.id;
+    }
+
     const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
@@ -99,18 +132,34 @@ export class PaymentsService {
       );
     }
 
-    // Idempotency: Check if order already exists
+    // Idempotency: Check if order already exists for this booking/installment
     const existingPayment = await this.prisma.payments.findFirst({
-      where: { booking_id: bookingId, status: "created" },
+      where: { 
+        booking_id: bookingId, 
+        status: "created",
+        payment_installments: activeInstallmentId ? {
+          some: { id: activeInstallmentId }
+        } : undefined
+      },
     });
 
     if (existingPayment) {
       return {
         orderId: existingPayment.order_id,
-        amount: existingPayment.amount,
+        amount: Number(existingPayment.amount),
         currency: existingPayment.currency,
         key: this.configService.get("RAZORPAY_KEY_ID"),
       };
+    }
+
+    // Protection: Ensure we don't pay for an already paid installment
+    if (activeInstallmentId) {
+      const inst = await this.prisma.payment_installments.findUnique({
+        where: { id: activeInstallmentId }
+      });
+      if (inst?.status === "paid") {
+        throw new BadRequestException("This installment has already been paid.");
+      }
     }
 
     try {
@@ -134,6 +183,13 @@ export class PaymentsService {
           status: "created",
         },
       });
+
+      if (activeInstallmentId) {
+        await this.prisma.payment_installments.update({
+          where: { id: activeInstallmentId },
+          data: { payment_id: createdPayment.id }
+        });
+      }
 
       await this.writeAuditLog(
         this.prisma,
@@ -414,6 +470,15 @@ export class PaymentsService {
         },
       });
 
+      // Update Installment status if exists
+      await tx.payment_installments.updateMany({
+        where: { payment_id: payment.id },
+        data: { 
+          status: "paid",
+          updated_at: new Date()
+        },
+      });
+
       await this.writeAuditLog(
         tx,
         payment.id,
@@ -428,10 +493,37 @@ export class PaymentsService {
         },
       );
 
-      // Update Booking
+      // Update Booking status:
+      // - For subscription bookings (has a subscription_plan), set to "confirmed"
+      //   so the booking remains active across all installment months.
+      // - For one-time bookings, set to "COMPLETED" as the service is now fully paid.
+      const subscriptionPlan = await tx.subscription_plans.findUnique({
+        where: { booking_id: payment.booking_id },
+      });
+
+      // Update next_due_date to the next pending installment if available
+      if (subscriptionPlan) {
+        const nextInstallment = await tx.payment_installments.findFirst({
+          where: { 
+            booking_id: payment.booking_id,
+            status: "pending"
+          },
+          orderBy: { installment_no: "asc" }
+        });
+
+        if (nextInstallment) {
+          await tx.subscription_plans.update({
+            where: { id: subscriptionPlan.id },
+            data: { next_due_date: nextInstallment.due_date }
+          });
+        }
+      }
+
+      const newBookingStatus = subscriptionPlan ? "confirmed" : "COMPLETED";
+
       const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
-        data: { status: "COMPLETED" }, // Or whatever status signifies "Paid & Done"
+        data: { status: newBookingStatus },
       });
 
       // Notify Parent
@@ -592,5 +684,81 @@ export class PaymentsService {
       },
       generatedAt: now,
     };
+  }
+
+  async generateInstallmentsForBooking(bookingId: string, totalAmount: number, months: number, startDate: Date) {
+    if (months <= 1) return;
+    
+    // Check if installments already exist
+    const existing = await this.prisma.payment_installments.count({
+      where: { booking_id: bookingId }
+    });
+    if (existing > 0) return;
+
+    this.logger.log(`Generating ${months} installments for booking ${bookingId}`);
+    const amountPerInstallment = totalAmount / months;
+    
+    const installments = Array.from({ length: months }).map((_, index) => {
+      const dueDate = new Date(startDate);
+      dueDate.setMonth(dueDate.getMonth() + index);
+      return {
+        booking_id: bookingId,
+        installment_no: index + 1,
+        amount_due: amountPerInstallment,
+        due_date: dueDate,
+        status: "pending",
+      };
+    });
+
+    await this.prisma.payment_installments.createMany({
+      data: installments
+    });
+  }
+
+  async getSubscriptionPlans(userId: string) {
+    const plans = await this.prisma.subscription_plans.findMany({
+      where: {
+        parent_id: userId
+      },
+      orderBy: {
+        created_at: 'desc'
+      },
+      include: {
+        bookings: {
+          include: {
+            service_requests: true,
+            users_bookings_nanny_idTousers: {
+              select: {
+                profiles: {
+                  select: {
+                    first_name: true,
+                    last_name: true,
+                    profile_image_url: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        payment_installments: {
+          orderBy: {
+            installment_no: 'asc'
+          },
+          include: {
+            payments: {
+              select: {
+                status: true,
+                amount: true,
+                currency: true,
+                created_at: true,
+                order_id: true,
+              }
+            }
+          }
+        }
+      }
+    });
+
+    return plans;
   }
 }
