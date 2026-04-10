@@ -13,7 +13,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         (req) => {
-          return req?.cookies?.access_token || (req?.query?.token as string) || null;
+          return (
+            req?.cookies?.access_token || (req?.query?.token as string) || null
+          );
         },
         ExtractJwt.fromAuthHeaderAsBearerToken(),
       ]),
@@ -31,6 +33,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // Return is_active so endpoints/guards can decide how to handle banned users.
     // We intentionally do NOT block banned users here — GET /users/me must work
     // for them so the frontend can show the "contest ban" screen.
-    return { id: payload.sub, email: payload.email, role: payload.role, is_active: user.is_active };
+    return {
+      id: payload.sub,
+      email: payload.email,
+      role: payload.role,
+      is_active: user.is_active,
+    };
   }
 }

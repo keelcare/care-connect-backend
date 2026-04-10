@@ -46,7 +46,8 @@ export class NotificationsController {
       );
     } else if (body.target === "user" && body.userId) {
       // Resolve email to UUID if necessary
-      const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      const uuidRegex =
+        /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
       let resolvedUserId = body.userId;
 
       if (!uuidRegex.test(body.userId)) {
@@ -56,7 +57,9 @@ export class NotificationsController {
           select: { id: true },
         });
         if (!user) {
-          throw new NotFoundException(`No user found with email: ${body.userId}`);
+          throw new NotFoundException(
+            `No user found with email: ${body.userId}`,
+          );
         }
         resolvedUserId = user.id;
       }
@@ -87,4 +90,3 @@ export class NotificationsController {
     return this.notificationsService.markAllAsRead(req.user.id);
   }
 }
-

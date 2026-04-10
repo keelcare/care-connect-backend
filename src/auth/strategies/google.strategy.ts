@@ -19,7 +19,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
     console.log(
       "Google Strategy Initialized with Callback URL:",
       configService.get<string>("GOOGLE_CALLBACK_URL") ||
-      "http://localhost:4000/auth/google/callback"
+        "http://localhost:4000/auth/google/callback",
     );
   }
 

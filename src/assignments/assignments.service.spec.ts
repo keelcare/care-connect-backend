@@ -32,12 +32,14 @@ describe("AssignmentsService", () => {
             nanny_details: {
               update: jest.fn(),
             },
-            $transaction: jest.fn().mockImplementation((cb) => cb({
-              assignments: { update: jest.fn() },
-              service_requests: { update: jest.fn() },
-              bookings: { findFirst: jest.fn(), update: jest.fn() },
-              nanny_details: { update: jest.fn() },
-            })),
+            $transaction: jest.fn().mockImplementation((cb) =>
+              cb({
+                assignments: { update: jest.fn() },
+                service_requests: { update: jest.fn() },
+                bookings: { findFirst: jest.fn(), update: jest.fn() },
+                nanny_details: { update: jest.fn() },
+              }),
+            ),
           },
         },
         {

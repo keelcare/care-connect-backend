@@ -16,7 +16,7 @@ import { ActiveUserGuard } from "../common/guards/active-user.guard";
 @Controller("chat")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class ChatController {
-  constructor(private readonly chatService: ChatService) { }
+  constructor(private readonly chatService: ChatService) {}
 
   @Post()
   async createChat(@Body("bookingId") bookingId: string) {
@@ -26,13 +26,16 @@ export class ChatController {
   @Get("booking/:bookingId")
   async getChatByBooking(
     @Param("bookingId") bookingId: string,
-    @Request() req
+    @Request() req,
   ) {
     const userId = req.user.id;
     const chat = await this.chatService.getChatByBookingId(bookingId);
 
     // Check if user is authorized to participate in this booking's chat
-    const isAuthorized = await this.chatService.isUserInBooking(bookingId, userId);
+    const isAuthorized = await this.chatService.isUserInBooking(
+      bookingId,
+      userId,
+    );
     if (!isAuthorized) {
       throw new ForbiddenException("Not authorized to access this chat");
     }
@@ -45,7 +48,7 @@ export class ChatController {
     @Param("chatId") chatId: string,
     @Query("page") page: number = 1,
     @Query("limit") limit: number = 50,
-    @Request() req
+    @Request() req,
   ) {
     const userId = req.user.id;
 

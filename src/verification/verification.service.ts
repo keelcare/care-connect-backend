@@ -25,12 +25,13 @@ export class VerificationService {
       where: { user_id: userId },
       select: { first_name: true, last_name: true },
     });
-    const nannyName = (userProfile?.first_name || userProfile?.last_name)
-      ? `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim()
-      : "Unknown Nanny";
-    
+    const nannyName =
+      userProfile?.first_name || userProfile?.last_name
+        ? `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim()
+        : "Unknown Nanny";
+
     // Sanitize nanny name for storage path
-    const sanitizedNannyName = nannyName.replace(/[^a-zA-Z0-9]/g, '_');
+    const sanitizedNannyName = nannyName.replace(/[^a-zA-Z0-9]/g, "_");
     const folderName = `${sanitizedNannyName}_${userId}`;
 
     // 2. Upload to Supabase Storage

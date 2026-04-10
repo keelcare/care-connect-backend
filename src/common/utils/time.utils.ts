@@ -16,27 +16,30 @@ export class TimeUtils {
         throw new Error("Date and Time are required");
       }
 
-      const datePart = date instanceof Date 
-        ? date.toISOString().split('T')[0] 
-        : date.split('T')[0];
-      
+      const datePart =
+        date instanceof Date
+          ? date.toISOString().split("T")[0]
+          : date.split("T")[0];
+
       let timePart: string;
       if (time instanceof Date) {
-        timePart = time.toISOString().split('T')[1].substring(0, 5);
+        timePart = time.toISOString().split("T")[1].substring(0, 5);
       } else {
         // Handle formats like "15:30" or "15:30:00"
-        timePart = time.split(':').slice(0, 2).join(':');
+        timePart = time.split(":").slice(0, 2).join(":");
       }
 
       const combined = new Date(`${datePart}T${timePart}:00${this.IST_OFFSET}`);
-      
+
       if (isNaN(combined.getTime())) {
         throw new Error("Invalid combined date/time result");
       }
-      
+
       return combined;
     } catch (e) {
-      throw new BadRequestException(`Failed to parse date and time: ${e.message}`);
+      throw new BadRequestException(
+        `Failed to parse date and time: ${e.message}`,
+      );
     }
   }
 
@@ -51,7 +54,12 @@ export class TimeUtils {
    * Checks if two time ranges overlap.
    * Overlap exists if (StartA < EndB) AND (EndA > StartB).
    */
-  static isOverlapping(startA: Date, endA: Date, startB: Date, endB: Date): boolean {
+  static isOverlapping(
+    startA: Date,
+    endA: Date,
+    startB: Date,
+    endB: Date,
+  ): boolean {
     return startA < endB && endA > startB;
   }
 
@@ -59,18 +67,18 @@ export class TimeUtils {
    * Formats a date for display (e.g., "2024-03-14").
    */
   static formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
+    return date.toISOString().split("T")[0];
   }
 
   /**
    * Formats a time for display (e.g., "03:30 PM").
    */
   static formatShortTime(date: Date): string {
-    return date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
+    return date.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
       hour12: true,
-      timeZone: 'Asia/Kolkata'
+      timeZone: "Asia/Kolkata",
     });
   }
 

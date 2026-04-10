@@ -1,5 +1,5 @@
-import './instrument'; // MUST BE AT THE TOP
-import 'reflect-metadata';
+import "./instrument"; // MUST BE AT THE TOP
+import "reflect-metadata";
 import { NestFactory, HttpAdapterHost } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { ValidationPipe } from "@nestjs/common";
@@ -9,7 +9,6 @@ import cookieParser from "cookie-parser";
 import { ThrottleExceptionFilter } from "./common/filters/throttle-exception.filter";
 
 async function bootstrap() {
-
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   // Use nestjs-pino logger
   app.useLogger(app.get(PinoLogger));
@@ -20,13 +19,17 @@ async function bootstrap() {
 
   // DEBUG MIDDLEWARE: Log all requests to check for cookies
   app.use((req, res, next) => {
-    console.log("------------------------------------------------------------------");
+    console.log(
+      "------------------------------------------------------------------",
+    );
     console.log(`[REQUEST] ${req.method} ${req.url}`);
     console.log(`[ORIGIN] ${req.headers.origin}`);
     console.log(`[COOKIES (Header)]`, req.headers.cookie);
     console.log(`[COOKIES (Parsed)]`, req.cookies);
     console.log(`[BODY]`, req.body);
-    console.log("------------------------------------------------------------------");
+    console.log(
+      "------------------------------------------------------------------",
+    );
     next();
   });
 
@@ -67,11 +70,7 @@ async function bootstrap() {
           fontSrc: ["'self'", "https://fonts.gstatic.com"],
           imgSrc: ["'self'", "data:", "https:"],
           frameSrc: ["'self'", "https://api.razorpay.com"],
-          connectSrc: [
-            "'self'",
-            "https://api.razorpay.com",
-            ...allowedOrigins,
-          ],
+          connectSrc: ["'self'", "https://api.razorpay.com", ...allowedOrigins],
         },
       },
       crossOriginEmbedderPolicy: false,
@@ -82,7 +81,7 @@ async function bootstrap() {
         preload: true,
       },
       frameguard: {
-        action: 'deny',
+        action: "deny",
       },
       xssFilter: true,
       noSniff: true,
@@ -93,15 +92,16 @@ async function bootstrap() {
   // Enable CORS with multiple origins
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow if no origin (server-to-server or mobile app bypass) 
+      // Allow if no origin (server-to-server or mobile app bypass)
       // or if it matches our list or specific patterns
-      if (!origin || 
-          allowedOrigins.includes(origin) || 
-          origin.includes('.vercel.app') || 
-          origin.includes('.netlify.app') ||
-          origin.startsWith('capacitor://') ||
-          origin.startsWith('keel://') ||
-          origin.startsWith('careconnect://')
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        origin.includes(".vercel.app") ||
+        origin.includes(".netlify.app") ||
+        origin.startsWith("capacitor://") ||
+        origin.startsWith("keel://") ||
+        origin.startsWith("careconnect://")
       ) {
         callback(null, true);
       } else {
@@ -111,7 +111,13 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "X-Platform", "X-Device-Id"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "X-Platform",
+      "X-Device-Id",
+    ],
     exposedHeaders: ["set-cookie"],
   });
 
@@ -129,31 +135,33 @@ async function bootstrap() {
   expressApp.set("trust proxy", 1); // Trust first proxy
 
   // Swagger Documentation configuration
-  const { DocumentBuilder, SwaggerModule } = await import('@nestjs/swagger');
+  const { DocumentBuilder, SwaggerModule } = await import("@nestjs/swagger");
   const config = new DocumentBuilder()
-    .setTitle('Care Connect API')
-    .setDescription('The API documentation for Care Connect backend services.')
-    .setVersion('1.0')
+    .setTitle("Care Connect API")
+    .setDescription("The API documentation for Care Connect backend services.")
+    .setVersion("1.0")
     .addBearerAuth()
-    .addTag('Authentication', 'User authentication and authorization')
-    .addTag('Users', 'User profile and management')
-    .addTag('Nannies', 'Nanny specific operations')
-    .addTag('Requests', 'Care service requests')
-    .addTag('Bookings', 'Booking management')
-    .addTag('Payments', 'Payment processing')
+    .addTag("Authentication", "User authentication and authorization")
+    .addTag("Users", "User profile and management")
+    .addTag("Nannies", "Nanny specific operations")
+    .addTag("Requests", "Care service requests")
+    .addTag("Bookings", "Booking management")
+    .addTag("Payments", "Payment processing")
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document, {
+  SwaggerModule.setup("api/docs", app, document, {
     swaggerOptions: {
       persistAuthorization: true,
     },
-    customSiteTitle: 'Care Connect API Docs',
+    customSiteTitle: "Care Connect API Docs",
   });
 
   const port = process.env.PORT ?? 4000;
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, "0.0.0.0");
   console.log(`🚀 Application is running on: http://0.0.0.0:${port}`);
-  console.log(`📖 Swagger documentation available at: http://0.0.0.0:${port}/api/docs`);
+  console.log(
+    `📖 Swagger documentation available at: http://0.0.0.0:${port}/api/docs`,
+  );
 }
 bootstrap();

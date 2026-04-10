@@ -48,7 +48,6 @@ export class UpdateUserDto {
   @IsNumber()
   experienceYears?: number;
 
-
   @IsOptional()
   @IsString()
   @Sanitize()

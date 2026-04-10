@@ -14,7 +14,7 @@ export class ReviewsService {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
-  ) { }
+  ) {}
 
   async createReview(createReviewDto: CreateReviewDto, reviewerId: string) {
     const { bookingId, rating, comment } = createReviewDto;
@@ -84,10 +84,10 @@ export class ReviewsService {
               select: {
                 first_name: true,
                 last_name: true,
-              }
-            }
-          }
-        }
+              },
+            },
+          },
+        },
       },
     });
 

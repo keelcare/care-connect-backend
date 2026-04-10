@@ -29,13 +29,20 @@ export class PaymentsController {
   @ApiOperation({ summary: "Create a new Razorpay order for a booking" })
   @ApiResponse({ status: 201, description: "Order created successfully" })
   async createOrder(@Req() req: any, @Body() createOrderDto: CreateOrderDto) {
-    return this.paymentsService.createOrder(createOrderDto.bookingId, createOrderDto.installmentId, req.user.id);
+    return this.paymentsService.createOrder(
+      createOrderDto.bookingId,
+      createOrderDto.installmentId,
+      req.user.id,
+    );
   }
 
   @Post("retry-order/:bookingId")
   @UseGuards(AuthGuard("jwt"))
   @ApiOperation({ summary: "Retry a failed Razorpay order for a booking" })
-  @ApiResponse({ status: 201, description: "New order created successfully for retry" })
+  @ApiResponse({
+    status: 201,
+    description: "New order created successfully for retry",
+  })
   async retryOrder(@Param("bookingId") bookingId: string) {
     return this.paymentsService.retryOrder(bookingId);
   }
@@ -143,8 +150,13 @@ export class PaymentsController {
 
   @Get("plans")
   @UseGuards(AuthGuard("jwt"))
-  @ApiOperation({ summary: "Get all subscription plans for the authenticated user" })
-  @ApiResponse({ status: 200, description: "Subscription plans fetched successfully" })
+  @ApiOperation({
+    summary: "Get all subscription plans for the authenticated user",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Subscription plans fetched successfully",
+  })
   async getSubscriptionPlans(@Req() req: any) {
     return this.paymentsService.getSubscriptionPlans(req.user.id);
   }

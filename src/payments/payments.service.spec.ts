@@ -43,7 +43,8 @@ describe("PaymentsService", () => {
             get: jest.fn((key: string) => {
               if (key === "RAZORPAY_KEY_ID") return "rzp_test_key";
               if (key === "RAZORPAY_KEY_SECRET") return "rzp_test_secret";
-              if (key === "RAZORPAY_WEBHOOK_SECRET") return "rzp_test_webhook_secret";
+              if (key === "RAZORPAY_WEBHOOK_SECRET")
+                return "rzp_test_webhook_secret";
               return undefined;
             }),
           },

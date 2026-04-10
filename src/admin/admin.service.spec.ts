@@ -26,11 +26,13 @@ describe("AdminService", () => {
               findMany: jest.fn(),
               count: jest.fn(),
             },
-            $transaction: jest.fn().mockImplementation((cb) => cb({
-              assignments: { create: jest.fn() },
-              service_requests: { update: jest.fn() },
-              bookings: { updateMany: jest.fn(), findFirst: jest.fn() },
-            })),
+            $transaction: jest.fn().mockImplementation((cb) =>
+              cb({
+                assignments: { create: jest.fn() },
+                service_requests: { update: jest.fn() },
+                bookings: { updateMany: jest.fn(), findFirst: jest.fn() },
+              }),
+            ),
           },
         },
         {

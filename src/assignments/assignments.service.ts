@@ -23,7 +23,7 @@ export class AssignmentsService {
     private chatService: ChatService,
     private sseService: SseService,
     private mailService: MailService,
-  ) { }
+  ) {}
 
   async findAllByNanny(nannyId: string) {
     return this.prisma.assignments.findMany({
@@ -87,10 +87,10 @@ export class AssignmentsService {
         include: {
           service_requests: {
             include: {
-              users: { include: { profiles: true } } // Parent
-            }
+              users: { include: { profiles: true } }, // Parent
+            },
           },
-          users: { include: { profiles: true } } // Nanny
+          users: { include: { profiles: true } }, // Nanny
         },
       });
 
@@ -105,13 +105,15 @@ export class AssignmentsService {
       const existingBooking = await tx.bookings.findFirst({
         where: {
           request_id: assignment.request_id,
-          status: { not: "CANCELLED" }
-        }
+          status: { not: "CANCELLED" },
+        },
       });
 
       if (!existingBooking) {
         // Instead of creating a duplicate, we throw an error. This identifies a system inconsistency.
-        throw new BadRequestException("No active booking found for this request. It may have been cancelled.");
+        throw new BadRequestException(
+          "No active booking found for this request. It may have been cancelled.",
+        );
       }
 
       const updatedBooking = await tx.bookings.update({
@@ -122,26 +124,36 @@ export class AssignmentsService {
           // Update times from request just in case
           start_time: TimeUtils.combineDateAndTime(
             updatedAssignment.service_requests.date.toISOString().split("T")[0],
-            updatedAssignment.service_requests.start_time
+            updatedAssignment.service_requests.start_time,
           ),
           end_time: TimeUtils.getEndTime(
             TimeUtils.combineDateAndTime(
-              updatedAssignment.service_requests.date.toISOString().split("T")[0],
-              updatedAssignment.service_requests.start_time
+              updatedAssignment.service_requests.date
+                .toISOString()
+                .split("T")[0],
+              updatedAssignment.service_requests.start_time,
             ),
-            Number(updatedAssignment.service_requests.duration_hours)
+            Number(updatedAssignment.service_requests.duration_hours),
           ),
-        }
+        },
       });
 
       // 3.5 Create recurring booking record if subscription
-      await this.requestsService.createRecurringRecord(tx, assignment.request_id, nannyId);
+      await this.requestsService.createRecurringRecord(
+        tx,
+        assignment.request_id,
+        nannyId,
+      );
 
       // 4. Create Chat for this booking (Atomically)
       try {
         await this.chatService.createChat(updatedBooking.id);
       } catch (error) {
-        console.error("Failed to create chat for booking in transaction:", updatedBooking.id, error);
+        console.error(
+          "Failed to create chat for booking in transaction:",
+          updatedBooking.id,
+          error,
+        );
       }
 
       // 5. Update acceptance rate
@@ -158,31 +170,44 @@ export class AssignmentsService {
       // 7. Send Emails (Outside the core logic but within the transaction's success scope - actually, better to do after transaction fails, but Nest will rollback if any error occurs here)
       const parent = updatedAssignment.service_requests.users;
       const nanny = updatedAssignment.users;
-      const parentName = `${parent.profiles?.first_name || ''} ${parent.profiles?.last_name || ''}`.trim() || 'Parent';
-      const nannyName = `${nanny.profiles?.first_name || ''} ${nanny.profiles?.last_name || ''}`.trim() || 'Nanny';
+      const parentName =
+        `${parent.profiles?.first_name || ""} ${parent.profiles?.last_name || ""}`.trim() ||
+        "Parent";
+      const nannyName =
+        `${nanny.profiles?.first_name || ""} ${nanny.profiles?.last_name || ""}`.trim() ||
+        "Nanny";
 
       const bookingDetails = {
-        date: updatedAssignment.service_requests.date.toISOString().split('T')[0],
-        time: updatedAssignment.service_requests.start_time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        date: updatedAssignment.service_requests.date
+          .toISOString()
+          .split("T")[0],
+        time: updatedAssignment.service_requests.start_time.toLocaleTimeString(
+          [],
+          { hour: "2-digit", minute: "2-digit" },
+        ),
         duration: Number(updatedAssignment.service_requests.duration_hours),
-        location: parent.profiles?.address || 'Location specified in profile',
+        location: parent.profiles?.address || "Location specified in profile",
       };
 
       // Email to Parent
-      this.mailService.sendBookingConfirmationEmail(
-        parent.email,
-        parentName,
-        'parent',
-        { ...bookingDetails, otherPartyName: nannyName }
-      ).catch(err => console.error("Failed to send parent confirmation email", err));
+      this.mailService
+        .sendBookingConfirmationEmail(parent.email, parentName, "parent", {
+          ...bookingDetails,
+          otherPartyName: nannyName,
+        })
+        .catch((err) =>
+          console.error("Failed to send parent confirmation email", err),
+        );
 
       // Email to Nanny
-      this.mailService.sendBookingConfirmationEmail(
-        nanny.email,
-        nannyName,
-        'nanny',
-        { ...bookingDetails, otherPartyName: parentName }
-      ).catch(err => console.error("Failed to send nanny confirmation email", err));
+      this.mailService
+        .sendBookingConfirmationEmail(nanny.email, nannyName, "nanny", {
+          ...bookingDetails,
+          otherPartyName: parentName,
+        })
+        .catch((err) =>
+          console.error("Failed to send nanny confirmation email", err),
+        );
 
       // Emit SSE to parent
       this.sseService.emitToUser(updatedAssignment.service_requests.parent_id, {

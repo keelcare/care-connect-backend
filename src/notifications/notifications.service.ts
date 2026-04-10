@@ -16,7 +16,7 @@ export class NotificationsService {
     private notificationsGateway: NotificationsGateway,
     private fcmService: FcmService,
     private sseService: SseService,
-  ) { }
+  ) {}
 
   async createNotification(
     userId: string,
@@ -26,18 +26,26 @@ export class NotificationsService {
     category?: string,
     relatedId?: string,
   ) {
-    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    const uuidRegex =
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
     // Validate userId — this is the primary key for the notification and MUST be a valid UUID
     if (!userId || !uuidRegex.test(userId)) {
-      this.logger.error(`createNotification called with an invalid userId: "${userId}". Aborting.`);
-      throw new Error(`Invalid userId format: "${userId}". Expected a valid UUID.`);
+      this.logger.error(
+        `createNotification called with an invalid userId: "${userId}". Aborting.`,
+      );
+      throw new Error(
+        `Invalid userId format: "${userId}". Expected a valid UUID.`,
+      );
     }
 
     // Defensive Check: Validate UUID format for relatedId (optional field — fall back to null if invalid)
-    const validRelatedId = relatedId && uuidRegex.test(relatedId) ? relatedId : null;
+    const validRelatedId =
+      relatedId && uuidRegex.test(relatedId) ? relatedId : null;
     if (relatedId && !validRelatedId) {
-      this.logger.warn(`Invalid UUID format for relatedId: "${relatedId}". Falling back to null.`);
+      this.logger.warn(
+        `Invalid UUID format for relatedId: "${relatedId}". Falling back to null.`,
+      );
     }
 
     // 1. Fetch FCM token AND save notification in parallel (2 DB calls at once instead of 2 sequential ones)
@@ -70,14 +78,17 @@ export class NotificationsService {
 
     // 3. Send Mobile Push Notification fire-and-forget — don't block the response
     if (user?.fcm_token) {
-      this.fcmService.sendPushNotification(
-        user.fcm_token,
-        title,
-        message,
-        { type: category || type, relatedId: relatedId || '' },
-      ).catch(err => {
-        this.logger.error(`Failed to dispatch push notification for user ${userId}`, err.stack);
-      });
+      this.fcmService
+        .sendPushNotification(user.fcm_token, title, message, {
+          type: category || type,
+          relatedId: relatedId || "",
+        })
+        .catch((err) => {
+          this.logger.error(
+            `Failed to dispatch push notification for user ${userId}`,
+            err.stack,
+          );
+        });
     }
 
     return notification;
@@ -90,7 +101,11 @@ export class NotificationsService {
     });
 
     // Process in batches to avoid overwhelming the DB connection pool
-    await this.sendInBatches(parents.map(p => p.id), title, message);
+    await this.sendInBatches(
+      parents.map((p) => p.id),
+      title,
+      message,
+    );
 
     return { count: parents.length };
   }
@@ -101,7 +116,11 @@ export class NotificationsService {
       select: { id: true },
     });
 
-    await this.sendInBatches(nannies.map(n => n.id), title, message);
+    await this.sendInBatches(
+      nannies.map((n) => n.id),
+      title,
+      message,
+    );
 
     return { count: nannies.length };
   }
@@ -119,7 +138,7 @@ export class NotificationsService {
     for (let i = 0; i < userIds.length; i += batchSize) {
       const batch = userIds.slice(i, i + batchSize);
       await Promise.all(
-        batch.map(id => this.createNotification(id, title, message, "info"))
+        batch.map((id) => this.createNotification(id, title, message, "info")),
       );
     }
   }
@@ -205,7 +224,12 @@ export class NotificationsService {
     );
   }
 
-  async notifyNannyCancellationToParent(parentId: string, bookingId: string, willRematch: boolean, reason?: string) {
+  async notifyNannyCancellationToParent(
+    parentId: string,
+    bookingId: string,
+    willRematch: boolean,
+    reason?: string,
+  ) {
     const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
     const rematchText = willRematch
       ? " We are automatically re-matching you."

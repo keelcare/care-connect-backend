@@ -26,7 +26,7 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 
 @Controller("verification")
 export class VerificationController {
-  constructor(private readonly verificationService: VerificationService) { }
+  constructor(private readonly verificationService: VerificationService) {}
 
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Post("upload")
@@ -55,27 +55,15 @@ export class VerificationController {
     if (!file) {
       throw new BadRequestException("File is required");
     }
-    return this.verificationService.uploadDocuments(
-      req.user.id,
-      dto,
-      file,
-    );
+    return this.verificationService.uploadDocuments(req.user.id, dto, file);
   }
 
   // Admin proxy endpoint to stream document from Drive
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Get("document/:id")
   async getDocument(@Param("id") id: string, @Res() res: Response) {
-    const { stream, mimeType } = await this.verificationService.getDocumentStream(id);
-    res.set("Content-Type", mimeType);
-    stream.pipe(res);
-  }
-
-  // Admin proxy endpoint to stream document from Drive
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
-  @Get("document/:id")
-  async getDocument(@Param("id") id: string, @Res() res: Response) {
-    const { stream, mimeType } = await this.verificationService.getDocumentStream(id);
+    const { stream, mimeType } =
+      await this.verificationService.getDocumentStream(id);
     res.set("Content-Type", mimeType);
     stream.pipe(res);
   }

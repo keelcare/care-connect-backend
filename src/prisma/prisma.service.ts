@@ -5,7 +5,8 @@ import { EncryptionService } from "../common/services/encryption.service";
 @Injectable()
 export class PrismaService
   extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy {
+  implements OnModuleInit, OnModuleDestroy
+{
   constructor(private encryptionService: EncryptionService) {
     super();
   }
@@ -22,15 +23,15 @@ export class PrismaService
   private registerEncryptionMiddleware() {
     // Fields to encrypt/decrypt
     const encryptedFields = {
-      profiles: ['phone', 'address'],
-      identity_documents: ['id_number'],
+      profiles: ["phone", "address"],
+      identity_documents: ["id_number"],
     };
 
     // Middleware for WRITE operations (create, update)
     (this as any).$use(async (params, next) => {
       // Encrypt before write
       if (
-        (params.action === 'create' || params.action === 'update') &&
+        (params.action === "create" || params.action === "update") &&
         encryptedFields[params.model]
       ) {
         const fieldsToEncrypt = encryptedFields[params.model];
@@ -50,9 +51,9 @@ export class PrismaService
 
       // Decrypt after read
       if (
-        (params.action === 'findUnique' ||
-          params.action === 'findFirst' ||
-          params.action === 'findMany') &&
+        (params.action === "findUnique" ||
+          params.action === "findFirst" ||
+          params.action === "findMany") &&
         encryptedFields[params.model]
       ) {
         const fieldsToDecrypt = encryptedFields[params.model];

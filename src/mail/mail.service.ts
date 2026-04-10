@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import * as nodemailer from "nodemailer";
 
 @Injectable()
 export class MailService {
@@ -9,32 +9,36 @@ export class MailService {
 
   constructor(private configService: ConfigService) {
     this.transporter = nodemailer.createTransport({
-      host: this.configService.get<string>('MAIL_HOST'),
-      port: this.configService.get<number>('MAIL_PORT'),
-      secure: this.configService.get<number>('MAIL_PORT') === 465, // true for 465, false for other ports
+      host: this.configService.get<string>("MAIL_HOST"),
+      port: this.configService.get<number>("MAIL_PORT"),
+      secure: this.configService.get<number>("MAIL_PORT") === 465, // true for 465, false for other ports
       auth: {
-        user: this.configService.get<string>('MAIL_USER'),
-        pass: this.configService.get<string>('MAIL_PASS'),
+        user: this.configService.get<string>("MAIL_USER"),
+        pass: this.configService.get<string>("MAIL_PASS"),
       },
     });
 
     // Verify connection configuration
     this.transporter.verify((error) => {
       if (error) {
-        this.logger.warn('Mail server connection failed. Emails might not be sent.', error);
+        this.logger.warn(
+          "Mail server connection failed. Emails might not be sent.",
+          error,
+        );
       } else {
-        this.logger.log('Mail server is ready to take our messages');
+        this.logger.log("Mail server is ready to take our messages");
       }
     });
   }
 
   async sendMail(to: string, subject: string, template: string, context: any) {
-    const from = this.configService.get<string>('MAIL_FROM') || 'noreply@careconnect.com';
-    
+    const from =
+      this.configService.get<string>("MAIL_FROM") || "noreply@careconnect.com";
+
     // Simple HTML generation for now (can be replaced with ejs/handlebars later if needed)
     let body = template;
-    Object.keys(context).forEach(key => {
-      const placeholder = new RegExp(`{{${key}}}`, 'g');
+    Object.keys(context).forEach((key) => {
+      const placeholder = new RegExp(`{{${key}}}`, "g");
       body = body.replace(placeholder, context[key]);
     });
 
@@ -49,13 +53,15 @@ export class MailService {
     } catch (error) {
       this.logger.error(`Failed to send email to ${to}`, error);
       // Fallback to console log for transparency during dev
-      this.logger.log(`[FALLBACK LOG] To: ${to}, Subject: ${subject}, Body: ${body}`);
+      this.logger.log(
+        `[FALLBACK LOG] To: ${to}, Subject: ${subject}, Body: ${body}`,
+      );
     }
   }
 
   async sendVerificationEmail(to: string, token: string, frontendUrl: string) {
     const verificationUrl = `${frontendUrl}/verify-email?token=${token}`;
-    const subject = 'Verify your CareConnect Account';
+    const subject = "Verify your CareConnect Account";
     const template = `
       <h1>Welcome to CareConnect</h1>
       <p>Please click the link below to verify your email address:</p>
@@ -67,7 +73,7 @@ export class MailService {
 
   async sendPasswordResetEmail(to: string, token: string, frontendUrl: string) {
     const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
-    const subject = 'Reset your CareConnect Password';
+    const subject = "Reset your CareConnect Password";
     const template = `
       <h1>CareConnect Password Reset</h1>
       <p>You requested to reset your password. Click the link below to proceed:</p>
@@ -80,14 +86,14 @@ export class MailService {
   async sendBookingConfirmationEmail(
     to: string,
     userName: string,
-    role: 'parent' | 'nanny',
+    role: "parent" | "nanny",
     details: {
       date: string;
       time: string;
       duration: number;
       location: string;
       otherPartyName: string;
-    }
+    },
   ) {
     const subject = `Booking Confirmed - ${details.date}`;
     const template = `
@@ -98,7 +104,7 @@ export class MailService {
         
         <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0; color: #34495e;">Booking Details</h3>
-          <p><strong>${role === 'parent' ? 'Nanny' : 'Parent'}:</strong> ${details.otherPartyName}</p>
+          <p><strong>${role === "parent" ? "Nanny" : "Parent"}:</strong> ${details.otherPartyName}</p>
           <p><strong>Date:</strong> ${details.date}</p>
           <p><strong>Start Time:</strong> ${details.time}</p>
           <p><strong>Duration:</strong> ${details.duration} hours</p>
@@ -119,17 +125,18 @@ export class MailService {
   async sendCancellationEmail(
     to: string,
     userName: string,
-    role: 'parent' | 'nanny',
+    role: "parent" | "nanny",
     details: {
       date: string;
       reason: string;
       otherPartyName: string;
-      cancelledBy: 'parent' | 'nanny';
-    }
+      cancelledBy: "parent" | "nanny";
+    },
   ) {
     const subject = `Booking Cancelled - ${details.date}`;
-    const cancelledByRole = details.cancelledBy === 'parent' ? 'Parent' : 'Nanny';
-    
+    const cancelledByRole =
+      details.cancelledBy === "parent" ? "Parent" : "Nanny";
+
     const template = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
         <h2 style="color: #e74c3c;">Booking Cancelled</h2>
@@ -138,7 +145,7 @@ export class MailService {
         
         <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0; color: #34495e;">Cancellation Details</h3>
-          <p><strong>Reason provided:</strong> ${details.reason || 'No reason provided'}</p>
+          <p><strong>Reason provided:</strong> ${details.reason || "No reason provided"}</p>
         </div>
         
         <p>If you have any questions or need further assistance, please reach out to CareConnect support.</p>

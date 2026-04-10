@@ -149,9 +149,6 @@ model service_requests {
   discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
-  discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
-  plan_duration_months  Int?                @default(1)
-  plan_type             String?             @db.VarChar(50)
   max_hourly_rate       Decimal?            @db.Decimal(10, 2)
   assignments           assignments[]
   bookings              bookings?
@@ -410,7 +407,6 @@ model recurring_bookings {
   is_active                                 Boolean                  @default(true)
   created_at                                DateTime?                @default(now()) @db.Timestamptz(6)
   bookings                                  bookings[]
-  generation_logs                           recurring_booking_logs[]
   recurring_booking_logs                    recurring_booking_logs[]
   users_recurring_bookings_nanny_idTousers  users                                  @relation("recurring_bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   users_recurring_bookings_parent_idTousers users                                  @relation("recurring_bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -566,15 +562,7 @@ model payment_installments {
   @@index([subscription_plan_id])
 }
 
-model recurring_booking_logs {
-  id                   String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  recurring_booking_id String             @db.Uuid
-  booking_date         DateTime           @db.Date
-  status               String             @db.VarChar(50)
-  reason               String?
-  created_at           DateTime?          @default(now()) @db.Timestamptz(6)
-  recurring_bookings   recurring_bookings @relation(fields: [recurring_booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-}
+
 
 model subscription_plans {
   id                   String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid

@@ -11,7 +11,12 @@ import { PrismaService } from "../prisma/prisma.service";
 @Module({
   imports: [ConfigModule, JwtModule.register({})],
   controllers: [NotificationsController],
-  providers: [NotificationsService, NotificationsGateway, FcmService, PrismaService],
+  providers: [
+    NotificationsService,
+    NotificationsGateway,
+    FcmService,
+    PrismaService,
+  ],
   exports: [NotificationsService, FcmService],
 })
 export class NotificationsModule {}

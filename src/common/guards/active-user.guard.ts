@@ -4,10 +4,10 @@ import {
   ForbiddenException,
   Injectable,
   SetMetadata,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
+} from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
 
-export const SKIP_ACTIVE_CHECK_KEY = 'skipActiveCheck';
+export const SKIP_ACTIVE_CHECK_KEY = "skipActiveCheck";
 
 /**
  * Decorator to opt-out of the ActiveUserGuard for a specific route.
@@ -29,10 +29,10 @@ export class ActiveUserGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     // Allow the route to opt-out of this check
-    const skip = this.reflector.getAllAndOverride<boolean>(SKIP_ACTIVE_CHECK_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const skip = this.reflector.getAllAndOverride<boolean>(
+      SKIP_ACTIVE_CHECK_KEY,
+      [context.getHandler(), context.getClass()],
+    );
     if (skip) return true;
 
     const request = context.switchToHttp().getRequest();
@@ -40,7 +40,7 @@ export class ActiveUserGuard implements CanActivate {
 
     if (user && user.is_active === false) {
       throw new ForbiddenException(
-        'Your account has been suspended. Please contact support to appeal.',
+        "Your account has been suspended. Please contact support to appeal.",
       );
     }
 

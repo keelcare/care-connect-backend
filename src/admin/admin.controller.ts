@@ -20,7 +20,7 @@ import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 @Roles(UserRole.ADMIN)
 @UseGuards(AuthGuard("jwt"), RolesGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) { }
+  constructor(private readonly adminService: AdminService) {}
 
   // Manual Assignment Management
   @Get("manual-assignment/requests")
@@ -59,8 +59,6 @@ export class AdminController {
     return this.adminService.unbanUser(userId);
   }
 
-
-
   // Category Request Management
   @Get("category-requests")
   async getCategoryRequests(@Query("status") status?: string) {
@@ -68,12 +66,18 @@ export class AdminController {
   }
 
   @Put("category-requests/:id/approve")
-  async approveCategoryRequest(@Param("id") id: string, @Body("notes") notes?: string) {
+  async approveCategoryRequest(
+    @Param("id") id: string,
+    @Body("notes") notes?: string,
+  ) {
     return this.adminService.updateCategoryRequestStatus(id, "approved", notes);
   }
 
   @Put("category-requests/:id/reject")
-  async rejectCategoryRequest(@Param("id") id: string, @Body("notes") notes?: string) {
+  async rejectCategoryRequest(
+    @Param("id") id: string,
+    @Body("notes") notes?: string,
+  ) {
     return this.adminService.updateCategoryRequestStatus(id, "rejected", notes);
   }
 

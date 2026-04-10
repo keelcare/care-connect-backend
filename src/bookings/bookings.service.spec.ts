@@ -87,7 +87,7 @@ describe("BookingsService", () => {
         users_bookings_nanny_idTousers: {
           nanny_details: { hourly_rate: hourlyRate },
         },
-        service_requests: { category: 'CC' },
+        service_requests: { category: "CC" },
       });
 
       mockPrisma.bookings.update.mockResolvedValue({
@@ -151,7 +151,7 @@ describe("BookingsService", () => {
         users_bookings_nanny_idTousers: {
           nanny_details: { hourly_rate: hourlyRate },
         },
-        service_requests: { category: 'CC' },
+        service_requests: { category: "CC" },
       });
 
       mockPrisma.bookings.update.mockResolvedValue({
@@ -167,14 +167,14 @@ describe("BookingsService", () => {
         "parent1",
         "Booking Completed",
         expect.any(String),
-        "success"
+        "success",
       );
       // Nanny should be notified
       expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
         "nanny1",
         "Booking Completed",
         expect.any(String),
-        "success"
+        "success",
       );
     });
   });

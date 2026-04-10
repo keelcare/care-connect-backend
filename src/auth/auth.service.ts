@@ -66,12 +66,12 @@ export class AuthService {
 
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: "15m",
-      secret: secret
+      secret: secret,
     });
 
     const refreshToken = this.jwtService.sign(payload, {
       expiresIn: "7d",
-      secret: secret
+      secret: secret,
     });
 
     // Hash and store refresh token
@@ -107,7 +107,7 @@ export class AuthService {
       const payload = this.jwtService.verify(refreshToken, { secret });
       // Directly using findUnique to be 100% sure we get the hash
       const user = await this.prisma.users.findUnique({
-        where: { email: payload.email }
+        where: { email: payload.email },
       });
 
       if (!user || !user.refresh_token_hash) {
@@ -145,8 +145,15 @@ export class AuthService {
     });
 
     // Send email with reset link
-    const frontendUrl = origin || this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-    await this.mailService.sendPasswordResetEmail(user.email, resetToken, frontendUrl);
+    const frontendUrl =
+      origin ||
+      this.configService.get("FRONTEND_URL") ||
+      "http://localhost:3000";
+    await this.mailService.sendPasswordResetEmail(
+      user.email,
+      resetToken,
+      frontendUrl,
+    );
 
     return { message: "If the email exists, a reset link has been sent" };
   }
@@ -200,8 +207,15 @@ export class AuthService {
     });
 
     // Send email with verification link
-    const frontendUrl = origin || this.configService.get("FRONTEND_URL") || "http://localhost:3000";
-    await this.mailService.sendVerificationEmail(user.email, verificationToken, frontendUrl);
+    const frontendUrl =
+      origin ||
+      this.configService.get("FRONTEND_URL") ||
+      "http://localhost:3000";
+    await this.mailService.sendVerificationEmail(
+      user.email,
+      verificationToken,
+      frontendUrl,
+    );
 
     return { message: "Verification email sent" };
   }
@@ -212,7 +226,6 @@ export class AuthService {
       // Don't reveal user existence
       return { message: "Verification email sent if account exists" };
     }
-
 
     return this.sendVerificationEmail(user.id, origin);
   }
@@ -248,22 +261,28 @@ export class AuthService {
     }
 
     // Validate categories for Nannies
-    if (userDto.role === 'nanny') {
+    if (userDto.role === "nanny") {
       if (!userDto.categories || userDto.categories.length === 0) {
-        throw new BadRequestException('Nannies must select at least one category');
+        throw new BadRequestException(
+          "Nannies must select at least one category",
+        );
       }
 
       // Validate categories exist in services table
       const validServices = await this.prisma.services.findMany({
         where: {
-          name: { in: userDto.categories }
-        }
+          name: { in: userDto.categories },
+        },
       });
 
       if (validServices.length !== userDto.categories.length) {
-        const validNames = validServices.map(s => s.name);
-        const invalidNames = userDto.categories.filter(c => !validNames.includes(c));
-        throw new BadRequestException(`Invalid categories: ${invalidNames.join(', ')}`);
+        const validNames = validServices.map((s) => s.name);
+        const invalidNames = userDto.categories.filter(
+          (c) => !validNames.includes(c),
+        );
+        throw new BadRequestException(
+          `Invalid categories: ${invalidNames.join(", ")}`,
+        );
       }
     }
 
@@ -281,19 +300,19 @@ export class AuthService {
       nanny_details:
         userDto.role === "nanny"
           ? {
-            create: {
-              categories: userDto.categories,
-            },
-          }
+              create: {
+                categories: userDto.categories,
+              },
+            }
           : undefined,
     });
-    
+
     // Send verification email
     try {
       await this.sendVerificationEmail(user.id);
     } catch (error) {
-       // Log error but don't fail registration
-       console.error("Failed to send welcome verification email", error);
+      // Log error but don't fail registration
+      console.error("Failed to send welcome verification email", error);
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars

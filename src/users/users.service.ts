@@ -8,7 +8,7 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
   // Auth-related methods
   async create(
@@ -43,10 +43,7 @@ export class UsersService {
     });
   }
 
-  async findByOAuth(
-    provider: string,
-    providerId: string,
-  ) {
+  async findByOAuth(provider: string, providerId: string) {
     return this.prisma.users.findUnique({
       where: {
         oauth_provider_oauth_provider_id: {
@@ -106,10 +103,10 @@ export class UsersService {
         const averageRating =
           totalReviews > 0
             ? Math.round(
-              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-                totalReviews) *
-              10,
-            ) / 10
+                (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                  totalReviews) *
+                  10,
+              ) / 10
             : null;
 
         // Exclude sensitive fields
@@ -191,10 +188,10 @@ export class UsersService {
       const averageRating =
         totalReviews > 0
           ? Math.round(
-            (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-              totalReviews) *
-            10,
-          ) / 10
+              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                totalReviews) *
+                10,
+            ) / 10
           : null;
 
       return {
@@ -211,7 +208,9 @@ export class UsersService {
     const user = await this.prisma.users.findUnique({
       where: { id },
     });
-    console.log(`[UsersService] findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`);
+    console.log(
+      `[UsersService] findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
+    );
     return user;
   }
 
@@ -219,7 +218,9 @@ export class UsersService {
     const user = await this.prisma.users.findUnique({
       where: { email },
     });
-    console.log(`[UsersService] findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`);
+    console.log(
+      `[UsersService] findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
+    );
     return user;
   }
 
@@ -230,8 +231,9 @@ export class UsersService {
     // Handle both UpdateUserDto and Prisma.usersUpdateInput
     // Check if any UpdateUserDto fields are present
     const isUpdateUserDto =
-      updateUserDto && typeof updateUserDto === 'object' && (
-        "firstName" in updateUserDto ||
+      updateUserDto &&
+      typeof updateUserDto === "object" &&
+      ("firstName" in updateUserDto ||
         "lastName" in updateUserDto ||
         "phone" in updateUserDto ||
         "address" in updateUserDto ||
@@ -297,12 +299,7 @@ export class UsersService {
       }
 
       // Update nanny details if provided
-      if (
-        skills ||
-        experienceYears ||
-        bio ||
-        availabilitySchedule
-      ) {
+      if (skills || experienceYears || bio || availabilitySchedule) {
         await this.prisma.nanny_details.upsert({
           where: { user_id: id },
           update: {

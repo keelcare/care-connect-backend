@@ -9,9 +9,15 @@ import { ChatModule } from "../chat/chat.module";
 import { MailModule } from "../mail/mail.module";
 
 @Module({
-  imports: [PrismaModule, RequestsModule, NotificationsModule, ChatModule, MailModule],
+  imports: [
+    PrismaModule,
+    RequestsModule,
+    NotificationsModule,
+    ChatModule,
+    MailModule,
+  ],
   controllers: [AssignmentsController],
   providers: [AssignmentsService, AssignmentsTaskService],
   exports: [AssignmentsService],
 })
-export class AssignmentsModule { }
+export class AssignmentsModule {}

@@ -1,4 +1,9 @@
-import { Controller, Get, NotFoundException, InternalServerErrorException } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  NotFoundException,
+  InternalServerErrorException,
+} from "@nestjs/common";
 import { AppService } from "./app.service";
 
 @Controller()
@@ -15,6 +20,8 @@ export class AppController {
     if (process.env.NODE_ENV === "production") {
       throw new NotFoundException();
     }
-    throw new InternalServerErrorException("Sentry Debug Error: " + new Date().toISOString());
+    throw new InternalServerErrorException(
+      "Sentry Debug Error: " + new Date().toISOString(),
+    );
   }
 }

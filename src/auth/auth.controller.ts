@@ -8,7 +8,7 @@ import {
   Res,
   UnauthorizedException,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "@nestjs/passport";
 import { Response } from "express";
@@ -21,22 +21,22 @@ import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { SessionDto } from "./dto/session.dto";
 
-@ApiTags('Authentication')
+@ApiTags("Authentication")
 @Controller("auth")
 export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
-  ) { }
+  ) {}
 
   /**
    * SECURITY: Strict rate limiting (10 req/min) to prevent automated account creation
    */
   @Post("signup")
   @StrictThrottle()
-  @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({ status: 201, description: 'User successfully registered' })
-  @ApiResponse({ status: 400, description: 'Invalid input' })
+  @ApiOperation({ summary: "Register a new user" })
+  @ApiResponse({ status: 201, description: "User successfully registered" })
+  @ApiResponse({ status: 400, description: "Invalid input" })
   async signup(@Body() userDto: SignupDto, @Req() req) {
     const user = await this.authService.register(userDto);
     const origin = req.headers.origin || req.headers.referer;
@@ -78,9 +78,13 @@ export class AuthController {
    */
   @Post("login")
   @StrictThrottle()
-  @ApiOperation({ summary: 'User login' })
-  @ApiResponse({ status: 200, description: 'Successfully logged in, tokens set in cookies and returned in body' })
-  @ApiResponse({ status: 401, description: 'Invalid credentials' })
+  @ApiOperation({ summary: "User login" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Successfully logged in, tokens set in cookies and returned in body",
+  })
+  @ApiResponse({ status: 401, description: "Invalid credentials" })
   async login(
     @Body() loginDto: LoginDto,
     @Req() req,
@@ -110,13 +114,13 @@ export class AuthController {
     return {
       user: loginData.user,
       access_token: loginData.access_token,
-      refresh_token: loginData.refresh_token
+      refresh_token: loginData.refresh_token,
     };
   }
 
   @Post("logout")
-  @ApiOperation({ summary: 'Logout and clear session cookies' })
-  @ApiResponse({ status: 200, description: 'Successfully logged out' })
+  @ApiOperation({ summary: "Logout and clear session cookies" })
+  @ApiResponse({ status: 200, description: "Successfully logged out" })
   async logout(@Res({ passthrough: true }) res: Response) {
     const optionsSecure = this.getCookieOptions(res);
 
@@ -128,9 +132,14 @@ export class AuthController {
   }
 
   @Post("refresh")
-  @ApiOperation({ summary: 'Refresh access tokens using refresh cookie or body' })
-  @ApiResponse({ status: 200, description: 'Tokens refreshed successfully' })
-  @ApiResponse({ status: 401, description: 'No refresh token provided or token invalid' })
+  @ApiOperation({
+    summary: "Refresh access tokens using refresh cookie or body",
+  })
+  @ApiResponse({ status: 200, description: "Tokens refreshed successfully" })
+  @ApiResponse({
+    status: 401,
+    description: "No refresh token provided or token invalid",
+  })
   async refresh(
     @Req() req,
     @Body() body: { refresh_token?: string },
@@ -159,7 +168,7 @@ export class AuthController {
     return {
       access_token: loginData.access_token,
       refresh_token: loginData.refresh_token,
-      message: "Token refreshed successfully"
+      message: "Token refreshed successfully",
     };
   }
 
@@ -200,7 +209,7 @@ export class AuthController {
 
   @Get("google")
   @UseGuards(GoogleOauthGuard)
-  async googleAuth(@Req() req) { }
+  async googleAuth(@Req() req) {}
 
   @Get("google/callback")
   @UseGuards(AuthGuard("google"))
@@ -218,7 +227,9 @@ export class AuthController {
       console.log("[Auth] Google Login Result:", JSON.stringify(result));
 
       // Generate a short-lived session token
-      const sessionToken = await this.authService.generateSessionToken(result.user);
+      const sessionToken = await this.authService.generateSessionToken(
+        result.user,
+      );
       console.log("[Auth] Session Token Generated");
 
       // Parse origin from state
@@ -229,30 +240,33 @@ export class AuthController {
           const state = JSON.parse(req.query.state as string);
           if (state.origin) {
             // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
-            if (state.origin.startsWith('careconnect://') || state.origin.startsWith('keel://')) {
+            if (
+              state.origin.startsWith("careconnect://") ||
+              state.origin.startsWith("keel://")
+            ) {
               redirectUrl = state.origin;
             } else if (
-              state.origin.includes('localhost') ||
-              state.origin.includes('192.168.') ||
-              state.origin.includes('10.0.') ||
-              state.origin.includes('172.') ||
-              state.origin.includes('care-connect-dev.vercel.app') ||
-              state.origin.includes('keel-care.vercel.app') ||
-              state.origin.includes('127.0.0.1')
+              state.origin.includes("localhost") ||
+              state.origin.includes("192.168.") ||
+              state.origin.includes("10.0.") ||
+              state.origin.includes("172.") ||
+              state.origin.includes("care-connect-dev.vercel.app") ||
+              state.origin.includes("keel-care.vercel.app") ||
+              state.origin.includes("127.0.0.1")
             ) {
               let urlToUse = state.origin;
-              if (urlToUse.endsWith('/')) {
+              if (urlToUse.endsWith("/")) {
                 urlToUse = urlToUse.slice(0, -1);
               }
 
-              if (urlToUse.includes('/auth/callback')) {
+              if (urlToUse.includes("/auth/callback")) {
                 redirectUrl = urlToUse;
               } else {
                 redirectUrl = `${urlToUse}/auth/callback`;
               }
             }
-          } else if (state.platform === 'mobile') {
-            redirectUrl = 'keel://auth/callback';
+          } else if (state.platform === "mobile") {
+            redirectUrl = "keel://auth/callback";
           }
         } catch (e) {
           console.error("[Auth] Failed to parse state origin:", e);
@@ -262,7 +276,11 @@ export class AuthController {
       const isProd = this.configService.get("NODE_ENV") === "production";
       const renderEnv = this.configService.get("RENDER");
 
-      if ((isProd || renderEnv) && redirectUrl.includes("localhost") && !req.query.state) {
+      if (
+        (isProd || renderEnv) &&
+        redirectUrl.includes("localhost") &&
+        !req.query.state
+      ) {
         // Fallback to production frontend if redirect is accidentally localhost
         redirectUrl = `${this.configService.get("FRONTEND_URL")}/auth/callback`;
         console.log("[Auth] Fallback redirect to production FRONTEND_URL");
@@ -273,12 +291,13 @@ export class AuthController {
     } catch (error) {
       console.error("[Auth] Google Callback Error:", error);
 
-      let frontendUrl = this.configService.get("FRONTEND_URL") || "http://localhost:3000";
+      let frontendUrl =
+        this.configService.get("FRONTEND_URL") || "http://localhost:3000";
       if (req.query.state) {
         try {
           const state = JSON.parse(req.query.state as string);
           if (state.origin) frontendUrl = state.origin;
-        } catch (e) { }
+        } catch (e) {}
       }
 
       res.redirect(`${frontendUrl}/auth/callback?error=auth_failed`);
@@ -312,7 +331,7 @@ export class AuthController {
     return {
       user: loginData.user,
       access_token: loginData.access_token,
-      refresh_token: loginData.refresh_token
+      refresh_token: loginData.refresh_token,
     };
   }
 }

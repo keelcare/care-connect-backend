@@ -25,4 +25,4 @@ import { MailModule } from "../mail/mail.module";
   providers: [RequestsService],
   exports: [RequestsService],
 })
-export class RequestsModule { }
+export class RequestsModule {}

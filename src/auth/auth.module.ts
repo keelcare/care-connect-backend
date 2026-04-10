@@ -37,4 +37,4 @@ import { MailModule } from "../mail/mail.module";
   ],
   exports: [AuthService, TransparentJwtAuthGuard],
 })
-export class AuthModule { }
+export class AuthModule {}

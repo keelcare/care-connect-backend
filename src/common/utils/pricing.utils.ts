@@ -20,7 +20,7 @@ export class PricingUtils {
     durationHours: number,
     discountPercentage: number = 0,
     planDurationMonths: number = 1,
-    planType: string = 'ONE_TIME'
+    planType: string = "ONE_TIME",
   ): PricingCalculationResult {
     const rate = Number(hourlyRate);
     const hours = Number(durationHours);
@@ -32,9 +32,9 @@ export class PricingUtils {
     const sessionCostAfterDiscount = sessionCost - discountAmount;
 
     // Default: 1 session for ONE_TIME, 4 sessions per month for subscriptions
-    const sessionsPerMonth = planType === 'ONE_TIME' ? 1 : 4;
+    const sessionsPerMonth = planType === "ONE_TIME" ? 1 : 4;
     const monthlyCost = sessionCostAfterDiscount * sessionsPerMonth;
-    
+
     // totalAmount = monthlyCost * planDuration (e.g., 6 months)
     const totalAmount = monthlyCost * planMonths;
 
@@ -47,7 +47,7 @@ export class PricingUtils {
       sessionsPerMonth,
       monthlyCost,
       planDurationMonths: planMonths,
-      totalAmount
+      totalAmount,
     };
   }
 }

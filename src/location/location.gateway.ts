@@ -37,7 +37,7 @@ export class LocationGateway {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
-  ) { }
+  ) {}
 
   @SubscribeMessage("location:subscribe")
   async handleSubscribe(

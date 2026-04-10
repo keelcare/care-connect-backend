@@ -8,9 +8,14 @@ import { MailModule } from "../mail/mail.module";
 import { PaymentsModule } from "../payments/payments.module";
 
 @Module({
-  imports: [ChatModule, RequestsModule, MailModule, forwardRef(() => PaymentsModule)],
+  imports: [
+    ChatModule,
+    RequestsModule,
+    MailModule,
+    forwardRef(() => PaymentsModule),
+  ],
   controllers: [BookingsController],
   providers: [BookingsService, TasksService],
   exports: [BookingsService],
 })
-export class BookingsModule { }
+export class BookingsModule {}

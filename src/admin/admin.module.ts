@@ -28,4 +28,4 @@ import { AvailabilityModule } from "../availability/availability.module";
   providers: [AdminService],
   exports: [AdminService],
 })
-export class AdminModule { }
+export class AdminModule {}

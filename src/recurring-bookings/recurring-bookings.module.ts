@@ -6,13 +6,9 @@ import { RecurringBookingsController } from "./recurring-bookings.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 
 @Module({
-    imports: [
-        PrismaModule,
-        PassportModule,
-        JwtModule.register({}),
-    ],
-    controllers: [RecurringBookingsController],
-    providers: [RecurringBookingsService],
-    exports: [RecurringBookingsService],
+  imports: [PrismaModule, PassportModule, JwtModule.register({})],
+  controllers: [RecurringBookingsController],
+  providers: [RecurringBookingsService],
+  exports: [RecurringBookingsService],
 })
 export class RecurringBookingsModule {}

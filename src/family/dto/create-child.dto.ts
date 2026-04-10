@@ -7,7 +7,6 @@ import {
   MaxLength,
   ValidateNested,
   ArrayMaxSize,
-   
 } from "class-validator";
 import { Type } from "class-transformer";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
@@ -65,12 +64,12 @@ export class CreateChildDto {
    * SECURITY: Sanitize names to prevent XSS
    */
   @IsString()
-  @MaxLength(100, { message: 'First name must not exceed 100 characters' })
+  @MaxLength(100, { message: "First name must not exceed 100 characters" })
   @Sanitize()
   first_name: string;
 
   @IsString()
-  @MaxLength(100, { message: 'Last name must not exceed 100 characters' })
+  @MaxLength(100, { message: "Last name must not exceed 100 characters" })
   @Sanitize()
   last_name: string;
 
@@ -89,16 +88,22 @@ export class CreateChildDto {
    */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: 'Maximum 20 allergies allowed' })
+  @ArrayMaxSize(20, { message: "Maximum 20 allergies allowed" })
   @IsString({ each: true })
-  @MaxLength(50, { each: true, message: 'Each allergy must not exceed 50 characters' })
+  @MaxLength(50, {
+    each: true,
+    message: "Each allergy must not exceed 50 characters",
+  })
   allergies?: string[];
 
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: 'Maximum 20 dietary restrictions allowed' })
+  @ArrayMaxSize(20, { message: "Maximum 20 dietary restrictions allowed" })
   @IsString({ each: true })
-  @MaxLength(50, { each: true, message: 'Each dietary restriction must not exceed 50 characters' })
+  @MaxLength(50, {
+    each: true,
+    message: "Each dietary restriction must not exceed 50 characters",
+  })
   dietary_restrictions?: string[];
 
   /**
@@ -106,13 +111,15 @@ export class CreateChildDto {
    */
   @IsOptional()
   @IsString()
-  @MaxLength(500, { message: 'Diagnosis must not exceed 500 characters' })
+  @MaxLength(500, { message: "Diagnosis must not exceed 500 characters" })
   @Sanitize()
   diagnosis?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000, { message: 'Care instructions must not exceed 2000 characters' })
+  @MaxLength(2000, {
+    message: "Care instructions must not exceed 2000 characters",
+  })
   @Sanitize()
   care_instructions?: string;
 
@@ -128,8 +135,11 @@ export class CreateChildDto {
 
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: 'Maximum 20 learning goals allowed' })
+  @ArrayMaxSize(20, { message: "Maximum 20 learning goals allowed" })
   @IsString({ each: true })
-  @MaxLength(50, { each: true, message: 'Each learning goal must not exceed 50 characters' })
+  @MaxLength(50, {
+    each: true,
+    message: "Each learning goal must not exceed 50 characters",
+  })
   learning_goals?: string[];
 }

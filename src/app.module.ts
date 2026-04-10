@@ -31,13 +31,13 @@ import { APP_GUARD } from "@nestjs/core";
 import { UserThrottlerGuard } from "./common/guards/user-throttler.guard";
 import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
-import { ServicesModule } from './services/services.module';
-import { NanniesModule } from './nannies/nannies.module';
-import { WhatsAppModule } from './whatsapp/whatsapp.module';
-import { SupportModule } from './support/support.module';
-import { SseModule } from './sse/sse.module';
-import { MailModule } from './mail/mail.module';
-import { DisputesModule } from './disputes/disputes.module';
+import { ServicesModule } from "./services/services.module";
+import { NanniesModule } from "./nannies/nannies.module";
+import { WhatsAppModule } from "./whatsapp/whatsapp.module";
+import { SupportModule } from "./support/support.module";
+import { SseModule } from "./sse/sse.module";
+import { MailModule } from "./mail/mail.module";
+import { DisputesModule } from "./disputes/disputes.module";
 
 @Module({
   imports: [
@@ -51,20 +51,20 @@ import { DisputesModule } from './disputes/disputes.module';
         transport:
           process.env.NODE_ENV !== "production"
             ? {
-              target: "pino-pretty",
-              options: {
-                singleLine: true,
-              },
-            }
+                target: "pino-pretty",
+                options: {
+                  singleLine: true,
+                },
+              }
             : undefined,
       },
     }),
     ThrottlerModule.forRoot([
       {
-        name: 'default',
+        name: "default",
         ttl: 60000,
         limit: 300, // Balanced global limit for SPA usage
-      }
+      },
     ]),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), "uploads"),
@@ -111,4 +111,4 @@ import { DisputesModule } from './disputes/disputes.module';
     },
   ],
 })
-export class AppModule { }
+export class AppModule {}

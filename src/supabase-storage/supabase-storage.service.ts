@@ -1,9 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Readable } from 'stream';
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { Readable } from "stream";
 
-const BUCKET = 'verification-documents';
+const BUCKET = "verification-documents";
 
 @Injectable()
 export class SupabaseStorageService {
@@ -11,10 +11,10 @@ export class SupabaseStorageService {
   private readonly supabase: SupabaseClient;
 
   constructor(private readonly configService: ConfigService) {
-    const url = this.configService.get<string>('SUPABASE_URL');
-    const key = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY');
+    const url = this.configService.get<string>("SUPABASE_URL");
+    const key = this.configService.get<string>("SUPABASE_SERVICE_ROLE_KEY");
     if (!url || !key) {
-      throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
+      throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
     }
     this.supabase = createClient(url, key);
   }
@@ -24,8 +24,11 @@ export class SupabaseStorageService {
    * Path format: <userId>/<timestamp>-<originalname>
    * Returns the storage path for later retrieval.
    */
-  async uploadFile(folderName: string, file: Express.Multer.File): Promise<string> {
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+  async uploadFile(
+    folderName: string,
+    file: Express.Multer.File,
+  ): Promise<string> {
+    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
     const storagePath = `${folderName}/${Date.now()}-${sanitizedName}`;
 
     const { error } = await this.supabase.storage
@@ -36,7 +39,9 @@ export class SupabaseStorageService {
       });
 
     if (error) {
-      this.logger.error(`Error uploading ${file.originalname} to Supabase: ${error.message}`);
+      this.logger.error(
+        `Error uploading ${file.originalname} to Supabase: ${error.message}`,
+      );
       throw new Error(error.message);
     }
 
@@ -48,20 +53,24 @@ export class SupabaseStorageService {
    * Downloads a file from Supabase Storage and returns it as a Readable stream
    * along with the MIME type.
    */
-  async getFileStream(storagePath: string): Promise<{ stream: Readable; mimeType: string }> {
+  async getFileStream(
+    storagePath: string,
+  ): Promise<{ stream: Readable; mimeType: string }> {
     const { data, error } = await this.supabase.storage
       .from(BUCKET)
       .download(storagePath);
 
     if (error || !data) {
-      this.logger.error(`Error downloading ${storagePath} from Supabase: ${error?.message}`);
-      throw new NotFoundException('Document not found in storage');
+      this.logger.error(
+        `Error downloading ${storagePath} from Supabase: ${error?.message}`,
+      );
+      throw new NotFoundException("Document not found in storage");
     }
 
     // Convert Blob to Buffer then to Readable stream
     const buffer = Buffer.from(await data.arrayBuffer());
     const stream = Readable.from(buffer);
-    const mimeType = data.type || 'application/octet-stream';
+    const mimeType = data.type || "application/octet-stream";
 
     return { stream, mimeType };
   }
@@ -75,7 +84,9 @@ export class SupabaseStorageService {
       .remove([storagePath]);
 
     if (error) {
-      this.logger.error(`Failed to delete ${storagePath} from Supabase: ${error.message}`);
+      this.logger.error(
+        `Failed to delete ${storagePath} from Supabase: ${error.message}`,
+      );
     } else {
       this.logger.log(`Deleted file from Supabase Storage: ${storagePath}`);
     }

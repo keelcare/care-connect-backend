@@ -6,13 +6,9 @@ import { AvailabilityController } from "./availability.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 
 @Module({
-    imports: [
-        PrismaModule,
-        PassportModule,
-        JwtModule.register({}),
-    ],
-    controllers: [AvailabilityController],
-    providers: [AvailabilityService],
-    exports: [AvailabilityService],
+  imports: [PrismaModule, PassportModule, JwtModule.register({})],
+  controllers: [AvailabilityController],
+  providers: [AvailabilityService],
+  exports: [AvailabilityService],
 })
 export class AvailabilityModule {}

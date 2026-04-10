@@ -4,7 +4,7 @@ import { GeocodeAddressDto, NearbySearchDto } from "./dto";
 
 @Controller("location")
 export class LocationController {
-  constructor(private readonly locationService: LocationService) { }
+  constructor(private readonly locationService: LocationService) {}
 
   /**
    * POST /location/geocode

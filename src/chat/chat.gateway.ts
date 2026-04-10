@@ -35,7 +35,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
-  ) { }
+  ) {}
 
   async handleConnection(client: Socket) {
     try {
@@ -44,11 +44,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       // Fallback to auth.token or authorization header for backwards compatibility
       if (!token) {
-        token = client.handshake.auth.token || client.handshake.headers.authorization;
+        token =
+          client.handshake.auth.token || client.handshake.headers.authorization;
       }
 
       if (!token) {
-        this.logger.warn('No authentication token found in cookies or headers');
+        this.logger.warn("No authentication token found in cookies or headers");
         client.disconnect();
         return;
       }
@@ -65,20 +66,25 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  private extractTokenFromCookies(cookieHeader: string | undefined): string | null {
+  private extractTokenFromCookies(
+    cookieHeader: string | undefined,
+  ): string | null {
     if (!cookieHeader) return null;
 
-    const cookies = cookieHeader.split(';').reduce((acc, cookie) => {
-      const parts = cookie.trim().split('=');
-      if (parts.length >= 2) {
-        const name = parts.shift()?.trim();
-        const value = parts.join('=');
-        if (name) acc[name] = value;
-      }
-      return acc;
-    }, {} as Record<string, string>);
+    const cookies = cookieHeader.split(";").reduce(
+      (acc, cookie) => {
+        const parts = cookie.trim().split("=");
+        if (parts.length >= 2) {
+          const name = parts.shift()?.trim();
+          const value = parts.join("=");
+          if (name) acc[name] = value;
+        }
+        return acc;
+      },
+      {} as Record<string, string>,
+    );
 
-    return cookies['access_token'] || null;
+    return cookies["access_token"] || null;
   }
 
   handleDisconnect(client: Socket) {

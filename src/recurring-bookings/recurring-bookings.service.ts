@@ -103,8 +103,14 @@ export class RecurringBookingsService {
         // Check if tomorrow matches the recurrence pattern
         if (this.shouldCreateBooking(tomorrow, recurring.recurrence_pattern)) {
           // Calculate potential booking times
-          const startTime = TimeUtils.combineDateAndTime(tomorrow, recurring.start_time);
-          const endTime = TimeUtils.getEndTime(startTime, Number(recurring.duration_hours));
+          const startTime = TimeUtils.combineDateAndTime(
+            tomorrow,
+            recurring.start_time,
+          );
+          const endTime = TimeUtils.getEndTime(
+            startTime,
+            Number(recurring.duration_hours),
+          );
 
           // 1. Check for general conflicts for this nanny
           const conflict = await this.prisma.bookings.findFirst({
@@ -127,7 +133,9 @@ export class RecurringBookingsService {
                 reason: `Nanny is already booked for a confirmed slot: ${conflict.start_time.toLocaleTimeString()} - ${conflict.end_time.toLocaleTimeString()}`,
               },
             });
-            console.log(`Conflict detected for recurring ${recurring.id} on ${tomorrow.toDateString()}`);
+            console.log(
+              `Conflict detected for recurring ${recurring.id} on ${tomorrow.toDateString()}`,
+            );
             continue;
           }
 
@@ -143,7 +151,9 @@ export class RecurringBookingsService {
           });
 
           if (existingSamePattern) {
-            console.log(`Booking for recurring ${recurring.id} already exists for ${tomorrow.toDateString()}, skipping.`);
+            console.log(
+              `Booking for recurring ${recurring.id} already exists for ${tomorrow.toDateString()}, skipping.`,
+            );
             continue;
           }
 
@@ -175,15 +185,22 @@ export class RecurringBookingsService {
           );
         }
       } catch (error) {
-        console.error(`Error generating booking for recurring ${recurring.id}:`, error);
-        await this.prisma.recurring_booking_logs.create({
-          data: {
-            recurring_booking_id: recurring.id,
-            booking_date: tomorrow,
-            status: "ERROR",
-            reason: error.message || "Unknown error during generation",
-          },
-        }).catch(err => console.error("Failed to log generation error to DB", err));
+        console.error(
+          `Error generating booking for recurring ${recurring.id}:`,
+          error,
+        );
+        await this.prisma.recurring_booking_logs
+          .create({
+            data: {
+              recurring_booking_id: recurring.id,
+              booking_date: tomorrow,
+              status: "ERROR",
+              reason: error.message || "Unknown error during generation",
+            },
+          })
+          .catch((err) =>
+            console.error("Failed to log generation error to DB", err),
+          );
       }
     }
   }

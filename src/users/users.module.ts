@@ -6,13 +6,9 @@ import { UsersController } from "./users.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 
 @Module({
-  imports: [
-    PrismaModule,
-    PassportModule,
-    JwtModule.register({}),
-  ],
+  imports: [PrismaModule, PassportModule, JwtModule.register({})],
   providers: [UsersService],
   controllers: [UsersController],
   exports: [UsersService],
 })
-export class UsersModule { }
+export class UsersModule {}

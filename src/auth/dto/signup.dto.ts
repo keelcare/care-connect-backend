@@ -1,21 +1,21 @@
 import {
-    IsEmail,
-    IsString,
-    IsEnum,
-    MinLength,
-    MaxLength,
-    Matches,
-    IsOptional,
-    IsBoolean,
-} from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Sanitize } from '../../common/decorators/sanitize.decorator';
-import { Match } from '../../common/decorators/match.decorator';
-import { Transform } from 'class-transformer';
+  IsEmail,
+  IsString,
+  IsEnum,
+  MinLength,
+  MaxLength,
+  Matches,
+  IsOptional,
+  IsBoolean,
+} from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Sanitize } from "../../common/decorators/sanitize.decorator";
+import { Match } from "../../common/decorators/match.decorator";
+import { Transform } from "class-transformer";
 
 /**
  * SECURITY: Signup DTO with comprehensive validation
- * 
+ *
  * Implements OWASP best practices for user registration:
  * - Email validation
  * - Strong password requirements
@@ -24,132 +24,134 @@ import { Transform } from 'class-transformer';
  */
 
 export enum UserRole {
-    PARENT = 'parent',
-    NANNY = 'nanny',
-    ADMIN = 'admin',
+  PARENT = "parent",
+  NANNY = "nanny",
+  ADMIN = "admin",
 }
 
 export class SignupDto {
-    /**
-     * Email address - must be valid email format
-     * Max 255 characters to prevent database overflow
-     */
-    @ApiProperty({
-        example: 'user@example.com',
-        description: 'Email address of the user',
-    })
-    @IsEmail({}, { message: 'Please provide a valid email address' })
-    @MaxLength(255, { message: 'Email must not exceed 255 characters' })
-    email: string;
+  /**
+   * Email address - must be valid email format
+   * Max 255 characters to prevent database overflow
+   */
+  @ApiProperty({
+    example: "user@example.com",
+    description: "Email address of the user",
+  })
+  @IsEmail({}, { message: "Please provide a valid email address" })
+  @MaxLength(255, { message: "Email must not exceed 255 characters" })
+  email: string;
 
-    /**
-     * Password with strong complexity requirements
-     * 
-     * Requirements:
-     * - Minimum 8 characters
-     * - Maximum 128 characters
-     * - At least one uppercase letter
-     * - At least one lowercase letter
-     * - At least one number
-     * - At least one special character
-     * 
-     * OWASP Best Practice: Enforce strong password complexity
-     */
-    @ApiProperty({
-        example: 'StrongP@ss123!',
-        description: 'Password must contain uppercase, lowercase, number, and special character',
-        minLength: 8,
-        maxLength: 128,
-    })
-    @IsString()
-    @MinLength(8, { message: 'Password must be at least 8 characters long' })
-    @MaxLength(128, { message: 'Password must not exceed 128 characters' })
-    // @Matches(
-    //     /^(?=.*[A-Za-z])(?=.*\d).{8,}$/,
-    //     {
-    //         message:
-    //             'Password must be at least 8 characters long and contain at least one letter and one number',
-    //     },
-    // )
-    password: string;
+  /**
+   * Password with strong complexity requirements
+   *
+   * Requirements:
+   * - Minimum 8 characters
+   * - Maximum 128 characters
+   * - At least one uppercase letter
+   * - At least one lowercase letter
+   * - At least one number
+   * - At least one special character
+   *
+   * OWASP Best Practice: Enforce strong password complexity
+   */
+  @ApiProperty({
+    example: "StrongP@ss123!",
+    description:
+      "Password must contain uppercase, lowercase, number, and special character",
+    minLength: 8,
+    maxLength: 128,
+  })
+  @IsString()
+  @MinLength(8, { message: "Password must be at least 8 characters long" })
+  @MaxLength(128, { message: "Password must not exceed 128 characters" })
+  // @Matches(
+  //     /^(?=.*[A-Za-z])(?=.*\d).{8,}$/,
+  //     {
+  //         message:
+  //             'Password must be at least 8 characters long and contain at least one letter and one number',
+  //     },
+  // )
+  password: string;
 
-    /**
-     * User role - must be either 'parent' or 'nanny'
-     */
-    @ApiProperty({
-        enum: UserRole,
-        example: UserRole.PARENT,
-        description: 'The role of the user (parent or nanny)',
-    })
-    @IsEnum(UserRole, { message: 'Role must be either parent or nanny' })
-    role: UserRole;
+  /**
+   * User role - must be either 'parent' or 'nanny'
+   */
+  @ApiProperty({
+    enum: UserRole,
+    example: UserRole.PARENT,
+    description: "The role of the user (parent or nanny)",
+  })
+  @IsEnum(UserRole, { message: "Role must be either parent or nanny" })
+  role: UserRole;
 
-    /**
-     * First name - sanitized to prevent XSS attacks
-     */
-    @ApiProperty({
-        example: 'John',
-        description: 'First name of the user',
-    })
-    @IsString()
-    @MinLength(1, { message: 'First name is required' })
-    @MaxLength(100, { message: 'First name must not exceed 100 characters' })
-    @Sanitize()
-    firstName: string;
+  /**
+   * First name - sanitized to prevent XSS attacks
+   */
+  @ApiProperty({
+    example: "John",
+    description: "First name of the user",
+  })
+  @IsString()
+  @MinLength(1, { message: "First name is required" })
+  @MaxLength(100, { message: "First name must not exceed 100 characters" })
+  @Sanitize()
+  firstName: string;
 
-    /**
-     * Last name - sanitized to prevent XSS attacks
-     */
-    @ApiProperty({
-        example: 'Doe',
-        description: 'Last name of the user',
-    })
-    @IsString()
-    @MinLength(1, { message: 'Last name is required' })
-    @MaxLength(100, { message: 'Last name must not exceed 100 characters' })
-    @Sanitize()
-    lastName: string;
+  /**
+   * Last name - sanitized to prevent XSS attacks
+   */
+  @ApiProperty({
+    example: "Doe",
+    description: "Last name of the user",
+  })
+  @IsString()
+  @MinLength(1, { message: "Last name is required" })
+  @MaxLength(100, { message: "Last name must not exceed 100 characters" })
+  @Sanitize()
+  lastName: string;
 
-    /**
-     * Phone number (optional) - E.164 format validation
-     * Format: +[country code][number] (e.g., +919876543210)
-     */
-    @ApiPropertyOptional({
-        example: '+919876543210',
-        description: 'International phone number starting with +',
-    })
-    @IsOptional()
-    @IsString()
-    @Matches(/^\+?[1-9]\d{1,14}$/, {
-        message: 'Phone number must be in valid international format (e.g., +919876543210)',
-    })
-    phone?: string;
+  /**
+   * Phone number (optional) - E.164 format validation
+   * Format: +[country code][number] (e.g., +919876543210)
+   */
+  @ApiPropertyOptional({
+    example: "+919876543210",
+    description: "International phone number starting with +",
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\+?[1-9]\d{1,14}$/, {
+    message:
+      "Phone number must be in valid international format (e.g., +919876543210)",
+  })
+  phone?: string;
 
-    /**
-     * Categories for nannies - At least one category is required if role is Nanny
-     */
-    @ApiPropertyOptional({
-        type: [String],
-        example: ['standard', 'premium'],
-        description: 'Service categories (required for nannies)',
-    })
-    @IsOptional()
-    categories?: string[];
+  /**
+   * Categories for nannies - At least one category is required if role is Nanny
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    example: ["standard", "premium"],
+    description: "Service categories (required for nannies)",
+  })
+  @IsOptional()
+  categories?: string[];
 
-    @ApiPropertyOptional({
-        example: 'StrongP@ss123!',
-        description: 'Confirmation of the password',
-    })
-    @IsOptional()
-    @IsString()
-    @Match('password', { message: 'Passwords do not match' })
-    confirmPassword?: string;
+  @ApiPropertyOptional({
+    example: "StrongP@ss123!",
+    description: "Confirmation of the password",
+  })
+  @IsOptional()
+  @IsString()
+  @Match("password", { message: "Passwords do not match" })
+  confirmPassword?: string;
 
-    @ApiPropertyOptional({
-        example: true,
-        description: 'Whether the user agrees to the terms and conditions',
-    })
-    @IsOptional()
-    @IsBoolean()
-    agreeToTerms?: boolean;
+  @ApiPropertyOptional({
+    example: true,
+    description: "Whether the user agrees to the terms and conditions",
+  })
+  @IsOptional()
+  @IsBoolean()
+  agreeToTerms?: boolean;
 }

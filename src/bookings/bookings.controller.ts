@@ -9,44 +9,55 @@ import {
   Request,
   ForbiddenException,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiBody,
+} from "@nestjs/swagger";
 import { BookingsService } from "./bookings.service";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
-@ApiTags('Bookings')
+@ApiTags("Bookings")
 @ApiBearerAuth()
 @Controller("bookings")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
 export class BookingsController {
-  constructor(private readonly bookingsService: BookingsService) { }
+  constructor(private readonly bookingsService: BookingsService) {}
 
   @Get("active")
-  @ApiOperation({ summary: 'Get all active bookings for the current user' })
-  @ApiResponse({ status: 200, description: 'Return list of active bookings' })
+  @ApiOperation({ summary: "Get all active bookings for the current user" })
+  @ApiResponse({ status: 200, description: "Return list of active bookings" })
   async getActiveBookings(@Request() req) {
     const role = req.user.role === "nanny" ? "nanny" : "parent";
     return this.bookingsService.getActiveBookings(req.user.id, role);
   }
 
   @Get("parent/me")
-  @ApiOperation({ summary: 'Get all bookings for the current parent' })
-  @ApiResponse({ status: 200, description: 'Return list of parent bookings' })
+  @ApiOperation({ summary: "Get all bookings for the current parent" })
+  @ApiResponse({ status: 200, description: "Return list of parent bookings" })
   async getMyParentBookings(@Request() req) {
     return this.bookingsService.getBookingsByParent(req.user.id);
   }
 
   @Get("nanny/me")
-  @ApiOperation({ summary: 'Get all bookings for the current nanny' })
-  @ApiResponse({ status: 200, description: 'Return list of nanny bookings' })
+  @ApiOperation({ summary: "Get all bookings for the current nanny" })
+  @ApiResponse({ status: 200, description: "Return list of nanny bookings" })
   async getMyNannyBookings(@Request() req) {
     return this.bookingsService.getBookingsByNanny(req.user.id);
   }
 
   @Get(":id")
-  @ApiOperation({ summary: 'Get detailed information about a specific booking' })
-  @ApiResponse({ status: 200, description: 'Return booking details' })
-  @ApiResponse({ status: 403, description: 'Forbidden - not apart of this booking' })
+  @ApiOperation({
+    summary: "Get detailed information about a specific booking",
+  })
+  @ApiResponse({ status: 200, description: "Return booking details" })
+  @ApiResponse({
+    status: 403,
+    description: "Forbidden - not apart of this booking",
+  })
   async getBooking(@Param("id") id: string, @Request() req) {
     const booking = await this.bookingsService.getBookingById(id);
     if (
@@ -62,9 +73,12 @@ export class BookingsController {
   }
 
   @Put(":id/start")
-  @ApiOperation({ summary: 'Start a booking (Nanny only)' })
-  @ApiResponse({ status: 200, description: 'Booking started successfully' })
-  @ApiResponse({ status: 403, description: 'Forbidden - only the assigned nanny can start' })
+  @ApiOperation({ summary: "Start a booking (Nanny only)" })
+  @ApiResponse({ status: 200, description: "Booking started successfully" })
+  @ApiResponse({
+    status: 403,
+    description: "Forbidden - only the assigned nanny can start",
+  })
   async startBooking(@Param("id") id: string, @Request() req) {
     const booking = await this.bookingsService.getBookingById(id);
     if (booking.nanny_id !== req.user.id) {
@@ -76,8 +90,8 @@ export class BookingsController {
   }
 
   @Put(":id/complete")
-  @ApiOperation({ summary: 'Mark a booking as completed' })
-  @ApiResponse({ status: 200, description: 'Booking completed successfully' })
+  @ApiOperation({ summary: "Mark a booking as completed" })
+  @ApiResponse({ status: 200, description: "Booking completed successfully" })
   async completeBooking(@Param("id") id: string, @Request() req) {
     const booking = await this.bookingsService.getBookingById(id);
     if (booking.nanny_id !== req.user.id && booking.parent_id !== req.user.id) {
@@ -87,9 +101,9 @@ export class BookingsController {
   }
 
   @Put(":id/cancel")
-  @ApiOperation({ summary: 'Cancel a booking' })
-  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
-  @ApiResponse({ status: 200, description: 'Booking cancelled successfully' })
+  @ApiOperation({ summary: "Cancel a booking" })
+  @ApiBody({ schema: { properties: { reason: { type: "string" } } } })
+  @ApiResponse({ status: 200, description: "Booking cancelled successfully" })
   async cancelBooking(
     @Param("id") id: string,
     @Body("reason") reason: string,
@@ -103,8 +117,8 @@ export class BookingsController {
   }
 
   @Put(":id/reschedule")
-  @ApiOperation({ summary: 'Reschedule a booking' })
-  @ApiResponse({ status: 200, description: 'Booking rescheduled successfully' })
+  @ApiOperation({ summary: "Reschedule a booking" })
+  @ApiResponse({ status: 200, description: "Booking rescheduled successfully" })
   async rescheduleBooking(
     @Param("id") id: string,
     @Body()
@@ -125,8 +139,11 @@ export class BookingsController {
   }
 
   @Post("check-expired")
-  @ApiOperation({ summary: 'Manually trigger a check for expired bookings' })
-  @ApiResponse({ status: 200, description: 'Expired bookings checked and processed' })
+  @ApiOperation({ summary: "Manually trigger a check for expired bookings" })
+  @ApiResponse({
+    status: 200,
+    description: "Expired bookings checked and processed",
+  })
   async checkExpired() {
     const result = await this.bookingsService.checkExpiredBookings();
     return {
@@ -136,14 +153,21 @@ export class BookingsController {
   }
 
   @Post(":id/no-show")
-  @ApiOperation({ summary: 'Report a No-Show for a confirmed booking' })
-  @ApiBody({ schema: { properties: { reason: { type: 'string' } } } })
-  @ApiResponse({ status: 200, description: 'No-Show reported and booking cancelled' })
+  @ApiOperation({ summary: "Report a No-Show for a confirmed booking" })
+  @ApiBody({ schema: { properties: { reason: { type: "string" } } } })
+  @ApiResponse({
+    status: 200,
+    description: "No-Show reported and booking cancelled",
+  })
   async reportNoShow(
     @Param("id") id: string,
     @Body("reason") reason: string,
     @Request() req,
   ) {
-    return this.bookingsService.reportNoShow(id, req.user.id, reason || "No reason provided");
+    return this.bookingsService.reportNoShow(
+      id,
+      req.user.id,
+      reason || "No reason provided",
+    );
   }
 }
