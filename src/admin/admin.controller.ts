@@ -118,6 +118,16 @@ export class AdminController {
     return this.adminService.getPaymentStats();
   }
 
+  @Get("payment-plans")
+  async getAllPaymentPlans() {
+    return this.adminService.getAllPaymentPlans();
+  }
+
+  @Get("payment-plans/stats")
+  async getPaymentPlanStats() {
+    return this.adminService.getPaymentPlanStats();
+  }
+
   // Review Moderation
   @Get("reviews")
   async getAllReviews() {

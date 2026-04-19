@@ -61,6 +61,11 @@ export class PaymentsService {
     });
 
     if (!booking) throw new NotFoundException("Booking not found");
+    if (!booking.nanny_id) {
+      throw new BadRequestException(
+        "Payment is only allowed after a nanny has been assigned.",
+      );
+    }
 
     // Security: ensure the user requesting payment is the booking's parent
     if (requestingUserId && booking.parent_id !== requestingUserId) {
@@ -180,7 +185,10 @@ export class PaymentsService {
         amount: amountInPaise,
         currency: "INR",
         receipt: `receipt_${bookingId.substring(0, 10)}`,
-        notes: { booking_id: bookingId },
+        notes: {
+          booking_id: bookingId,
+          nanny_id: booking.nanny_id,
+        },
       };
 
       const order = await this.razorpay.orders.create(options);
@@ -189,6 +197,7 @@ export class PaymentsService {
       const createdPayment = await this.prisma.payments.create({
         data: {
           booking_id: bookingId,
+          nanny_id: booking.nanny_id,
           amount: amountInRupees,
           currency: "INR",
           provider: "razorpay",

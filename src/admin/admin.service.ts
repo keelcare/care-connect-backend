@@ -714,6 +714,52 @@ export class AdminService {
     };
   }
 
+  async getAllPaymentPlans() {
+    return this.prisma.subscription_plans.findMany({
+      orderBy: { created_at: "desc" },
+      include: {
+        users: {
+          select: {
+            email: true,
+            profiles: {
+              select: {
+                first_name: true,
+                last_name: true,
+              },
+            },
+          },
+        },
+        service_requests: {
+          select: {
+            category: true,
+          },
+        },
+        payment_installments: {
+          orderBy: { installment_no: "asc" },
+        },
+      },
+    });
+  }
+
+  async getPaymentPlanStats() {
+    const [totalPlans, activePlans, completedPlans, installmentsAmount] = await Promise.all([
+      this.prisma.subscription_plans.count(),
+      this.prisma.subscription_plans.count({ where: { status: "active" } }),
+      this.prisma.subscription_plans.count({ where: { status: "completed" } }),
+      this.prisma.payment_installments.aggregate({
+        _sum: { amount_due: true },
+        where: { status: "paid" },
+      }),
+    ]);
+
+    return {
+      totalPlans,
+      activePlans,
+      completedPlans,
+      totalCollected: installmentsAmount._sum.amount_due || 0,
+    };
+  }
+
   // Review Moderation
   async getAllReviews() {
     return this.prisma.reviews.findMany({
