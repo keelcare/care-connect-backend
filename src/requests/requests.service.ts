@@ -844,6 +844,7 @@ export class RequestsService {
         },
         orderBy: { created_at: "desc" },
         include: {
+          nanny: { include: { profiles: true } },
           assignments: {
             where: { status: "pending" },
             include: {

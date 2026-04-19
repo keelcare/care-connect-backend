@@ -281,7 +281,8 @@ export class BookingsService {
     );
 
     return bookings.map((booking) => {
-      const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
+      const nanny = booking.users_bookings_nanny_idTousers;
+      const nannyProfile = nanny?.profiles;
       const rate =
         serviceMap[booking.service_requests?.category as string] || 500;
       const hours =
@@ -314,7 +315,11 @@ export class BookingsService {
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
           : "Pending Assignment",
-        nanny_profile: nannyProfile,
+        // Flatten the relationship for the frontend
+        nanny: nanny ? {
+          ...nanny,
+          profiles: nannyProfile,
+        } : null,
       };
     });
   }
