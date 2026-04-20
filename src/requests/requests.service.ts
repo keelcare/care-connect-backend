@@ -844,7 +844,6 @@ export class RequestsService {
         },
         orderBy: { created_at: "desc" },
         include: {
-          nanny: { include: { profiles: true } },
           assignments: {
             where: { status: "pending" },
             include: {
@@ -870,10 +869,14 @@ export class RequestsService {
         req["plan_type"] || "ONE_TIME",
       );
 
+      // Extract nanny from the first pending assignment for the frontend
+      const nanny = req.assignments?.[0]?.users;
+
       return {
         ...req,
         hourly_rate: rate,
         total_amount: totalAmount,
+        nanny,
       };
     });
   }
