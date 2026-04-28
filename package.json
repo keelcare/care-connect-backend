@@ -6,7 +6,9 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "npx prisma generate && npx prisma migrate deploy && nest build",
+    "build": "npx prisma generate && nest build",
+    "build:dev": "dotenv -e .env.local -- npm run build",
+    "build:prod": "dotenv -e .env.prod -- npm run build && npm run db:migrate:prod",
     "db:migrate:dev": "dotenv -e .env.local -- npx prisma migrate dev",
     "db:migrate:prod": "dotenv -e .env.prod -- npx prisma migrate deploy",
     "db:push:dev": "dotenv -e .env.local -- npx prisma db push",
