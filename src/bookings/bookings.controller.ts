@@ -74,19 +74,28 @@ export class BookingsController {
 
   @Put(":id/start")
   @ApiOperation({ summary: "Start a booking (Nanny only)" })
+  @ApiBody({ schema: { properties: { latitude: { type: "number" }, longitude: { type: "number" } } }, required: false })
   @ApiResponse({ status: 200, description: "Booking started successfully" })
   @ApiResponse({
     status: 403,
     description: "Forbidden - only the assigned nanny can start",
   })
-  async startBooking(@Param("id") id: string, @Request() req) {
+  @ApiResponse({
+    status: 400,
+    description: "Bad Request - Out of geofence range",
+  })
+  async startBooking(
+    @Param("id") id: string, 
+    @Request() req,
+    @Body() body?: { latitude?: number; longitude?: number },
+  ) {
     const booking = await this.bookingsService.getBookingById(id);
     if (booking.nanny_id !== req.user.id) {
       throw new ForbiddenException(
         "Only the assigned nanny can start the booking",
       );
     }
-    return this.bookingsService.startBooking(id);
+    return this.bookingsService.startBooking(id, body?.latitude, body?.longitude);
   }
 
   @Put(":id/complete")

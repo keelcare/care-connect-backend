@@ -16,6 +16,7 @@ import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
+import { GeoUtils } from "../common/utils/geo.utils";
 
 @Injectable()
 export class BookingsService {
@@ -379,11 +380,34 @@ export class BookingsService {
     });
   }
 
-  async startBooking(id: string) {
+  async startBooking(id: string, nannyLat?: number, nannyLng?: number) {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
     if (booking.status !== "CONFIRMED") {
       throw new BadRequestException("Booking must be CONFIRMED to start");
+    }
+
+    // Geofence Validation
+    if (
+      booking.care_location_lat != null && 
+      booking.care_location_lng != null
+    ) {
+      if (nannyLat == null || nannyLng == null) {
+        throw new BadRequestException("Location coordinates are required to start this booking.");
+      }
+      
+      const distance = GeoUtils.getDistanceInMeters(
+        nannyLat,
+        nannyLng,
+        Number(booking.care_location_lat),
+        Number(booking.care_location_lng)
+      );
+
+      const geofenceRadius = booking.geofence_radius || 100;
+
+      if (distance > geofenceRadius) {
+        throw new BadRequestException(`You must be within ${geofenceRadius} meters of the job location to start. You are currently ${Math.round(distance)} meters away.`);
+      }
     }
 
     const updatedBooking = await this.prisma.bookings.update({
