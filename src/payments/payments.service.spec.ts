@@ -22,6 +22,13 @@ describe("PaymentsService", () => {
     payment_audit_log: {
       create: jest.fn(),
     },
+    payment_installments: {
+      updateMany: jest.fn(),
+    },
+    subscription_plans: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
     $transaction: jest
       .fn()
       .mockImplementation((cb: (tx: any) => any) => cb(mockPrisma)),

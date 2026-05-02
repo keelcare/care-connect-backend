@@ -6,6 +6,8 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { RequestsService } from "../requests/requests.service";
 import { SseService } from "../sse/sse.service";
 import { NotFoundException, BadRequestException } from "@nestjs/common";
+import { MailService } from "../mail/mail.service";
+import { PaymentsService } from "../payments/payments.service";
 
 describe("BookingsService", () => {
   let service: BookingsService;
@@ -27,6 +29,9 @@ describe("BookingsService", () => {
     },
     users: {
       findUnique: jest.fn(),
+    },
+    services: {
+      findUnique: jest.fn().mockResolvedValue({ hourly_rate: 500 }),
     },
   };
 
@@ -57,6 +62,8 @@ describe("BookingsService", () => {
         { provide: ChatService, useValue: mockChatService },
         { provide: RequestsService, useValue: mockRequestsService },
         { provide: SseService, useValue: mockSseService },
+        { provide: MailService, useValue: {} },
+        { provide: PaymentsService, useValue: {} },
       ],
     }).compile();
 

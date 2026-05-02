@@ -5,6 +5,7 @@ import { RequestsService } from "../requests/requests.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ChatService } from "../chat/chat.service";
 import { SseService } from "../sse/sse.service";
+import { MailService } from "../mail/mail.service";
 
 describe("AssignmentsService", () => {
   let service: AssignmentsService;
@@ -68,6 +69,7 @@ describe("AssignmentsService", () => {
             emitToUsers: jest.fn(),
           },
         },
+        { provide: MailService, useValue: {} },
       ],
     }).compile();
 

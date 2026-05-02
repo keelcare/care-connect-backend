@@ -6,6 +6,9 @@ import { FavoritesService } from "../favorites/favorites.service";
 import { ChatService } from "../chat/chat.service";
 import { RequestsService } from "../requests/requests.service";
 import { SseService } from "../sse/sse.service";
+import { DisputesService } from "../disputes/disputes.service";
+import { MailService } from "../mail/mail.service";
+import { AvailabilityService } from "../availability/availability.service";
 
 describe("AdminService", () => {
   let service: AdminService;
@@ -66,6 +69,9 @@ describe("AdminService", () => {
             emitToUsers: jest.fn(),
           },
         },
+        { provide: DisputesService, useValue: {} },
+        { provide: MailService, useValue: {} },
+        { provide: AvailabilityService, useValue: {} },
       ],
     }).compile();
 

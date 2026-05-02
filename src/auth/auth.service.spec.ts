@@ -5,6 +5,7 @@ import { JwtService } from "@nestjs/jwt";
 
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
+import { MailService } from "../mail/mail.service";
 
 describe("AuthService", () => {
   let service: AuthService;
@@ -48,6 +49,7 @@ describe("AuthService", () => {
             },
           },
         },
+        { provide: MailService, useValue: {} },
       ],
     }).compile();
 

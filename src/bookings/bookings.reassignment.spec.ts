@@ -6,6 +6,8 @@ import { ChatService } from "../chat/chat.service";
 import { RequestsService } from "../requests/requests.service";
 import { SseService } from "../sse/sse.service";
 import { BadRequestException } from "@nestjs/common";
+import { MailService } from "../mail/mail.service";
+import { PaymentsService } from "../payments/payments.service";
 
 describe("BookingsService - Reassignment Logic", () => {
   let service: BookingsService;
@@ -58,6 +60,8 @@ describe("BookingsService - Reassignment Logic", () => {
         { provide: ChatService, useValue: mockChatService },
         { provide: RequestsService, useValue: mockRequestsService },
         { provide: SseService, useValue: mockSseService },
+        { provide: MailService, useValue: {} },
+        { provide: PaymentsService, useValue: {} },
       ],
     }).compile();
 
