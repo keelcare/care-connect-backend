@@ -864,9 +864,9 @@ export class RequestsService {
       const { totalAmount } = PricingUtils.calculateTotal(
         rate,
         Number(req.duration_hours || 0),
-        0, // discount_percentage
-        1, // plan_duration_months
-        "ONE_TIME", // plan_type
+        Number(req["discount_percentage"] || 0),
+        Number(req["plan_duration_months"] || 1),
+        req["plan_type"] || "ONE_TIME",
       );
 
       // Extract nanny from the first pending assignment for the frontend
