@@ -72,12 +72,17 @@ export class DisputesService {
   }
 
   async resolve(id: string, adminId: string, dto: ResolveDisputeDto) {
-    const dispute = await this.prisma.disputes.findUnique({ where: { id } });
-    if (!dispute) throw new NotFoundException("Dispute not found");
-    if (dispute.status !== "open")
-      throw new BadRequestException("Dispute is already resolved");
+    const dispute = await this.prisma.disputes.findUnique({
+      where: { id },
+      include: { bookings: { include: { payments: true } } },
+    });
 
-    return this.prisma.disputes.update({
+    if (!dispute) throw new NotFoundException("Dispute not found");
+    if (dispute.status !== "open") {
+      throw new BadRequestException("Dispute is already resolved");
+    }
+
+    const updated = await this.prisma.disputes.update({
       where: { id },
       data: {
         status: "resolved",
@@ -86,5 +91,35 @@ export class DisputesService {
         updated_at: new Date(),
       },
     });
+
+    // Financial outcome based on resolution keyword
+    const payment = dispute.bookings?.payments?.[0];
+    if (payment && payment.status === "captured") {
+      const resolutionLower = dto.resolution.toLowerCase();
+      if (
+        resolutionLower.includes("refund") ||
+        resolutionLower.includes("parent")
+      ) {
+        // Mark for refund
+        await this.prisma.payments.update({
+          where: { id: payment.id },
+          data: {
+            status: "refund_pending",
+            error_description: `Dispute ${id} resolved: ${dto.resolution}`,
+          },
+        });
+      } else if (
+        resolutionLower.includes("release") ||
+        resolutionLower.includes("nanny")
+      ) {
+        // Mark for release to nanny
+        await this.prisma.payments.update({
+          where: { id: payment.id },
+          data: { status: "pending_release" },
+        });
+      }
+    }
+
+    return updated;
   }
 }

@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Inject,
   forwardRef,
+  Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { PricingUtils } from "../common/utils/pricing.utils";
@@ -20,6 +21,7 @@ import { GeoUtils } from "../common/utils/geo.utils";
 
 @Injectable()
 export class BookingsService {
+  private readonly logger = new Logger(BookingsService.name);
   constructor(
     private prisma: PrismaService,
     private chatService: ChatService,
@@ -419,19 +421,21 @@ export class BookingsService {
     });
 
     // Notify Parent
-    await this.notificationsService.createNotification(
-      booking.parent_id,
-      "Booking Started",
-      `The nanny has started the booking.`,
-      "info",
-    );
+    if (booking.parent_id) {
+      await this.notificationsService.createNotification(
+        booking.parent_id,
+        "Booking Started",
+        `The nanny has started the booking.`,
+        "info",
+      );
 
-    // Emit SSE
-    this.sseService.emitToUser(booking.parent_id, {
-      type: SSE_EVENTS.BOOKING_STARTED,
-      data: updatedBooking,
-      timestamp: new Date().toISOString(),
-    });
+      // Emit SSE
+      this.sseService.emitToUser(booking.parent_id, {
+        type: SSE_EVENTS.BOOKING_STARTED,
+        data: updatedBooking,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return updatedBooking;
   }
@@ -448,13 +452,25 @@ export class BookingsService {
       },
     });
 
-    // Notify relevant parties
-    await this.notificationsService.createNotification(
-      booking.parent_id,
-      "Booking Status Updated",
-      `Your booking was marked as: ${updatedBooking.status}`,
-      "info",
-    );
+    // Notify Parent
+    if (booking.parent_id) {
+      await this.notificationsService.createNotification(
+        booking.parent_id,
+        "Booking Status Updated",
+        `Your booking was marked as: ${updatedBooking.status}`,
+        "info",
+      );
+    }
+
+    // Notify Nanny
+    if (booking.nanny_id) {
+      await this.notificationsService.createNotification(
+        booking.nanny_id,
+        "Booking Status Updated",
+        `The booking with session ID ${id.split("-")[0]} was marked as: ${updatedBooking.status}`,
+        "info",
+      );
+    }
 
     return updatedBooking;
   }
@@ -900,14 +916,25 @@ export class BookingsService {
       },
     });
     for (const booking of stuckBookings) {
-      await this.prisma.bookings.update({
-        where: { id: booking.id },
-        data: {
-          status: "COMPLETED",
-          actual_end_time: now,
-          tags: ["auto-completed"],
-        },
-      });
+      try {
+        // Tag as auto-completed first, then run the pipeline
+        await this.prisma.bookings.update({
+          where: { id: booking.id },
+          data: {
+            tags: { push: "auto-completed" },
+            actual_end_time: now,
+          },
+        });
+        // completeBooking handles payments, notifications, and SSE
+        await this.completeBooking(booking.id);
+      } catch (err) {
+        this.logger.error(`Failed to auto-complete booking ${booking.id}: ${err.message}`);
+        // Fallback: at minimum mark it completed in DB
+        await this.prisma.bookings.update({
+          where: { id: booking.id },
+          data: { status: "COMPLETED", actual_end_time: now },
+        });
+      }
     }
 
     return {

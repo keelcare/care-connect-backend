@@ -17,6 +17,7 @@ import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 export class PaymentsService {
   private razorpay: Razorpay;
   private readonly logger = new Logger(PaymentsService.name);
+  private readonly processingOrders = new Set<string>();
 
   constructor(
     private prisma: PrismaService,
@@ -338,12 +339,22 @@ export class PaymentsService {
     const paymentId = paymentEntity.id;
 
     if (event === "payment.captured" || event === "order.paid") {
-      await this.capturePaymentSuccess(
-        orderId,
-        paymentId,
-        "webhook_verified",
-        `webhook:${event}`,
-      );
+      if (this.processingOrders.has(orderId)) {
+        this.logger.warn(`Webhook ${event} for order ${orderId} already in-flight, skipping`);
+        return { status: 'duplicate_in_flight' };
+      }
+      this.processingOrders.add(orderId);
+      try {
+        const result = await this.capturePaymentSuccess(
+          orderId,
+          paymentId,
+          "webhook_verified",
+          `webhook:${event}`,
+        );
+        return { status: result?.alreadyCaptured ? 'duplicate_skipped' : 'processed' };
+      } finally {
+        this.processingOrders.delete(orderId);
+      }
     } else if (event === "payment.failed") {
       const existingPayment = await this.prisma.payments.findUnique({
         where: { order_id: orderId },
@@ -464,9 +475,9 @@ export class PaymentsService {
     paymentId: string,
     signature: string,
     triggeredBy: string,
-  ) {
+  ): Promise<{ alreadyCaptured: boolean }> {
     // START TRANSACTION to prevent double-confirming
-    await this.prisma.$transaction(async (tx) => {
+    return await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payments.findUnique({
         where: { order_id: orderId },
       });
@@ -482,7 +493,7 @@ export class PaymentsService {
           `${triggeredBy}:duplicate`,
           paymentId,
         );
-        return;
+        return { alreadyCaptured: true };
       }
 
       // Update Payment
@@ -568,6 +579,7 @@ export class PaymentsService {
           "success",
         );
       }
+      return { alreadyCaptured: false };
     });
   }
 

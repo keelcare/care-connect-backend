@@ -182,11 +182,11 @@ export class RequestsService {
             await tx.payment_installments.createMany({ data: installments });
           }
 
+          // 3. Trigger auto-matching (Inside transaction)
+          await this.triggerMatching(request.id, tx);
+
           return { request, booking, totalAmount, hourlyRate };
         });
-
-      // 3. Trigger auto-matching (Outside transaction)
-      await this.triggerMatching(request.id);
 
       // 4. Notify Parent about matching in progress
       await this.notificationsService.createNotification(
@@ -323,8 +323,9 @@ export class RequestsService {
     return result;
   }
 
-  async triggerMatching(requestId: string) {
-    const request = await this.prisma.service_requests.findUnique({
+  async triggerMatching(requestId: string, tx?: Prisma.TransactionClient) {
+    const prisma = tx || this.prisma;
+    const request = await prisma.service_requests.findUnique({
       where: { id: requestId },
       include: {
         assignments: true,
@@ -362,7 +363,7 @@ export class RequestsService {
     );
 
     // Find Nannies with overlapping CONFIRMED bookings of any status that blocks availability
-    const busyNannies = await this.prisma.bookings.findMany({
+    const busyNannies = await prisma.bookings.findMany({
       where: {
         nanny_id: { not: null },
         status: "CONFIRMED",
@@ -392,7 +393,7 @@ export class RequestsService {
 
     // 2b. Find Nannies with overlapping availability blocks
     // This is a new Phase 4 feature
-    const nanniesWithBlocks = await this.prisma.availability_blocks.findMany({
+    const nanniesWithBlocks = await prisma.availability_blocks.findMany({
       where: {
         nanny_id: { notIn: busyNannyIds.length > 0 ? busyNannyIds : ["none"] }, // No need to re-check if already busy
       },
@@ -426,7 +427,7 @@ export class RequestsService {
     const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
     const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
 
-    const nannies = (await this.prisma.$queryRaw(Prisma.sql`
+    const nannies = (await prisma.$queryRaw(Prisma.sql`
       SELECT 
         u.id, 
         u.email,
@@ -524,73 +525,71 @@ export class RequestsService {
         );
 
         try {
-          const assignment = await this.prisma.$transaction(
-            async (tx) => {
-              // 1. RE-VERIFY AVAILABILITY WITHIN TRANSACTION (Lock-and-Verify)
-              // This is critical to prevent race conditions at scale.
-              const overlap = await tx.bookings.findFirst({
-                where: {
-                  nanny_id: bestMatch.id,
-                  status: "CONFIRMED",
-                  OR: [
-                    {
-                      AND: [
-                        { start_time: { lt: requestEndTime } },
-                        { end_time: { gt: requestStartTime } },
-                      ],
-                    },
-                  ],
-                },
+          const runAssignment = async (transaction: any) => {
+            // 1. RE-VERIFY AVAILABILITY WITHIN TRANSACTION (Lock-and-Verify)
+            const overlap = await transaction.bookings.findFirst({
+              where: {
+                nanny_id: bestMatch.id,
+                status: "CONFIRMED",
+                OR: [
+                  {
+                    AND: [
+                      { start_time: { lt: requestEndTime } },
+                      { end_time: { gt: requestStartTime } },
+                    ],
+                  },
+                ],
+              },
+            });
+
+            if (overlap) {
+              console.log(
+                `Race condition detected: Nanny ${bestMatch.id} is already booked for an overlapping slot.`,
+              );
+              throw new Error("NANNY_BUSY");
+            }
+
+            // 2. Create assignment (Directly as accepted)
+            const assignment = await transaction.assignments.create({
+              data: {
+                request_id: requestId,
+                nanny_id: bestMatch.id,
+                response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+                status: "accepted",
+                responded_at: new Date(),
+                rank_position: (request.assignments?.length || 0) + 1,
+              },
+            });
+
+            // 3. Update request status to accepted
+            await transaction.service_requests.update({
+              where: { id: requestId },
+              data: {
+                status: "accepted",
+                current_assignment_id: assignment.id,
+              },
+            });
+
+            // 4. Update associated booking to CONFIRMED
+            const updatedBooking = await transaction.bookings.update({
+              where: { request_id: requestId, status: { not: "CANCELLED" } },
+              data: {
+                nanny_id: bestMatch.id,
+                status: "CONFIRMED",
+              },
+            });
+
+            // 5. Create recurring records if applicable
+            await this.createRecurringRecord(transaction, requestId, bestMatch.id);
+
+            return { assignment, booking: updatedBooking };
+          };
+
+          const { assignment, booking } = tx
+            ? await runAssignment(tx)
+            : await this.prisma.$transaction((t) => runAssignment(t), {
+                isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
               });
-
-              if (overlap) {
-                console.log(
-                  `Race condition detected: Nanny ${bestMatch.id} is already booked for an overlapping slot.`,
-                );
-                throw new Error("NANNY_BUSY"); // Throw to rollback and try next match
-              }
-
-              // 2. Create assignment (Directly as accepted)
-              const assignment = await tx.assignments.create({
-                data: {
-                  request_id: requestId,
-                  nanny_id: bestMatch.id,
-                  response_deadline: new Date(Date.now() + 15 * 60 * 1000),
-                  status: "accepted",
-                  responded_at: new Date(),
-                  rank_position: request.assignments.length + 1,
-                },
-              });
-
-              // 3. Update request status to accepted
-              await tx.service_requests.update({
-                where: { id: requestId },
-                data: {
-                  status: "accepted",
-                  current_assignment_id: assignment.id,
-                },
-              });
-
-              // 4. Update associated booking to CONFIRMED
-              const updatedBooking = await tx.bookings.update({
-                where: { request_id: requestId, status: { not: "CANCELLED" } },
-                data: {
-                  nanny_id: bestMatch.id,
-                  status: "CONFIRMED",
-                },
-              });
-
-              // 5. If subscription plan, create recurring_bookings entry
-              await this.createRecurringRecord(tx, requestId, bestMatch.id);
-
-              return { assignment, booking: updatedBooking };
-
-              return assignment;
-            },
-            {
-              isolationLevel: "Serializable", // Use highest isolation level to ensure no phantom reads
-            },
-          );
 
           if (assignment) {
             console.log(

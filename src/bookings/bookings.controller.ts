@@ -106,8 +106,8 @@ export class BookingsController {
   @ApiResponse({ status: 200, description: "Booking completed successfully" })
   async completeBooking(@Param("id") id: string, @Request() req) {
     const booking = await this.bookingsService.getBookingById(id);
-    if (booking.nanny_id !== req.user.id && booking.parent_id !== req.user.id) {
-      throw new ForbiddenException("Not authorized to complete this booking");
+    if (booking.nanny_id !== req.user.id) {
+      throw new ForbiddenException("Only the assigned nanny can complete a booking");
     }
     return this.bookingsService.completeBooking(id);
   }
