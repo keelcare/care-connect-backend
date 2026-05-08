@@ -21,11 +21,14 @@ import { AuthGuard } from "@nestjs/passport";
 import { PrismaService } from "../prisma/prisma.service";
 import { WhatsAppMessagingService } from "./whatsapp-messaging.service";
 import { AgentReplyDto, UpdateEnquiryDto } from "./dto/whatsapp.dto";
-import { AdminGuard } from "../admin/admin.guard";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 
 @ApiTags("Admin – WhatsApp Enquiries")
 @ApiBearerAuth()
-@UseGuards(AuthGuard("jwt"), AdminGuard)
+@Roles(UserRole.ADMIN)
+@UseGuards(AuthGuard("jwt"), RolesGuard)
 @Controller("admin/whatsapp/enquiries")
 export class AdminWhatsAppController {
   constructor(

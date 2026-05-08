@@ -7,6 +7,7 @@ import {
   Body,
   UseGuards,
   Query,
+  Req,
 } from "@nestjs/common";
 import { AdminService } from "./admin.service";
 import { AuthGuard } from "@nestjs/passport";
@@ -102,9 +103,9 @@ export class AdminController {
   async resolveDispute(
     @Param("id") id: string,
     @Body("resolution") resolution: string,
-    @Body("resolvedBy") resolvedBy: string,
+    @Req() req: any,
   ) {
-    return this.adminService.resolveDispute(id, resolution, resolvedBy);
+    return this.adminService.resolveDispute(id, resolution, req.user.id);
   }
 
   // Payment Monitoring

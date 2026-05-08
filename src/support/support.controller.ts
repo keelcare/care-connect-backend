@@ -18,7 +18,9 @@ import { SupportService } from "./support.service";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
 import { AuthGuard } from "@nestjs/passport";
-import { AdminGuard } from "../admin/admin.guard";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 import {
   ActiveUserGuard,
   SkipActiveCheck,
@@ -63,7 +65,8 @@ export class SupportController {
 
   // Admin Endpoints
   @Get("admin/tickets")
-  @UseGuards(AdminGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   @ApiOperation({ summary: "Get all support tickets (Admin only)" })
   @ApiResponse({ status: 200, description: "Return all tickets" })
   async getAllTickets() {
@@ -71,7 +74,8 @@ export class SupportController {
   }
 
   @Patch("admin/tickets/:id")
-  @UseGuards(AdminGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   @ApiOperation({ summary: "Update ticket status/priority/notes (Admin only)" })
   @ApiResponse({ status: 200, description: "Ticket updated successfully" })
   async updateTicket(

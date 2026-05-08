@@ -37,15 +37,8 @@ export class AuthController {
   @ApiOperation({ summary: "Register a new user" })
   @ApiResponse({ status: 201, description: "User successfully registered" })
   @ApiResponse({ status: 400, description: "Invalid input" })
-  async signup(@Body() userDto: SignupDto, @Req() req) {
-    const user = await this.authService.register(userDto);
-    const origin = req.headers.origin || req.headers.referer;
-    try {
-      await this.authService.sendVerificationEmail(user.id, origin);
-    } catch (e) {
-      console.error("[Auth] Failed to send initial verification email:", e);
-    }
-    return user;
+  async signup(@Body() userDto: SignupDto) {
+    return this.authService.register(userDto);
   }
 
   private getCookieOptions(res: Response) {
@@ -239,30 +232,40 @@ export class AuthController {
         try {
           const state = JSON.parse(req.query.state as string);
           if (state.origin) {
-            // Frontend explicitly passed full destination URI (e.g. careconnect://auth/callback or http://localhost:3000/auth/callback)
-            if (
-              state.origin.startsWith("careconnect://") ||
-              state.origin.startsWith("keel://")
-            ) {
-              redirectUrl = state.origin;
-            } else if (
-              state.origin.includes("localhost") ||
-              state.origin.includes("192.168.") ||
-              state.origin.includes("10.0.") ||
-              state.origin.includes("172.") ||
-              state.origin.includes("care-connect-dev.vercel.app") ||
-              state.origin.includes("keel-care.vercel.app") ||
-              state.origin.includes("127.0.0.1")
-            ) {
-              let urlToUse = state.origin;
-              if (urlToUse.endsWith("/")) {
-                urlToUse = urlToUse.slice(0, -1);
-              }
+            const ALLOWED_HOSTS = [
+              "localhost",
+              "127.0.0.1",
+              "care-connect-dev.vercel.app",
+              "keel-care.vercel.app",
+              "keelcare.netlify.app",
+            ];
+            const ALLOWED_SCHEMES = [
+              "careconnect:",
+              "keel:",
+              "ionic:",
+              "capacitor:",
+            ];
 
-              if (urlToUse.includes("/auth/callback")) {
-                redirectUrl = urlToUse;
-              } else {
-                redirectUrl = `${urlToUse}/auth/callback`;
+            let parsed: URL;
+            try {
+              parsed = new URL(state.origin);
+            } catch {
+              parsed = null;
+            }
+
+            if (parsed) {
+              const hostAllowed =
+                ALLOWED_HOSTS.some(
+                  (h) => parsed.hostname === h || parsed.hostname.endsWith(`.${h}`),
+                ) || ALLOWED_SCHEMES.includes(parsed.protocol);
+
+              if (hostAllowed) {
+                let base = state.origin.endsWith("/")
+                  ? state.origin.slice(0, -1)
+                  : state.origin;
+                redirectUrl = base.includes("/auth/callback")
+                  ? base
+                  : `${base}/auth/callback`;
               }
             }
           } else if (state.platform === "mobile") {

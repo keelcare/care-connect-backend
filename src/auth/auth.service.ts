@@ -21,7 +21,8 @@ import { MailService } from "../mail/mail.service";
  * - At least one number
  * - At least one special character
  */
-const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/;
+const PASSWORD_REGEX =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
 
 @Injectable()
 export class AuthService {
@@ -164,7 +165,7 @@ export class AuthService {
      */
     if (newPassword.length < 8 || !PASSWORD_REGEX.test(newPassword)) {
       throw new BadRequestException(
-        "Password must be at least 8 characters and contain at least one letter and one number",
+        "Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.",
       );
     }
 
@@ -256,7 +257,7 @@ export class AuthService {
      */
     if (userDto.password.length < 8 || !PASSWORD_REGEX.test(userDto.password)) {
       throw new BadRequestException(
-        "Password must be at least 8 characters and contain at least one letter and one number",
+        "Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.",
       );
     }
 
@@ -377,6 +378,17 @@ export class AuthService {
       if (!user) {
         throw new UnauthorizedException("Invalid session token");
       }
+
+      // Blacklist the session token immediately after use to prevent reuse
+      const expiresAt = new Date(payload.exp * 1000);
+      await this.prisma.revoked_tokens
+        .create({
+          data: { token, expires_at: expiresAt },
+        })
+        .catch((err) => {
+          // If already revoked, that's fine, we just log it
+          console.warn(`[Auth] Token already revoked or DB error: ${err.message}`);
+        });
 
       return this.login(user);
     } catch (error) {

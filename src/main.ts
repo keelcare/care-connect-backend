@@ -1,12 +1,14 @@
-import "./instrument"; // MUST BE AT THE TOP
+import "./instrument"; // MUST BE AT THE TOP — Sentry init before everything
 import "reflect-metadata";
-import { NestFactory, HttpAdapterHost } from "@nestjs/core";
+import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { ValidationPipe } from "@nestjs/common";
+import { ValidationPipe, Logger } from "@nestjs/common";
 import helmet from "helmet";
 import { Logger as PinoLogger } from "nestjs-pino";
 import cookieParser from "cookie-parser";
 import { ThrottleExceptionFilter } from "./common/filters/throttle-exception.filter";
+
+const logger = new Logger('Bootstrap');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -17,21 +19,22 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
-  // DEBUG MIDDLEWARE: Log all requests to check for cookies
-  app.use((req, res, next) => {
-    console.log(
-      "------------------------------------------------------------------",
-    );
-    console.log(`[REQUEST] ${req.method} ${req.url}`);
-    console.log(`[ORIGIN] ${req.headers.origin}`);
-    console.log(`[COOKIES (Header)]`, req.headers.cookie);
-    console.log(`[COOKIES (Parsed)]`, req.cookies);
-    console.log(`[BODY]`, req.body);
-    console.log(
-      "------------------------------------------------------------------",
-    );
-    next();
-  });
+  // Dev-only request logger — safe, redacted, never logs body or cookie values.
+  // In production: Sentry captures full request context on errors (instrument.ts).
+  // HTTP request/response logs (method, url, status, ms) come from nestjs-pino.
+  if (process.env.NODE_ENV !== 'production') {
+    app.use((req: any, res: any, next: () => void) => {
+      const hasCookies = !!req.headers.cookie;
+      const cookieNames = hasCookies
+        ? req.headers.cookie.split(';').map((c: string) => c.trim().split('=')[0])
+        : [];
+      const hasAuth = !!req.headers.authorization;
+      logger.debug(
+        `[REQ] ${req.method} ${req.url} | origin=${req.headers.origin ?? 'none'} | cookies=[${cookieNames.join(', ')}] | auth=${hasAuth}`,
+      );
+      next();
+    });
+  }
 
   // Connect-src for Helmet needs multiple origins
   const allowedOrigins = [
@@ -46,6 +49,7 @@ async function bootstrap() {
     "http://localhost",
     "https://localhost",
     "ionic://localhost",
+    "http://192.168.1.38:3000",
     "http://192.168.0.3:3000",
     // Match any vercel.app or netlify.app subdomains for development
   ].filter(Boolean) as string[];
@@ -105,7 +109,7 @@ async function bootstrap() {
       ) {
         callback(null, true);
       } else {
-        console.warn(`[CORS] Origin ${origin} NOT allowed`);
+        logger.warn(`[CORS] Origin blocked: ${origin}`);
         callback(null, false);
       }
     },
@@ -158,10 +162,8 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT ?? 4000;
-  await app.listen(port, "0.0.0.0");
-  console.log(`🚀 Application is running on: http://0.0.0.0:${port}`);
-  console.log(
-    `📖 Swagger documentation available at: http://0.0.0.0:${port}/api/docs`,
-  );
+  await app.listen(port, '0.0.0.0');
+  logger.log(`🚀 Application is running on port ${port}`);
+  logger.log(`📖 Swagger docs at: http://0.0.0.0:${port}/api/docs`);
 }
 bootstrap();

@@ -83,12 +83,10 @@ export class TimeUtils {
   }
 
   /**
-   * Returns current time in IST Date object.
+   * Returns current time as a Date object.
+   * All database fields use Timestamptz, so absolute Date comparisons are timezone-safe.
    */
   static nowIST(): Date {
-    const now = new Date();
-    // In a real environment, we'd ensure the system clock or library handles the conversion.
-    // For now, we return the standard Date object which NestJS/Prisma uses.
-    return now;
+    return new Date();
   }
 }

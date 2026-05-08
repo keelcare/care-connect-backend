@@ -14,7 +14,9 @@ import {
 import { Request, Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
 import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
-import { AdminGuard } from "../admin/admin.guard";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 import { PaymentsService } from "./payments.service";
 import { CreateOrderDto, VerifyPaymentDto } from "./dto/create-payment.dto";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
@@ -111,7 +113,8 @@ export class PaymentsController {
   }
 
   @Get("audit")
-  @UseGuards(AuthGuard("jwt"), AdminGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
   @ApiOperation({
     summary:
       "Get paginated payment audit logs with filters for admin dashboard",
@@ -125,7 +128,8 @@ export class PaymentsController {
   }
 
   @Get("audit/summary")
-  @UseGuards(AuthGuard("jwt"), AdminGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
   @ApiOperation({
     summary: "Get payment audit summary metrics for admin dashboard cards",
   })
@@ -138,7 +142,8 @@ export class PaymentsController {
   }
 
   @Get("audit/:orderId")
-  @UseGuards(AuthGuard("jwt"), AdminGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
   @ApiOperation({ summary: "Get full audit history for a payment order" })
   @ApiResponse({
     status: 200,

@@ -18,6 +18,9 @@ import {
 } from "@nestjs/swagger";
 import { BookingsService } from "./bookings.service";
 import { AuthGuard } from "@nestjs/passport";
+import { UserRole } from "../auth/dto/signup.dto";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @ApiTags("Bookings")
@@ -148,6 +151,8 @@ export class BookingsController {
   }
 
   @Post("check-expired")
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
   @ApiOperation({ summary: "Manually trigger a check for expired bookings" })
   @ApiResponse({
     status: 200,
