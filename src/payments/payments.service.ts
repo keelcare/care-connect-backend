@@ -14,6 +14,10 @@ import { PricingUtils } from "../common/utils/pricing.utils";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
+import {
+  RAZORPAY_PAISE_MULTIPLIER,
+  RAZORPAY_MIN_AMOUNT_PAISE,
+} from "../common/constants/constants";
 
 @Injectable()
 export class PaymentsService {
@@ -137,14 +141,14 @@ export class PaymentsService {
       activeInstallmentId = installment.id;
     }
 
-    const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
+    const amountInPaise = Math.round(amountInRupees * RAZORPAY_PAISE_MULTIPLIER); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
     this.logger.log(
       `Hourly Rate: ${hourlyRate}, Duration: ${durationHours}, Amount(Paise): ${amountInPaise}`,
     );
 
-    if (amountInPaise < 100) {
+    if (amountInPaise < RAZORPAY_MIN_AMOUNT_PAISE) {
       throw new BadRequestException(
         `Amount too low to create order: ₹${amountInRupees} INR`,
       );

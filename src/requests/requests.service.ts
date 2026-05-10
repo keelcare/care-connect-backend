@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRequestDto } from "./dto/create-request.dto";
@@ -16,11 +18,13 @@ import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 
 import { CATEGORY_SKILL_MAP } from "../constants";
 
 @Injectable()
 export class RequestsService {
+  private readonly logger = new Logger(RequestsService.name);
   constructor(
     private prisma: PrismaService,
     private usersService: UsersService,
@@ -32,24 +36,17 @@ export class RequestsService {
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
-    console.log(
-      "Creating Request with DTO:",
-      JSON.stringify(createRequestDto, null, 2),
-    );
+    this.logger.debug(`Creating Request for parent ${parentId}: category=${createRequestDto.category}, date=${createRequestDto.date}`);
 
     // 1. Get parent profile for location
     const parent = await this.usersService.findOne(parentId);
-    console.log(
-      "RequestsService.create parent:",
-      JSON.stringify(parent, null, 2),
-    );
     if (
       !parent ||
       !parent.profiles ||
       !parent.profiles.lat ||
       !parent.profiles.lng
     ) {
-      console.log("Parent profile incomplete:", parent?.profiles);
+      this.logger.warn(`Parent profile incomplete for ${parentId}`);
       throw new BadRequestException(
         "Parent profile incomplete. Address and location required.",
       );
@@ -217,7 +214,7 @@ export class RequestsService {
           "An active booking already exists for this request or a duplicate request was detected.",
         );
       }
-      console.error("Error creating service request flow:", error);
+      this.logger.error("Error creating service request flow:", error);
       throw error;
     }
   }
@@ -233,18 +230,14 @@ export class RequestsService {
 
     // Strategy 2: If not found by Request ID, check if the ID provided is a Booking ID
     if (!request) {
-      console.log(
-        `Request ID ${id} not found. checking if it is a Booking ID...`,
-      );
+      this.logger.debug(`Request ID ${id} not found. Checking if it is a Booking ID...`);
       const booking = await this.prisma.bookings.findUnique({
         where: { id },
         select: { request_id: true },
       });
 
       if (booking && booking.request_id) {
-        console.log(
-          `Found associated Request ID ${booking.request_id} for Booking ${id}`,
-        );
+        this.logger.debug(`Found associated Request ID ${booking.request_id} for Booking ${id}`);
         request = await this.prisma.service_requests.findUnique({
           where: { id: booking.request_id },
           include: {
@@ -261,9 +254,7 @@ export class RequestsService {
     }
 
     const requestId = request.id;
-    console.log(
-      `Cancelling request ${requestId}, current status: ${request.status}`,
-    );
+    this.logger.log(`Cancelling request ${requestId}, current status: ${request.status}`);
 
     // Status validation
     const allowedStatuses = ["pending", "accepted", "assigned"];
@@ -344,9 +335,7 @@ export class RequestsService {
     // Skip auto-matching for Shadow Teacher and Special Needs categories
     // These will be manually assigned by admins
     if (request.category === "ST" || request.category === "SN") {
-      console.log(
-        `[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Await manual assignment.`,
-      );
+      this.logger.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Awaiting manual assignment.`);
       return null;
     }
 
@@ -363,10 +352,7 @@ export class RequestsService {
       Number(request.duration_hours),
     );
 
-    console.log(`[DEBUG] Checking Overlap for Request: ${requestId}`);
-    console.log(
-      `[DEBUG] Window: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`,
-    );
+    this.logger.debug(`[Matching] Checking overlap for request ${requestId}: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`);
 
     // Find Nannies with overlapping CONFIRMED bookings of any status that blocks availability
     const busyNannies = await prisma.bookings.findMany({
@@ -383,41 +369,41 @@ export class RequestsService {
           },
         ],
       },
-      select: { nanny_id: true, start_time: true, end_time: true }, // Select times for logging
+      select: { nanny_id: true, start_time: true, end_time: true },
     });
 
-    console.log(
-      `[DEBUG] Found Busy Nannies:`,
-      JSON.stringify(busyNannies, null, 2),
-    );
-
     const busyNannyIds = busyNannies.map((b) => b.nanny_id);
-    console.log(
-      `Busy Nannies (Overlap ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}):`,
-      busyNannyIds,
-    );
+    this.logger.debug(`[Matching] Busy nannies (${busyNannyIds.length}): ${busyNannyIds.join(", ") || "none"}`);
 
-    // 2b. Find Nannies with overlapping availability blocks
-    // This is a new Phase 4 feature
+    // 2b. Batch-load all availability blocks for non-busy nannies in a SINGLE query,
+    // then evaluate overlaps in-memory. Previously this issued isNannyAvailable() per
+    // block inside a loop — 2 DB queries * N blocks = N+1 total. Now it's 1 query total.
     const nanniesWithBlocks = await prisma.availability_blocks.findMany({
       where: {
-        nanny_id: { notIn: busyNannyIds.length > 0 ? busyNannyIds : ["none"] }, // No need to re-check if already busy
+        nanny_id: { notIn: busyNannyIds.length > 0 ? busyNannyIds : ["none"] },
       },
     });
 
-    const blockedNannyIds: string[] = [];
+    // Group blocks by nanny_id for efficient per-nanny evaluation
+    const blocksByNanny = new Map<string, typeof nanniesWithBlocks>();
     for (const block of nanniesWithBlocks) {
-      const isUnavailable = !(await this.availabilityService.isNannyAvailable(
-        block.nanny_id,
-        requestStartTime,
-        requestEndTime,
-      ));
-      if (isUnavailable) {
-        blockedNannyIds.push(block.nanny_id);
+      const existing = blocksByNanny.get(block.nanny_id) ?? [];
+      existing.push(block);
+      blocksByNanny.set(block.nanny_id, existing);
+    }
+
+    // Check overlaps in-memory — no additional DB queries
+    const blockedNannyIds: string[] = [];
+    for (const [nannyId, blocks] of blocksByNanny) {
+      const hasOverlappingBlock = blocks.some((block) =>
+        this.availabilityService.doesBlockOverlap(block, requestStartTime, requestEndTime),
+      );
+      if (hasOverlappingBlock) {
+        blockedNannyIds.push(nannyId);
       }
     }
 
-    console.log(`Blocked Nannies (Availability Blocks):`, blockedNannyIds);
+    this.logger.debug(`[Matching] Blocked nannies from availability blocks (${blockedNannyIds.length}): ${blockedNannyIds.join(", ") || "none"}`);
 
     // Combine previous rejects, busy nannies, and blocked nannies
     const excludedNannyIds = [
@@ -428,7 +414,7 @@ export class RequestsService {
       ]),
     ];
 
-    const radiusKm = 15; // Increased to 15km
+    const radiusKm = MATCHING_RADIUS_KM;
     const category = (request as any).category;
     const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
     const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
@@ -507,31 +493,22 @@ export class RequestsService {
           score += 50;
         }
 
-        console.log(`Nanny ${nanny.email} (${nanny.id}) Score Breakdown:
-          Distance: ${distanceScore.toFixed(2)} (Dist: ${nanny.distance.toFixed(2)}km)
-          Exp: ${experienceScore}
-          Acc: ${acceptanceScore}
-          Skills: ${skillScore.toFixed(2)} (${matchedSkills.length}/${requiredSkills.length})
-          Favorite: ${favoriteNannyIds.includes(nanny.id) ? 50 : 0}
-          TOTAL: ${score.toFixed(2)}
-        `);
+        this.logger.debug(
+          `[Scoring] Nanny ${nanny.email} — dist:${distanceScore.toFixed(1)} exp:${experienceScore} acc:${acceptanceScore} skills:${skillScore.toFixed(1)} fav:${favoriteNannyIds.includes(nanny.id) ? 50 : 0} TOTAL:${score.toFixed(1)}`,
+        );
 
         return { ...nanny, score };
       })
       .sort((a, b) => b.score - a.score); // Sort by Score DESC
 
     if (scoredNannies.length > 0) {
-      console.log(
-        `Found ${scoredNannies.length} potential matches for request ${requestId}. Attempting assignment...`,
-      );
+      this.logger.log(`[Matching] Found ${scoredNannies.length} potential matches for request ${requestId}. Attempting assignment...`);
 
       for (const bestMatch of scoredNannies) {
-        console.log(
-          `Attempting to assign request ${requestId} to nanny ${bestMatch.id} (Score: ${bestMatch.score.toFixed(2)})`,
-        );
+        this.logger.debug(`[Matching] Attempting to assign request ${requestId} to nanny ${bestMatch.id} (score: ${bestMatch.score.toFixed(1)})`);
 
         try {
-          const runAssignment = async (transaction: any) => {
+          const runAssignment = async (transaction: Prisma.TransactionClient) => {
             // 1. RE-VERIFY AVAILABILITY WITHIN TRANSACTION (Lock-and-Verify)
             const overlap = await transaction.bookings.findFirst({
               where: {
@@ -549,9 +526,7 @@ export class RequestsService {
             });
 
             if (overlap) {
-              console.log(
-                `Race condition detected: Nanny ${bestMatch.id} is already booked for an overlapping slot.`,
-              );
+              this.logger.warn(`[Matching] Race condition: Nanny ${bestMatch.id} already booked for overlapping slot.`);
               throw new Error("NANNY_BUSY");
             }
 
@@ -560,7 +535,7 @@ export class RequestsService {
               data: {
                 request_id: requestId,
                 nanny_id: bestMatch.id,
-                response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+                response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
                 status: "accepted",
                 responded_at: new Date(),
                 rank_position: (request.assignments?.length || 0) + 1,
@@ -598,9 +573,7 @@ export class RequestsService {
               });
 
           if (assignment) {
-            console.log(
-              `Successfully assigned request ${requestId} to nanny ${bestMatch.id}`,
-            );
+            this.logger.log(`[Matching] Successfully assigned request ${requestId} to nanny ${bestMatch.id}`);
 
             // Notify Nanny
             await this.notificationsService.createNotification(
@@ -648,7 +621,7 @@ export class RequestsService {
                 { ...bookingDetails, otherPartyName: nannyName },
               )
               .catch((err) =>
-                console.error("Failed to send auto-match parent email", err),
+                this.logger.error("Failed to send auto-match parent email", err),
               );
 
             // Email to Nanny
@@ -660,7 +633,7 @@ export class RequestsService {
                 { ...bookingDetails, otherPartyName: parentName },
               )
               .catch((err) =>
-                console.error("Failed to send auto-match nanny email", err),
+                this.logger.error("Failed to send auto-match nanny email", err),
               );
 
             // Emit SSE match event to both parties
@@ -681,28 +654,20 @@ export class RequestsService {
             continue; // Try the next best nanny
           }
           if (error.code === "P2002") {
-            console.log(
-              `Matching Race Condition: Assignment already exists for request ${requestId}.`,
-            );
+            this.logger.warn(`[Matching] Race condition: Assignment already exists for request ${requestId}.`);
             return null;
           }
-          console.error(
-            `Error during assignment for nanny ${bestMatch.id}:`,
-            error,
-          );
-          // For other errors, we might want to continue or stop.
-          // Let's continue for now to try other nannies if one assignment fails for transient reasons.
+          this.logger.error(`[Matching] Error during assignment for nanny ${bestMatch.id}:`, error);
+          // For other errors, continue to try the next nanny
           continue;
         }
       }
 
-      console.log(
-        `Failed to assign any of the ${scoredNannies.length} nannies to request ${requestId}`,
-      );
+      this.logger.warn(`[Matching] Failed to assign any of the ${scoredNannies.length} candidates to request ${requestId}.`);
       // Fall through to "No matches found" notification
     }
 
-    console.log(`No nannies found for request ${requestId}`);
+    this.logger.warn(`[Matching] No nannies found for request ${requestId}`);
     // Notify parent no matches found
     await this.notificationsService.createNotification(
       request.parent_id,
@@ -730,18 +695,14 @@ export class RequestsService {
 
     // FALLBACK: If not found by Request ID, check if the ID provided is a Booking ID
     if (!request) {
-      console.log(
-        `findOne: Request ID ${id} not found. checking if it is a Booking ID...`,
-      );
+      this.logger.debug(`findOne: Request ID ${id} not found. Checking if it is a Booking ID...`);
       const booking = await this.prisma.bookings.findUnique({
         where: { id },
         select: { request_id: true },
       });
 
       if (booking && booking.request_id) {
-        console.log(
-          `findOne: Found associated Request ID ${booking.request_id} for Booking ${id}`,
-        );
+        this.logger.debug(`findOne: Found associated Request ID ${booking.request_id} for Booking ${id}`);
         request = await this.prisma.service_requests.findUnique({
           where: { id: booking.request_id },
           include: {
@@ -786,7 +747,7 @@ export class RequestsService {
    * Helper to create a recurring_bookings record for subscription plans.
    * This should be called when a nanny is assigned (auto or manual).
    */
-  async createRecurringRecord(tx: any, requestId: string, nannyId: string) {
+  async createRecurringRecord(tx: Prisma.TransactionClient, requestId: string, nannyId: string) {
     const request = await tx.service_requests.findUnique({
       where: { id: requestId },
     });
@@ -804,16 +765,17 @@ export class RequestsService {
     const endDate = TimeUtils.addMonths(dateObj, request.plan_duration_months || 1);
 
     // Convert start_time to string "HH:mm" for schema
-    // In PostgreSQL Time(6), it usually comes back as a Date or String depending on Prisma version
+    // PostgreSQL Time(6) may come back as a Date or a string depending on Prisma version/config.
+    const rawStartTime: unknown = request.start_time;
     let startTimeStr = "09:00";
-    if (request.start_time instanceof Date) {
-      startTimeStr = request.start_time.toLocaleTimeString("en-US", {
+    if (rawStartTime instanceof Date) {
+      startTimeStr = rawStartTime.toLocaleTimeString("en-US", {
         hour12: false,
         hour: "2-digit",
         minute: "2-digit",
       });
-    } else if (typeof request.start_time === "string") {
-      startTimeStr = request.start_time.slice(0, 5);
+    } else if (typeof rawStartTime === "string") {
+      startTimeStr = rawStartTime.slice(0, 5);
     }
 
     return tx.recurring_bookings.create({
@@ -838,13 +800,15 @@ export class RequestsService {
       this.prisma.service_requests.findMany({
         where: {
           parent_id: parentId,
-          // Only return requests that DO NOT have an active booking yet.
-          // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
-          bookings: {
-            isNot: {
-              status: { not: BookingStatus.CANCELLED },
-            },
-          },
+          // Only return requests that do NOT have an active (non-cancelled) booking.
+          // Prevents dashboard duplication between "Requests" and "Bookings" views.
+          // bookings is a one-to-one nullable relation — use top-level OR with `is`:
+          //   - `is: null`  → request has no booking at all yet
+          //   - `is: { status: CANCELLED }` → booking was cancelled, treat as inactive
+          OR: [
+            { bookings: { is: null } },
+            { bookings: { is: { status: BookingStatus.CANCELLED } } },
+          ],
         },
         orderBy: { created_at: "desc" },
         include: {
@@ -875,7 +839,7 @@ export class RequestsService {
       );
 
       // Extract nanny from the first pending assignment for the frontend
-      const nanny = req.assignments?.[0]?.users;
+      const nanny = req.assignments[0]?.users;
 
       return {
         ...req,

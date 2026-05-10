@@ -86,6 +86,22 @@ export class AvailabilityService {
     return true;
   }
 
+  /**
+   * Checks whether a single pre-loaded availability_block overlaps with the given time window.
+   * No DB access — safe to call in a tight loop after batch-loading blocks.
+   * Used by triggerMatching to avoid N+1 queries.
+   */
+  doesBlockOverlap(
+    block: { start_time: Date; end_time: Date; is_recurring: boolean; recurrence_pattern: string | null },
+    startTime: Date,
+    endTime: Date,
+  ): boolean {
+    if (block.is_recurring && block.recurrence_pattern) {
+      return this.matchesRecurringPattern(startTime, endTime, block);
+    }
+    return TimeUtils.isOverlapping(startTime, endTime, block.start_time, block.end_time);
+  }
+
   private matchesRecurringPattern(
     reqStart: Date,
     reqEnd: Date,

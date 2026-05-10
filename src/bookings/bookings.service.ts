@@ -19,6 +19,14 @@ import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { GeoUtils } from "../common/utils/geo.utils";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { ProgressReportsService } from "../progress-reports/progress-reports.service";
+import {
+  BOOKING_UNSTARTED_EXPIRY_MS,
+  BOOKING_IN_PROGRESS_MAX_MS,
+  PROGRESS_REPORT_DUE_HOURS,
+} from "../common/constants/constants";
+import { Prisma } from "@prisma/client";
+
 
 @Injectable()
 export class BookingsService {
@@ -32,6 +40,8 @@ export class BookingsService {
     private mailService: MailService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
+    @Inject(forwardRef(() => ProgressReportsService))
+    private progressReportsService: ProgressReportsService,
   ) {}
 
   async createBooking(
@@ -95,7 +105,7 @@ export class BookingsService {
         job_id: jobId,
         parent_id: parentId,
         nanny_id: nannyId,
-        status: "CONFIRMED",
+        status: BookingStatus.CONFIRMED,
         start_time: finalStartTime,
         end_time: finalEndTime,
       },
@@ -156,7 +166,7 @@ export class BookingsService {
           otherPartyName: nannyName,
         })
         .catch((err) =>
-          console.error("Failed to send direct booking parent email", err),
+          this.logger.error("Failed to send direct booking parent email", err),
         );
 
       // Email to Nanny
@@ -166,7 +176,7 @@ export class BookingsService {
           otherPartyName: parentName,
         })
         .catch((err) =>
-          console.error("Failed to send direct booking nanny email", err),
+          this.logger.error("Failed to send direct booking nanny email", err),
         );
     }
 
@@ -592,6 +602,13 @@ export class BookingsService {
       completedEvent,
     );
 
+    // Auto-generate progress report for nanny (fire-and-forget, don't block completion)
+    if (booking.nanny_id) {
+      this.progressReportsService.generateReportForBooking(id).catch((err) =>
+        this.logger.error(`Failed to generate progress report for booking ${id}`, err),
+      );
+    }
+
     return updatedBooking;
   }
 
@@ -610,7 +627,7 @@ export class BookingsService {
     });
     if (!booking) throw new NotFoundException("Booking not found");
 
-    if (["COMPLETED", "CANCELLED"].includes(booking.status)) {
+    if ([BookingStatus.COMPLETED, BookingStatus.CANCELLED].includes(booking.status as BookingStatus)) {
       throw new BadRequestException(
         "Cannot cancel a completed or already cancelled booking",
       );
@@ -622,9 +639,7 @@ export class BookingsService {
       booking.nanny_id === cancelledByUserId &&
       booking.request_id
     ) {
-      console.log(
-        `Nanny cancelled random assignment booking ${id}. Triggering re-match.`,
-      );
+      this.logger.log(`Nanny cancelled random assignment booking ${id}. Triggering re-match.`);
 
       // 1. Find the active assignment (accepted)
       const assignment = await this.prisma.assignments.findFirst({
@@ -666,7 +681,7 @@ export class BookingsService {
 
       // 4. Trigger Re-matching
       this.requestsService.triggerMatching(booking.request_id).catch((err) => {
-        console.error("Failed to re-trigger matching", err);
+        this.logger.error("Failed to re-trigger matching after nanny cancellation", err);
       });
 
       await this.notificationsService.notifyNannyCancellationToParent(
@@ -681,7 +696,7 @@ export class BookingsService {
 
     // Special Handling: Parent Cancellation
     if (cancelledByUserId && booking.parent_id === cancelledByUserId) {
-      console.log(`Parent cancelled booking ${id}.`);
+      this.logger.log(`Parent cancelled booking ${id}.`);
 
       // 1. If there's an associated service request, cancel it too
       if (booking.request_id) {
@@ -770,10 +785,7 @@ export class BookingsService {
                 cancelledBy: "parent",
               })
               .catch((err) =>
-                console.error(
-                  "Failed to send cancellation email to nanny",
-                  err,
-                ),
+                this.logger.error("Failed to send cancellation email to nanny", err),
               );
           }
         }
@@ -798,7 +810,7 @@ export class BookingsService {
               cancelledBy: "nanny",
             })
             .catch((err) =>
-              console.error("Failed to send cancellation email to parent", err),
+              this.logger.error("Failed to send cancellation email to parent", err),
             );
         }
       } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
@@ -813,7 +825,7 @@ export class BookingsService {
         }
       }
     } catch (error) {
-      console.error("Failed to send cancellation notification:", error);
+      this.logger.error("Failed to send cancellation notification:", error);
       // Don't fail the request if notification fails, the booking is already cancelled
     }
 
@@ -894,8 +906,8 @@ export class BookingsService {
   }
   async checkExpiredBookings() {
     const now = TimeUtils.nowIST();
-    const unstartedCutoff = new Date(now.getTime() - 4 * 60 * 60 * 1000);
-    const inProgressCutoff = new Date(now.getTime() - 8 * 60 * 60 * 1000);
+    const unstartedCutoff = new Date(now.getTime() - BOOKING_UNSTARTED_EXPIRY_MS);
+    const inProgressCutoff = new Date(now.getTime() - BOOKING_IN_PROGRESS_MAX_MS);
 
     // 1. Handle Unstarted Bookings (CONFIRMED -> EXPIRED)
     const unstartedBookings = await this.prisma.bookings.findMany({
@@ -1027,20 +1039,17 @@ export class BookingsService {
     }
 
     // 3. Status validation
-    if (![BookingStatus.CONFIRMED, BookingStatus.REQUESTED, "REQUESTED"].includes(booking.status as any)) {
+    // BookingStatus.REQUESTED = "requested" (lowercase) — the uppercase "REQUESTED" string was
+    // never written to the DB, so including it was a no-op bug. Enum covers both cases correctly.
+    if (![BookingStatus.CONFIRMED, BookingStatus.REQUESTED].includes(booking.status as BookingStatus)) {
       throw new BadRequestException(
         "Only confirmed or requested bookings can be rescheduled",
       );
     }
 
     // 4. Parse and validate new date/time
-    const formatTime = (t: string) => (t.length === 5 ? `${t}:00` : t);
-    const newStartDateTime = new Date(
-      `${newDate}T${formatTime(newStartTime)}+05:30`, // Explicitly Enforce IST
-    );
-    const newEndDateTime = new Date(
-      `${newDate}T${formatTime(newEndTime)}+05:30`, // Explicitly Enforce IST
-    );
+    const newStartDateTime = TimeUtils.combineDateAndTime(newDate, newStartTime);
+    const newEndDateTime = TimeUtils.combineDateAndTime(newDate, newEndTime);
 
     if (isNaN(newStartDateTime.getTime()) || isNaN(newEndDateTime.getTime())) {
       throw new BadRequestException("Invalid date or time format");
@@ -1057,7 +1066,7 @@ export class BookingsService {
     }
 
     // 6. Store original times if this is the first reschedule
-    const updateData: any = {
+    const updateData: Prisma.bookingsUpdateInput = {
       start_time: newStartDateTime,
       end_time: newEndDateTime,
       reschedule_count: (booking.reschedule_count || 0) + 1,
@@ -1080,7 +1089,7 @@ export class BookingsService {
         await tx.service_requests.update({
           where: { id: booking.request_id },
           data: {
-            date: new Date(`${newDate}T00:00:00+05:30`),
+            date: TimeUtils.combineDateAndTime(newDate, "00:00"),
             start_time: newStartDateTime,
             duration_hours: durationHours,
             status: booking.status === BookingStatus.CONFIRMED ? "accepted" : "pending",
@@ -1097,11 +1106,9 @@ export class BookingsService {
 
     // 8. Trigger re-matching if no nanny is assigned
     if (booking.request_id && !updatedBooking.nanny_id) {
-      console.log(
-        `Re-triggering matching for rescheduled booking ${id} (Request ${booking.request_id})`,
-      );
+      this.logger.log(`Re-triggering matching for rescheduled booking ${id} (Request ${booking.request_id})`);
       this.requestsService.triggerMatching(booking.request_id).catch((err) => {
-        console.error("Failed to re-trigger matching after reschedule", err);
+        this.logger.error("Failed to re-trigger matching after reschedule", err);
       });
     }
 

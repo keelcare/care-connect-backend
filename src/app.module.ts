@@ -38,6 +38,7 @@ import { SupportModule } from "./support/support.module";
 import { SseModule } from "./sse/sse.module";
 import { MailModule } from "./mail/mail.module";
 import { DisputesModule } from "./disputes/disputes.module";
+import { ProgressReportsModule } from "./progress-reports/progress-reports.module";
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { DisputesModule } from "./disputes/disputes.module";
     SupportModule,
     MailModule,
     DisputesModule,
+    ProgressReportsModule,
   ],
   controllers: [AppController],
   providers: [

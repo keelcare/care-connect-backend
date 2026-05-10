@@ -20,6 +20,7 @@ import { TimeUtils } from "../common/utils/time.utils";
 import { PricingUtils } from "../common/utils/pricing.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 
 @Injectable()
 export class AdminService {
@@ -148,7 +149,7 @@ export class AdminService {
       if (!request) throw new NotFoundException("Request not found");
 
       // Logic adapted from RequestsService.triggerMatching
-      const radiusKm = 15;
+      const radiusKm = MATCHING_RADIUS_KM;
       const category = request.category;
       const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
       const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
@@ -364,7 +365,7 @@ export class AdminService {
           },
           update: {
             status: "accepted",
-            response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
             responded_at: new Date(),
             rank_position: 1,
             rejection_reason: null, // Clear any previous rejection
@@ -372,7 +373,7 @@ export class AdminService {
           create: {
             request_id: requestId,
             nanny_id: nannyId,
-            response_deadline: new Date(Date.now() + 15 * 60 * 1000), // Standard deadline even if pre-accepted
+            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS), // Standard deadline even if pre-accepted
             status: "accepted",
             responded_at: new Date(),
             rank_position: 1, // Manual assignment is always top rank
