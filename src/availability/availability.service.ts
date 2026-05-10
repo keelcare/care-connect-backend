@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class AvailabilityService {
@@ -72,7 +73,7 @@ export class AvailabilityService {
     const bookings = await this.prisma.bookings.findFirst({
       where: {
         nanny_id: nannyId,
-        status: "CONFIRMED",
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
         AND: [{ start_time: { lt: endTime } }, { end_time: { gt: startTime } }],
       },
     });

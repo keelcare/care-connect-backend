@@ -8,6 +8,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CreateReviewDto } from "./dto/create-review.dto";
 import { UpdateReviewDto } from "./dto/update-review.dto";
 import { NotificationsService } from "../notifications/notifications.service";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class ReviewsService {
@@ -29,7 +30,7 @@ export class ReviewsService {
     }
 
     // 2. Validate booking status (must be COMPLETED)
-    if (booking.status !== "COMPLETED") {
+    if (booking.status !== BookingStatus.COMPLETED) {
       throw new BadRequestException("Can only review completed bookings");
     }
 
@@ -294,7 +295,7 @@ export class ReviewsService {
     }
 
     // 3. Check if booking is completed
-    if (booking.status !== "COMPLETED") {
+    if (booking.status !== BookingStatus.COMPLETED) {
       return {
         canReview: false,
         reason: "Booking must be completed before reviewing",

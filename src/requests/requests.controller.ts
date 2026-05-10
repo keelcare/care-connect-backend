@@ -57,7 +57,7 @@ export class RequestsController {
         "You are not authorized to cancel this request",
       );
     }
-    return this.requestsService.cancelRequest(id);
+    return this.requestsService.cancelRequest(id, req.user.id);
   }
 
   @Get(":id/matches")

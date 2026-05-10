@@ -150,6 +150,7 @@ model service_requests {
   discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
+  sessions_per_month    Int?
 //  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
   assignments           assignments[]
   bookings              bookings?

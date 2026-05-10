@@ -12,6 +12,8 @@ import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PricingUtils } from "../common/utils/pricing.utils";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
+import { BookingStatus } from "../common/constants/booking-status.enum";
+import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class PaymentsService {
@@ -101,6 +103,7 @@ export class PaymentsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
     let amountInRupees = totalAmount;
@@ -555,7 +558,7 @@ export class PaymentsService {
         }
       }
 
-      const newBookingStatus = subscriptionPlan ? "confirmed" : "COMPLETED";
+      const newBookingStatus = subscriptionPlan ? BookingStatus.CONFIRMED : BookingStatus.COMPLETED;
 
       const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
@@ -743,8 +746,7 @@ export class PaymentsService {
     const amountPerInstallment = totalAmount / months;
 
     const installments = Array.from({ length: months }).map((_, index) => {
-      const dueDate = new Date(startDate);
-      dueDate.setMonth(dueDate.getMonth() + index);
+      const dueDate = TimeUtils.addMonths(new Date(startDate), index);
       return {
         booking_id: bookingId,
         installment_no: index + 1,

@@ -16,14 +16,20 @@ export class TimeUtils {
         throw new Error("Date and Time are required");
       }
 
-      const datePart =
-        date instanceof Date
-          ? date.toISOString().split("T")[0]
-          : date.split("T")[0];
+      let datePart: string;
+      if (date instanceof Date) {
+        // Shift to IST temporarily to safely extract the local YYYY-MM-DD
+        const istDate = new Date(date.getTime() + (5 * 60 + 30) * 60 * 1000);
+        datePart = istDate.toISOString().split("T")[0];
+      } else {
+        datePart = date.split("T")[0];
+      }
 
       let timePart: string;
       if (time instanceof Date) {
-        timePart = time.toISOString().split("T")[1].substring(0, 5);
+        // Shift to IST temporarily to safely extract the local HH:mm
+        const istTime = new Date(time.getTime() + (5 * 60 + 30) * 60 * 1000);
+        timePart = istTime.toISOString().split("T")[1].substring(0, 5);
       } else {
         // Handle formats like "15:30" or "15:30:00"
         timePart = time.split(":").slice(0, 2).join(":");
@@ -48,6 +54,23 @@ export class TimeUtils {
    */
   static getEndTime(startTime: Date, durationHours: number): Date {
     return new Date(startTime.getTime() + durationHours * 60 * 60 * 1000);
+  }
+
+  /**
+   * Safely adds months to a date without overflowing the day of the month.
+   * e.g. Jan 31 + 1 month -> Feb 28 (or 29), not Mar 3.
+   */
+  static addMonths(date: Date, months: number): Date {
+    const result = new Date(date);
+    const expectedMonth = (result.getMonth() + months) % 12;
+    result.setMonth(result.getMonth() + months);
+    
+    // If the month overflowed past the expected month (due to differing days in months),
+    // set it to the last day of the expected month.
+    if (result.getMonth() !== (expectedMonth >= 0 ? expectedMonth : expectedMonth + 12)) {
+      result.setDate(0);
+    }
+    return result;
   }
 
   /**

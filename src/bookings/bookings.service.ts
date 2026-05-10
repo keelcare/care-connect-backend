@@ -18,6 +18,7 @@ import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { GeoUtils } from "../common/utils/geo.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class BookingsService {
@@ -229,6 +230,7 @@ export class BookingsService {
       Number(booking.service_requests?.["discount_percentage"] || 0),
       Number(booking.service_requests?.["plan_duration_months"] || 1),
       booking.service_requests?.["plan_type"] || "ONE_TIME",
+      booking.service_requests?.["sessions_per_month"],
     );
 
     return {
@@ -301,6 +303,7 @@ export class BookingsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
       return {
@@ -364,6 +367,7 @@ export class BookingsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
       const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
@@ -385,7 +389,7 @@ export class BookingsService {
   async startBooking(id: string, nannyLat?: number, nannyLng?: number) {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
-    if (booking.status !== "CONFIRMED") {
+    if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException("Booking must be CONFIRMED to start");
     }
 
@@ -415,7 +419,7 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "IN_PROGRESS",
+        status: BookingStatus.IN_PROGRESS,
         actual_start_time: new Date(), // Use actual_start_time instead of overwriting start_time
       },
     });
@@ -447,7 +451,7 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: booking.status === "CONFIRMED" ? "EXPIRED" : "PARENT_NO_SHOW", // Adaptive status
+        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW, // Adaptive status
         cancellation_reason: reason,
       },
     });
@@ -489,11 +493,11 @@ export class BookingsService {
     if (!booking) throw new NotFoundException("Booking not found");
 
     // Handle idempotency/double-clicks gracefully
-    if (booking.status === "COMPLETED") {
+    if (booking.status === BookingStatus.COMPLETED) {
       return booking;
     }
 
-    if (booking.status !== "IN_PROGRESS") {
+    if (booking.status !== BookingStatus.IN_PROGRESS) {
       throw new BadRequestException(
         `Booking must be IN_PROGRESS to complete. Current status: ${booking.status}`,
       );
@@ -527,7 +531,7 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "COMPLETED",
+        status: BookingStatus.COMPLETED,
         actual_end_time: actualEndTime, // Use actual_end_time instead of overwriting end_time
         is_review_prompted: true,
       },
@@ -646,7 +650,7 @@ export class BookingsService {
       const updatedBooking = await this.prisma.bookings.update({
         where: { id },
         data: {
-          status: "requested",
+          status: BookingStatus.REQUESTED,
           nanny_id: null,
           cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
         },
@@ -725,7 +729,7 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "CANCELLED",
+        status: BookingStatus.CANCELLED,
         cancellation_reason: reason,
         cancellation_fee: cancellationFee,
         cancellation_fee_status: feeStatus,
@@ -834,7 +838,7 @@ export class BookingsService {
       where: {
         ...whereClause,
         status: {
-          in: ["requested", "pending", "accepted", "CONFIRMED", "IN_PROGRESS"],
+          in: [BookingStatus.REQUESTED, "pending", "accepted", BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS],
         },
       },
       include: {
@@ -896,7 +900,7 @@ export class BookingsService {
     // 1. Handle Unstarted Bookings (CONFIRMED -> EXPIRED)
     const unstartedBookings = await this.prisma.bookings.findMany({
       where: {
-        status: { in: ["CONFIRMED", "requested"] },
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.REQUESTED] },
         start_time: { lt: unstartedCutoff },
       },
     });
@@ -911,7 +915,7 @@ export class BookingsService {
     // 2. Handle Stuck In-Progress (IN_PROGRESS -> COMPLETED)
     const stuckBookings = await this.prisma.bookings.findMany({
       where: {
-        status: "IN_PROGRESS",
+        status: BookingStatus.IN_PROGRESS,
         end_time: { lt: inProgressCutoff },
       },
     });
@@ -932,7 +936,7 @@ export class BookingsService {
         // Fallback: at minimum mark it completed in DB
         await this.prisma.bookings.update({
           where: { id: booking.id },
-          data: { status: "COMPLETED", actual_end_time: now },
+          data: { status: BookingStatus.COMPLETED, actual_end_time: now },
         });
       }
     }
@@ -950,7 +954,7 @@ export class BookingsService {
 
     if (!booking) throw new NotFoundException("Booking not found");
 
-    if (booking.status !== "CONFIRMED") {
+    if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException(
         "Only confirmed bookings can be reported as a no-show.",
       );
@@ -969,9 +973,9 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "CANCELLED",
+        status: BookingStatus.CANCELLED,
         cancellation_reason: `Reported No-Show by ${isNannyReporting ? "Nanny" : "Parent"}: ${reason}`,
-        tags: ["noshow", noShowTag],
+        tags: { push: ["noshow", noShowTag] },
       },
     });
 
@@ -1023,7 +1027,7 @@ export class BookingsService {
     }
 
     // 3. Status validation
-    if (!["CONFIRMED", "REQUESTED", "requested"].includes(booking.status)) {
+    if (![BookingStatus.CONFIRMED, BookingStatus.REQUESTED, "REQUESTED"].includes(booking.status as any)) {
       throw new BadRequestException(
         "Only confirmed or requested bookings can be rescheduled",
       );
@@ -1079,7 +1083,7 @@ export class BookingsService {
             date: new Date(`${newDate}T00:00:00+05:30`),
             start_time: newStartDateTime,
             duration_hours: durationHours,
-            status: booking.status === "CONFIRMED" ? "accepted" : "pending",
+            status: booking.status === BookingStatus.CONFIRMED ? "accepted" : "pending",
           },
         });
       }

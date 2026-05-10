@@ -15,6 +15,7 @@ import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 import { CATEGORY_SKILL_MAP } from "../constants";
 
@@ -98,6 +99,7 @@ export class RequestsService {
               plan_type: createRequestDto.plan_type || "ONE_TIME",
               plan_duration_months: createRequestDto.plan_duration_months || 1,
               discount_percentage: createRequestDto.discount_percentage || 0,
+              sessions_per_month: createRequestDto.sessions_per_month || null,
             } as any,
           });
 
@@ -107,6 +109,7 @@ export class RequestsService {
             Number(createRequestDto.discount_percentage || 0),
             Number(createRequestDto.plan_duration_months || 1),
             createRequestDto.plan_type || "ONE_TIME",
+            createRequestDto.sessions_per_month,
           );
 
           // Create initial booking (Pending Assignment)
@@ -116,7 +119,7 @@ export class RequestsService {
               request_id: request.id,
               parent_id: parentId,
               nanny_id: null,
-              status: "requested",
+              status: BookingStatus.REQUESTED,
               start_time: bookingStartTime,
               end_time: bookingEndTime,
             },
@@ -145,6 +148,7 @@ export class RequestsService {
               Number(createRequestDto.discount_percentage || 0),
               Number(createRequestDto.plan_duration_months || 1),
               createRequestDto.plan_type || "ONE_TIME",
+              createRequestDto.sessions_per_month,
             );
 
             const planMonths = Number(createRequestDto.plan_duration_months);
@@ -166,8 +170,7 @@ export class RequestsService {
             // 2. Create the individual Installments linked to the plan
             const installments = Array.from({ length: planMonths }).map(
               (_, index) => {
-                const dueDate = new Date(createRequestDto.date);
-                dueDate.setMonth(dueDate.getMonth() + index);
+                const dueDate = TimeUtils.addMonths(new Date(createRequestDto.date), index);
                 return {
                   booking_id: booking.id,
                   subscription_plan_id: plan.id,
@@ -219,7 +222,7 @@ export class RequestsService {
     }
   }
 
-  async cancelRequest(id: string) {
+  async cancelRequest(id: string, parentId?: string) {
     let request = await this.prisma.service_requests.findUnique({
       where: { id },
       include: {
@@ -253,6 +256,9 @@ export class RequestsService {
     }
 
     if (!request) throw new NotFoundException("Request not found");
+    if (parentId && request.parent_id !== parentId) {
+      throw new ForbiddenException("You are not authorized to cancel this request");
+    }
 
     const requestId = request.id;
     console.log(
@@ -289,11 +295,11 @@ export class RequestsService {
     }
 
     // 2. Cancel associated booking if exists
-    if (request.bookings && request.bookings.status !== "CANCELLED") {
+    if (request.bookings && request.bookings.status !== BookingStatus.CANCELLED) {
       await this.prisma.bookings.update({
         where: { id: request.bookings.id },
         data: {
-          status: "CANCELLED",
+          status: BookingStatus.CANCELLED,
           cancellation_reason: "Request cancelled by parent",
         },
       });
@@ -366,7 +372,7 @@ export class RequestsService {
     const busyNannies = await prisma.bookings.findMany({
       where: {
         nanny_id: { not: null },
-        status: "CONFIRMED",
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
         OR: [
           // Overlap Condition: (StartA < EndB) and (EndA > StartB)
           {
@@ -530,7 +536,7 @@ export class RequestsService {
             const overlap = await transaction.bookings.findFirst({
               where: {
                 nanny_id: bestMatch.id,
-                status: "CONFIRMED",
+                status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
                 OR: [
                   {
                     AND: [
@@ -572,10 +578,10 @@ export class RequestsService {
 
             // 4. Update associated booking to CONFIRMED
             const updatedBooking = await transaction.bookings.update({
-              where: { request_id: requestId, status: { not: "CANCELLED" } },
+              where: { request_id: requestId, status: { not: BookingStatus.CANCELLED } },
               data: {
                 nanny_id: bestMatch.id,
-                status: "CONFIRMED",
+                status: BookingStatus.CONFIRMED,
               },
             });
 
@@ -766,6 +772,7 @@ export class RequestsService {
       Number(request["discount_percentage"] || 0),
       Number(request["plan_duration_months"] || 1),
       request["plan_type"] || "ONE_TIME",
+      request["sessions_per_month"],
     );
 
     return {
@@ -794,8 +801,7 @@ export class RequestsService {
       .toUpperCase();
     const recurrencePattern = `WEEKLY_${dayName}`;
 
-    const endDate = new Date(dateObj);
-    endDate.setMonth(endDate.getMonth() + (request.plan_duration_months || 1));
+    const endDate = TimeUtils.addMonths(dateObj, request.plan_duration_months || 1);
 
     // Convert start_time to string "HH:mm" for schema
     // In PostgreSQL Time(6), it usually comes back as a Date or String depending on Prisma version
@@ -835,10 +841,9 @@ export class RequestsService {
           // Only return requests that DO NOT have an active booking yet.
           // This prevents duplication on the frontend dashboard between "Requests" and "Bookings".
           bookings: {
-            OR: [
-              { id: { equals: undefined } }, // This effectively means no booking
-              { status: "CANCELLED" },
-            ],
+            isNot: {
+              status: { not: BookingStatus.CANCELLED },
+            },
           },
         },
         orderBy: { created_at: "desc" },
@@ -866,6 +871,7 @@ export class RequestsService {
         Number(req["discount_percentage"] || 0),
         Number(req["plan_duration_months"] || 1),
         req["plan_type"] || "ONE_TIME",
+        req["sessions_per_month"],
       );
 
       // Extract nanny from the first pending assignment for the frontend
