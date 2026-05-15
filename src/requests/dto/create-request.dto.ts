@@ -162,6 +162,16 @@ export class CreateRequestDto {
   plan_duration_months?: number;
 
   @ApiPropertyOptional({
+    example: 4,
+    description: "Number of sessions per month for subscriptions",
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(31)
+  sessions_per_month?: number;
+
+  @ApiPropertyOptional({
     example: true,
     description: "Whether the parent opted to pay in monthly installments",
   })

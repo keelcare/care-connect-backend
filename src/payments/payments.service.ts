@@ -16,6 +16,12 @@ import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import { PricingService } from "../common/pricing.service";
 import { PaymentStatus } from "../constants";
+import { BookingStatus } from "../common/constants/booking-status.enum";
+import { TimeUtils } from "../common/utils/time.utils";
+import {
+  RAZORPAY_PAISE_MULTIPLIER,
+  RAZORPAY_MIN_AMOUNT_PAISE,
+} from "../common/constants/constants";
 
 @Injectable()
 export class PaymentsService {
@@ -29,7 +35,7 @@ export class PaymentsService {
     private gateway: PaymentGatewayService,
     private audit: PaymentAuditService,
     private pricingService: PricingService,
-  ) {}
+  ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
   async createOrder(
@@ -92,6 +98,7 @@ export class PaymentsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
     let amountInRupees = totalAmount;
@@ -125,14 +132,14 @@ export class PaymentsService {
       activeInstallmentId = installment.id;
     }
 
-    const amountInPaise = Math.round(amountInRupees * 100); // Razorpay requires paise
+    const amountInPaise = Math.round(amountInRupees * RAZORPAY_PAISE_MULTIPLIER); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
     this.logger.log(
       `Hourly Rate: ${hourlyRate}, Duration: ${durationHours}, Amount(Paise): ${amountInPaise}`,
     );
 
-    if (amountInPaise < 100) {
+    if (amountInPaise < RAZORPAY_MIN_AMOUNT_PAISE) {
       throw new BadRequestException(
         `Amount too low to create order: ₹${amountInRupees} INR`,
       );
@@ -145,8 +152,8 @@ export class PaymentsService {
         status: "created",
         payment_installments: activeInstallmentId
           ? {
-              some: { id: activeInstallmentId },
-            }
+            some: { id: activeInstallmentId },
+          }
           : undefined,
       },
     });
@@ -479,7 +486,7 @@ export class PaymentsService {
         }
       }
 
-      const newBookingStatus = subscriptionPlan ? "confirmed" : "COMPLETED";
+      const newBookingStatus = subscriptionPlan ? BookingStatus.CONFIRMED : BookingStatus.COMPLETED;
 
       const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
@@ -667,8 +674,7 @@ export class PaymentsService {
     const amountPerInstallment = totalAmount / months;
 
     const installments = Array.from({ length: months }).map((_, index) => {
-      const dueDate = new Date(startDate);
-      dueDate.setMonth(dueDate.getMonth() + index);
+      const dueDate = TimeUtils.addMonths(new Date(startDate), index);
       return {
         booking_id: bookingId,
         installment_no: index + 1,

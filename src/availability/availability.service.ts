@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class AvailabilityService {
@@ -72,7 +73,7 @@ export class AvailabilityService {
     const bookings = await this.prisma.bookings.findFirst({
       where: {
         nanny_id: nannyId,
-        status: "CONFIRMED",
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
         AND: [{ start_time: { lt: endTime } }, { end_time: { gt: startTime } }],
       },
     });
@@ -83,6 +84,22 @@ export class AvailabilityService {
     }
 
     return true;
+  }
+
+  /**
+   * Checks whether a single pre-loaded availability_block overlaps with the given time window.
+   * No DB access — safe to call in a tight loop after batch-loading blocks.
+   * Used by triggerMatching to avoid N+1 queries.
+   */
+  doesBlockOverlap(
+    block: { start_time: Date; end_time: Date; is_recurring: boolean; recurrence_pattern: string | null },
+    startTime: Date,
+    endTime: Date,
+  ): boolean {
+    if (block.is_recurring && block.recurrence_pattern) {
+      return this.matchesRecurringPattern(startTime, endTime, block);
+    }
+    return TimeUtils.isOverlapping(startTime, endTime, block.start_time, block.end_time);
   }
 
   private matchesRecurringPattern(

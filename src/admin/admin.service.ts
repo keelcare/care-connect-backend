@@ -19,6 +19,8 @@ import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PricingUtils } from "../common/utils/pricing.utils";
 import { AvailabilityService } from "../availability/availability.service";
+import { BookingStatus } from "../common/constants/booking-status.enum";
+import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 
 @Injectable()
 export class AdminService {
@@ -57,7 +59,7 @@ export class AdminService {
           },
         },
         bookings: {
-          where: { status: { not: "CANCELLED" } },
+          where: { status: { not: BookingStatus.CANCELLED } },
           include: {
             booking_children: {
               include: {
@@ -102,6 +104,7 @@ export class AdminService {
           Number((req as any).discount_percentage || 0),
           Number((req as any).plan_duration_months || 1),
           (req as any).plan_type || "ONE_TIME",
+          (req as any).sessions_per_month,
         ).totalAmount,
         created_at: req.created_at,
         children_count: req.num_children || children.length,
@@ -146,7 +149,7 @@ export class AdminService {
       if (!request) throw new NotFoundException("Request not found");
 
       // Logic adapted from RequestsService.triggerMatching
-      const radiusKm = 15;
+      const radiusKm = MATCHING_RADIUS_KM;
       const category = request.category;
       const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
       const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
@@ -165,7 +168,7 @@ export class AdminService {
       const busyNannies = await this.prisma.bookings.findMany({
         where: {
           nanny_id: { not: null },
-          status: "CONFIRMED",
+          status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
           AND: [
             { start_time: { lt: requestEndTime } },
             { end_time: { gt: actualStartTime } },
@@ -327,7 +330,7 @@ export class AdminService {
         const overlap = await tx.bookings.findFirst({
           where: {
             nanny_id: nannyId,
-            status: "CONFIRMED",
+            status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
             AND: [
               { start_time: { lt: requestEndTime } },
               { end_time: { gt: actualStartTime } },
@@ -362,7 +365,7 @@ export class AdminService {
           },
           update: {
             status: "accepted",
-            response_deadline: new Date(Date.now() + 15 * 60 * 1000),
+            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
             responded_at: new Date(),
             rank_position: 1,
             rejection_reason: null, // Clear any previous rejection
@@ -370,7 +373,7 @@ export class AdminService {
           create: {
             request_id: requestId,
             nanny_id: nannyId,
-            response_deadline: new Date(Date.now() + 15 * 60 * 1000), // Standard deadline even if pre-accepted
+            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS), // Standard deadline even if pre-accepted
             status: "accepted",
             responded_at: new Date(),
             rank_position: 1, // Manual assignment is always top rank
@@ -388,10 +391,10 @@ export class AdminService {
 
         // 4. Update Booking to CONFIRMED
         await tx.bookings.updateMany({
-          where: { request_id: requestId, status: { not: "CANCELLED" } },
+          where: { request_id: requestId, status: { not: BookingStatus.CANCELLED } },
           data: {
             nanny_id: nannyId,
-            status: "CONFIRMED",
+            status: BookingStatus.CONFIRMED,
           },
         });
 
@@ -450,7 +453,7 @@ export class AdminService {
 
     // Fetch the updated booking for chat creation
     const updatedBooking = await this.prisma.bookings.findFirst({
-      where: { request_id: requestId, status: "CONFIRMED" },
+      where: { request_id: requestId, status: BookingStatus.CONFIRMED },
     });
 
     if (updatedBooking) {
@@ -840,7 +843,7 @@ export class AdminService {
     const [totalUsers, totalBookings, activeBookings] = await Promise.all([
       this.prisma.users.count(),
       this.prisma.bookings.count(),
-      this.prisma.bookings.count({ where: { status: "IN_PROGRESS" } }),
+      this.prisma.bookings.count({ where: { status: BookingStatus.IN_PROGRESS } }),
     ]);
 
     return {
@@ -861,8 +864,8 @@ export class AdminService {
       bookings,
     ] = await Promise.all([
       this.prisma.service_requests.count(),
-      this.prisma.bookings.count({ where: { status: "COMPLETED" } }),
-      this.prisma.bookings.count({ where: { status: "CANCELLED" } }),
+      this.prisma.bookings.count({ where: { status: BookingStatus.COMPLETED } }),
+      this.prisma.bookings.count({ where: { status: BookingStatus.CANCELLED } }),
       this.prisma.assignments.count(),
       this.prisma.assignments.count({ where: { status: "accepted" } }),
       this.prisma.payments.aggregate({ _sum: { amount: true } }),

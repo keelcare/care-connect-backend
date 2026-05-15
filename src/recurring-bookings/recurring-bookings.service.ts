@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { TimeUtils } from "../common/utils/time.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class RecurringBookingsService {
@@ -116,7 +117,7 @@ export class RecurringBookingsService {
           const conflict = await this.prisma.bookings.findFirst({
             where: {
               nanny_id: recurring.nanny_id,
-              status: "CONFIRMED",
+              status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
               AND: [
                 { start_time: { lt: endTime } },
                 { end_time: { gt: startTime } },
@@ -166,7 +167,7 @@ export class RecurringBookingsService {
                 recurring_booking_id: recurring.id,
                 start_time: startTime,
                 end_time: endTime,
-                status: "CONFIRMED",
+                status: BookingStatus.CONFIRMED,
               },
             });
 

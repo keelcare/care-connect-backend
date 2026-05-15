@@ -18,13 +18,20 @@ import {
   BookingCreatedEvent, 
   BookingStartedEvent, 
   BookingCompletedEvent, 
-  BookingCancelledEvent 
+  BookingCancelledEvent,
+  BookingRescheduledEvent,
 } from "./events/booking.events";
 import { BookingStatus } from "../constants";
 import { PricingService } from "../common/pricing.service";
 import { RequestsService } from "../requests/requests.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
-import { BookingRescheduledEvent } from "./events/booking.events";
+import { ProgressReportsService } from "../progress-reports/progress-reports.service";
+import {
+  BOOKING_UNSTARTED_EXPIRY_MS,
+  BOOKING_IN_PROGRESS_MAX_MS,
+  PROGRESS_REPORT_DUE_HOURS,
+} from "../common/constants/constants";
+import { Prisma } from "@prisma/client";
 
 @Injectable()
 export class BookingsService {
@@ -36,6 +43,8 @@ export class BookingsService {
     private pricingService: PricingService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
+    @Inject(forwardRef(() => ProgressReportsService))
+    private progressReportsService: ProgressReportsService,
   ) {}
 
   async createBooking(
@@ -110,6 +119,7 @@ export class BookingsService {
 
     return booking;
   }
+
   async getBookingById(id: string) {
     // ... (existing code) ...
     const booking = await this.prisma.bookings.findUnique({
@@ -155,6 +165,7 @@ export class BookingsService {
       Number(booking.service_requests?.["discount_percentage"] || 0),
       Number(booking.service_requests?.["plan_duration_months"] || 1),
       booking.service_requests?.["plan_type"] || "ONE_TIME",
+      booking.service_requests?.["sessions_per_month"],
     );
 
     const hourlyRate = await this.pricingService.getHourlyRate(booking.service_requests?.category || "CC");
@@ -229,6 +240,7 @@ export class BookingsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
       return {
@@ -292,6 +304,7 @@ export class BookingsService {
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"],
       );
 
       const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
@@ -313,7 +326,7 @@ export class BookingsService {
   async startBooking(id: string, nannyLat?: number, nannyLng?: number) {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
-    if (booking.status !== "CONFIRMED") {
+    if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException("Booking must be CONFIRMED to start");
     }
 
@@ -344,7 +357,7 @@ export class BookingsService {
       where: { id },
       data: {
         status: BookingStatus.IN_PROGRESS,
-        actual_start_time: new Date(),
+        actual_start_time: new Date(), // Use actual_start_time instead of overwriting start_time
       },
     });
 
@@ -360,7 +373,7 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW,
+        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW, // Adaptive status
         cancellation_reason: reason,
       },
     });
@@ -387,11 +400,11 @@ export class BookingsService {
     if (!booking) throw new NotFoundException("Booking not found");
 
     // Handle idempotency/double-clicks gracefully
-    if (booking.status === "COMPLETED") {
+    if (booking.status === BookingStatus.COMPLETED) {
       return booking;
     }
 
-    if (booking.status !== "IN_PROGRESS") {
+    if (booking.status !== BookingStatus.IN_PROGRESS) {
       throw new BadRequestException(
         `Booking must be IN_PROGRESS to complete. Current status: ${booking.status}`,
       );
@@ -423,12 +436,19 @@ export class BookingsService {
       where: { id },
       data: {
         status: BookingStatus.COMPLETED,
-        actual_end_time: actualEndTime,
+        actual_end_time: actualEndTime, // Use actual_end_time instead of overwriting end_time
         is_review_prompted: true,
       },
     });
 
     this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, new BookingCompletedEvent(updatedBooking, totalAmount));
+
+    // Auto-generate progress report for nanny (fire-and-forget, don't block completion)
+    if (booking.nanny_id) {
+      this.progressReportsService.generateReportForBooking(id).catch((err) =>
+        this.logger.error(`Failed to generate progress report for booking ${id}`, err),
+      );
+    }
 
     return updatedBooking;
   }
@@ -448,7 +468,7 @@ export class BookingsService {
     });
     if (!booking) throw new NotFoundException("Booking not found");
 
-    if (["COMPLETED", "CANCELLED"].includes(booking.status)) {
+    if ([BookingStatus.COMPLETED, BookingStatus.CANCELLED].includes(booking.status as BookingStatus)) {
       throw new BadRequestException(
         "Cannot cancel a completed or already cancelled booking",
       );
@@ -460,9 +480,7 @@ export class BookingsService {
       booking.nanny_id === cancelledByUserId &&
       booking.request_id
     ) {
-      console.log(
-        `Nanny cancelled random assignment booking ${id}. Triggering re-match.`,
-      );
+      this.logger.log(`Nanny cancelled random assignment booking ${id}. Triggering re-match.`);
 
       // 1. Find the active assignment (accepted)
       const assignment = await this.prisma.assignments.findFirst({
@@ -488,7 +506,7 @@ export class BookingsService {
       const updatedBooking = await this.prisma.bookings.update({
         where: { id },
         data: {
-          status: "requested",
+          status: BookingStatus.REQUESTED,
           nanny_id: null,
           cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
         },
@@ -504,7 +522,7 @@ export class BookingsService {
 
       // 4. Trigger Re-matching
       this.requestsService.triggerMatching(booking.request_id).catch((err) => {
-        console.error("Failed to re-trigger matching", err);
+        this.logger.error("Failed to re-trigger matching after nanny cancellation", err);
       });
 
       this.eventEmitter.emit(
@@ -517,7 +535,7 @@ export class BookingsService {
 
     // Special Handling: Parent Cancellation
     if (cancelledByUserId && booking.parent_id === cancelledByUserId) {
-      console.log(`Parent cancelled booking ${id}.`);
+      this.logger.log(`Parent cancelled booking ${id}.`);
 
       // 1. If there's an associated service request, cancel it too
       if (booking.request_id) {
@@ -577,6 +595,9 @@ export class BookingsService {
     return updatedBooking;
   }
 
+    return updatedBooking;
+  }
+
   async getActiveBookings(userId: string, role: "parent" | "nanny") {
     const whereClause =
       role === "parent" ? { parent_id: userId } : { nanny_id: userId };
@@ -584,7 +605,7 @@ export class BookingsService {
       where: {
         ...whereClause,
         status: {
-          in: ["requested", "pending", "accepted", "CONFIRMED", "IN_PROGRESS"],
+          in: [BookingStatus.REQUESTED, "pending", "accepted", BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS],
         },
       },
       include: {
@@ -640,8 +661,8 @@ export class BookingsService {
   }
   async checkExpiredBookings() {
     const now = TimeUtils.nowIST();
-    const unstartedCutoff = new Date(now.getTime() - 4 * 60 * 60 * 1000);
-    const inProgressCutoff = new Date(now.getTime() - 8 * 60 * 60 * 1000);
+    const unstartedCutoff = new Date(now.getTime() - BOOKING_UNSTARTED_EXPIRY_MS);
+    const inProgressCutoff = new Date(now.getTime() - BOOKING_IN_PROGRESS_MAX_MS);
 
     // 1. Handle Unstarted Bookings (CONFIRMED -> EXPIRED)
     const unstartedBookings = await this.prisma.bookings.findMany({
@@ -682,7 +703,7 @@ export class BookingsService {
         // Fallback: at minimum mark it completed in DB
         await this.prisma.bookings.update({
           where: { id: booking.id },
-          data: { status: "COMPLETED", actual_end_time: now },
+          data: { status: BookingStatus.COMPLETED, actual_end_time: now },
         });
       }
     }
@@ -700,7 +721,7 @@ export class BookingsService {
 
     if (!booking) throw new NotFoundException("Booking not found");
 
-    if (booking.status !== "CONFIRMED") {
+    if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException(
         "Only confirmed bookings can be reported as a no-show.",
       );
@@ -719,9 +740,9 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "CANCELLED",
+        status: BookingStatus.CANCELLED,
         cancellation_reason: `Reported No-Show by ${isNannyReporting ? "Nanny" : "Parent"}: ${reason}`,
-        tags: ["noshow", noShowTag],
+        tags: { push: ["noshow", noShowTag] },
       },
     });
 
@@ -771,20 +792,17 @@ export class BookingsService {
     }
 
     // 3. Status validation
-    if (!["CONFIRMED", "REQUESTED", "requested"].includes(booking.status)) {
+    // BookingStatus.REQUESTED = "requested" (lowercase) — the uppercase "REQUESTED" string was
+    // never written to the DB, so including it was a no-op bug. Enum covers both cases correctly.
+    if (![BookingStatus.CONFIRMED, BookingStatus.REQUESTED].includes(booking.status as BookingStatus)) {
       throw new BadRequestException(
         "Only confirmed or requested bookings can be rescheduled",
       );
     }
 
     // 4. Parse and validate new date/time
-    const formatTime = (t: string) => (t.length === 5 ? `${t}:00` : t);
-    const newStartDateTime = new Date(
-      `${newDate}T${formatTime(newStartTime)}+05:30`, // Explicitly Enforce IST
-    );
-    const newEndDateTime = new Date(
-      `${newDate}T${formatTime(newEndTime)}+05:30`, // Explicitly Enforce IST
-    );
+    const newStartDateTime = TimeUtils.combineDateAndTime(newDate, newStartTime);
+    const newEndDateTime = TimeUtils.combineDateAndTime(newDate, newEndTime);
 
     if (isNaN(newStartDateTime.getTime()) || isNaN(newEndDateTime.getTime())) {
       throw new BadRequestException("Invalid date or time format");
@@ -801,7 +819,7 @@ export class BookingsService {
     }
 
     // 6. Store original times if this is the first reschedule
-    const updateData: any = {
+    const updateData: Prisma.bookingsUpdateInput = {
       start_time: newStartDateTime,
       end_time: newEndDateTime,
       reschedule_count: (booking.reschedule_count || 0) + 1,
@@ -824,10 +842,10 @@ export class BookingsService {
         await tx.service_requests.update({
           where: { id: booking.request_id },
           data: {
-            date: new Date(`${newDate}T00:00:00+05:30`),
+            date: TimeUtils.combineDateAndTime(newDate, "00:00"),
             start_time: newStartDateTime,
             duration_hours: durationHours,
-            status: booking.status === "CONFIRMED" ? "accepted" : "pending",
+            status: booking.status === BookingStatus.CONFIRMED ? "accepted" : "pending",
           },
         });
       }
@@ -841,11 +859,9 @@ export class BookingsService {
 
     // 8. Trigger re-matching if no nanny is assigned
     if (booking.request_id && !updatedBooking.nanny_id) {
-      console.log(
-        `Re-triggering matching for rescheduled booking ${id} (Request ${booking.request_id})`,
-      );
+      this.logger.log(`Re-triggering matching for rescheduled booking ${id} (Request ${booking.request_id})`);
       this.requestsService.triggerMatching(booking.request_id).catch((err) => {
-        console.error("Failed to re-trigger matching after reschedule", err);
+        this.logger.error("Failed to re-trigger matching after reschedule", err);
       });
     }
 
