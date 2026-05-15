@@ -12,10 +12,13 @@ import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PricingUtils } from "../common/utils/pricing.utils";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
+import { PaymentGatewayService } from "./payment-gateway.service";
+import { PaymentAuditService } from "./payment-audit.service";
+import { PricingService } from "../common/pricing.service";
+import { PaymentStatus } from "../constants";
 
 @Injectable()
 export class PaymentsService {
-  private razorpay: Razorpay;
   private readonly logger = new Logger(PaymentsService.name);
   private readonly processingOrders = new Set<string>();
 
@@ -23,22 +26,10 @@ export class PaymentsService {
     private prisma: PrismaService,
     private configService: ConfigService,
     private notificationsService: NotificationsService,
-  ) {
-    const keyId = this.configService.get<string>("RAZORPAY_KEY_ID");
-    const keySecret = this.configService.get<string>("RAZORPAY_KEY_SECRET");
-
-    if (!keyId || !keySecret) {
-      this.logger.warn(
-        "RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is not configured. Payment features will be disabled.",
-      );
-    }
-
-    // Initialize Razorpay even if keys are missing (library might handle it or fail on call)
-    this.razorpay = new Razorpay({
-      key_id: keyId || "",
-      key_secret: keySecret || "",
-    });
-  }
+    private gateway: PaymentGatewayService,
+    private audit: PaymentAuditService,
+    private pricingService: PricingService,
+  ) {}
 
   // 1. Create Order (Server-Side Price Calculation)
   async createOrder(
@@ -95,8 +86,8 @@ export class PaymentsService {
     }
 
     const { totalAmount, monthlyCost, planDurationMonths } =
-      PricingUtils.calculateTotal(
-        hourlyRate,
+      await this.pricingService.calculateCost(
+        booking.service_requests?.category || "CC",
         durationHours,
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
@@ -182,17 +173,10 @@ export class PaymentsService {
     }
 
     try {
-      const options = {
-        amount: amountInPaise,
-        currency: "INR",
-        receipt: `receipt_${bookingId.substring(0, 10)}`,
-        notes: {
-          booking_id: bookingId,
-          nanny_id: booking.nanny_id,
-        },
-      };
-
-      const order = await this.razorpay.orders.create(options);
+      const order = await this.gateway.createOrder(amountInPaise, `receipt_${bookingId.substring(0, 10)}`, {
+        booking_id: bookingId,
+        nanny_id: booking.nanny_id,
+      });
 
       // Save to DB
       const createdPayment = await this.prisma.payments.create({
@@ -203,7 +187,7 @@ export class PaymentsService {
           currency: "INR",
           provider: "razorpay",
           order_id: order.id,
-          status: "created",
+          status: PaymentStatus.CREATED,
         },
       });
 
@@ -214,12 +198,12 @@ export class PaymentsService {
         });
       }
 
-      await this.writeAuditLog(
+      await this.audit.writeLog(
         this.prisma,
         createdPayment.id,
         order.id,
         null,
-        "created",
+        PaymentStatus.CREATED,
         "api:create_order",
       );
 
@@ -274,23 +258,9 @@ export class PaymentsService {
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)
   async verifyPayment(orderId: string, paymentId: string, signature: string) {
-    const secret = this.configService.get<string>("RAZORPAY_KEY_SECRET");
+    const isValid = this.gateway.verifySignature(orderId, paymentId, signature);
 
-    if (!secret) {
-      this.logger.error(
-        "RAZORPAY_KEY_SECRET not configured. Cannot verify payment.",
-      );
-      throw new BadRequestException(
-        "Payment verification is currently unavailable",
-      );
-    }
-
-    const generatedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(orderId + "|" + paymentId)
-      .digest("hex");
-
-    if (generatedSignature !== signature) {
+    if (!isValid) {
       this.logger.warn(`Payment signature mismatch for order ${orderId}`);
       throw new BadRequestException(
         "Invalid payment signature (Potential Fraud)",
@@ -310,23 +280,7 @@ export class PaymentsService {
 
   // 3. Webhook Handler (Source of Truth)
   async handleWebhook(signature: string, payload: any) {
-    const secret = this.configService.get<string>("RAZORPAY_WEBHOOK_SECRET");
-
-    if (!secret) {
-      this.logger.error(
-        "RAZORPAY_WEBHOOK_SECRET not configured. Cannot verify webhook.",
-      );
-      throw new BadRequestException(
-        "Webhook verification is currently unavailable",
-      );
-    }
-
-    // Validate Webhook Signature
-    const shasum = crypto.createHmac("sha256", secret);
-    shasum.update(JSON.stringify(payload));
-    const digest = shasum.digest("hex");
-
-    if (digest !== signature) {
+    if (!this.gateway.verifyWebhookSignature(payload, signature)) {
       this.logger.warn(
         "Webhook signature mismatch - potential spoofing attempt",
       );
@@ -375,12 +329,12 @@ export class PaymentsService {
         include: { bookings: true },
       });
 
-      await this.writeAuditLog(
+      await this.audit.writeLog(
         this.prisma,
         existingPayment.id,
         orderId,
         existingPayment.status ?? null,
-        "failed",
+        PaymentStatus.FAILED,
         "webhook:payment.failed",
         paymentId,
         {
@@ -424,7 +378,7 @@ export class PaymentsService {
         data: { status: toStatus },
       });
 
-      await this.writeAuditLog(
+      await this.audit.writeLog(
         tx,
         payment.id,
         payment.order_id,
@@ -437,36 +391,6 @@ export class PaymentsService {
 
       return updatedPayment;
     });
-  }
-
-  private async writeAuditLog(
-    tx: any, // Use any for transaction context (flexible for different transaction types)
-    paymentDbId: string,
-    orderId: string,
-    fromStatus: string | null,
-    toStatus: string,
-    triggeredBy: string,
-    razorpayPaymentId?: string,
-    metadata: Prisma.InputJsonValue = {},
-  ) {
-    // Check if table exists in tx (Prisma Client might not show it if not regenerated properly)
-    if (tx.payment_audit_log) {
-      await tx.payment_audit_log.create({
-        data: {
-          payment_id: paymentDbId,
-          order_id: orderId,
-          from_status: fromStatus,
-          to_status: toStatus,
-          triggered_by: triggeredBy,
-          razorpay_payment_id: razorpayPaymentId,
-          metadata,
-        },
-      });
-    } else {
-      this.logger.warn(
-        "payment_audit_log not found in transaction context, skipping audit log.",
-      );
-    }
   }
 
   // Helper: Atomically Successful Update
@@ -483,13 +407,13 @@ export class PaymentsService {
       });
 
       if (!payment) throw new NotFoundException("Payment record not found");
-      if (payment.status === "captured") {
-        await this.writeAuditLog(
+      if (payment.status === PaymentStatus.CAPTURED) {
+        await this.audit.writeLog(
           tx,
           payment.id,
           orderId,
-          "captured",
-          "captured",
+          PaymentStatus.CAPTURED,
+          PaymentStatus.CAPTURED,
           `${triggeredBy}:duplicate`,
           paymentId,
         );
@@ -500,7 +424,7 @@ export class PaymentsService {
       await tx.payments.update({
         where: { order_id: orderId },
         data: {
-          status: "captured",
+          status: PaymentStatus.CAPTURED,
           payment_id: paymentId,
           signature: signature,
         },
@@ -515,12 +439,12 @@ export class PaymentsService {
         },
       });
 
-      await this.writeAuditLog(
+      await this.audit.writeLog(
         tx,
         payment.id,
         orderId,
         payment.status,
-        "captured",
+        PaymentStatus.CAPTURED,
         triggeredBy,
         paymentId,
         {
@@ -690,7 +614,7 @@ export class PaymentsService {
     ] = await this.prisma.$transaction([
       this.prisma.payment_audit_log.count({
         where: {
-          to_status: "failed",
+          to_status: PaymentStatus.FAILED,
           created_at: { gte: failedFrom },
         },
       }),
@@ -702,7 +626,7 @@ export class PaymentsService {
       }),
       this.prisma.payments.count({
         where: {
-          status: "created",
+          status: PaymentStatus.CREATED,
           created_at: { lte: stuckCreatedBefore },
         },
       }),

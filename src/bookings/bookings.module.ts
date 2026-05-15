@@ -6,6 +6,7 @@ import { RequestsModule } from "../requests/requests.module";
 import { TasksService } from "../tasks/tasks.service";
 import { MailModule } from "../mail/mail.module";
 import { PaymentsModule } from "../payments/payments.module";
+import { BookingListeners } from "./listeners/booking.listeners";
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { PaymentsModule } from "../payments/payments.module";
     forwardRef(() => PaymentsModule),
   ],
   controllers: [BookingsController],
-  providers: [BookingsService, TasksService],
+  providers: [BookingsService, TasksService, BookingListeners],
   exports: [BookingsService],
 })
 export class BookingsModule {}

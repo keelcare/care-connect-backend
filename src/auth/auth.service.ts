@@ -160,14 +160,6 @@ export class AuthService {
   }
 
   async resetPassword(token: string, newPassword: string) {
-    /**
-     * SECURITY: Service-level password validation as second layer of defense
-     */
-    if (newPassword.length < 8 || !PASSWORD_REGEX.test(newPassword)) {
-      throw new BadRequestException(
-        "Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.",
-      );
-    }
 
     const user = await this.usersService.findByResetToken(token);
 
@@ -252,14 +244,6 @@ export class AuthService {
   }
 
   async register(userDto: SignupDto) {
-    /**
-     * SECURITY: Service-level password validation as second layer of defense
-     */
-    if (userDto.password.length < 8 || !PASSWORD_REGEX.test(userDto.password)) {
-      throw new BadRequestException(
-        "Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.",
-      );
-    }
 
     // Validate categories for Nannies
     if (userDto.role === "nanny") {

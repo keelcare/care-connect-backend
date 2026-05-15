@@ -260,55 +260,60 @@ export class LocationService {
     lng: number,
     radiusKm: number = 10,
   ): Promise<NearbyJob[]> {
+    const latNum = parseFloat(lat.toString());
+    const lngNum = parseFloat(lng.toString());
+    const radiusNum = parseFloat(radiusKm.toString());
+
+    if (isNaN(latNum) || isNaN(lngNum)) {
+      throw new BadRequestException("Invalid coordinates provided");
+    }
+
     try {
-      // Get all open jobs with location data
-      const jobs = await this.prisma.jobs.findMany({
-        where: {
-          status: "open",
-          location_lat: { not: null },
-          location_lng: { not: null },
-        },
-        include: {
-          users: {
-            select: {
-              id: true,
-              email: true,
-              role: true,
-              profiles: {
-                select: {
-                  first_name: true,
-                  last_name: true,
-                },
-              },
-            },
+      // Use raw SQL for spatial query to avoid fetching all jobs into memory
+      const jobs = await this.prisma.$queryRaw<any[]>`
+        SELECT 
+          j.id, 
+          j.title, 
+          j.description, 
+          j.date, 
+          j.time, 
+          j.location_lat, 
+          j.location_lng, 
+          j.status,
+          u.id as user_id,
+          u.email as user_email,
+          p.first_name,
+          p.last_name,
+          (6371 * acos(cos(radians(${latNum})) * cos(radians(j.location_lat)) * cos(radians(j.location_lng) - radians(${lngNum})) + sin(radians(${latNum})) * sin(radians(j.location_lat)))) AS distance
+        FROM jobs j
+        JOIN users u ON j.parent_id = u.id
+        LEFT JOIN profiles p ON u.id = p.user_id
+        WHERE j.status = 'open'
+        AND j.location_lat IS NOT NULL
+        AND j.location_lng IS NOT NULL
+        AND (6371 * acos(cos(radians(${latNum})) * cos(radians(j.location_lat)) * cos(radians(j.location_lng) - radians(${lngNum})) + sin(radians(${latNum})) * sin(radians(j.location_lat)))) <= ${radiusNum}
+        ORDER BY distance ASC
+      `;
+
+      return jobs.map((job) => ({
+        id: job.id,
+        title: job.title,
+        description: job.description,
+        date: job.date,
+        time: job.time,
+        location_lat: new Decimal(job.location_lat),
+        location_lng: new Decimal(job.location_lng),
+        status: job.status,
+        parent: {
+          id: job.user_id,
+          email: job.user_email,
+          profiles: {
+            first_name: job.first_name,
+            last_name: job.last_name,
           },
         },
-      });
-
-      // Calculate distances and filter by radius
-      const nearbyJobs: NearbyJob[] = jobs
-        .map((job) => {
-          const jobLat = Number(job.location_lat);
-          const jobLng = Number(job.location_lng);
-          const distance = this.calculateDistance(lat, lng, jobLat, jobLng);
-
-          return {
-            id: job.id,
-            title: job.title,
-            description: job.description,
-            date: job.date,
-            time: job.time,
-            location_lat: job.location_lat,
-            location_lng: job.location_lng,
-            status: job.status,
-            parent: job.users,
-            distance,
-          };
-        })
-        .filter((job) => job.distance <= radiusKm)
-        .sort((a, b) => a.distance - b.distance); // Sort by distance
-
-      return nearbyJobs;
+        distance: Math.round(job.distance * 100) / 100,
+      }));
     } catch (error) {
       this.logger.error(
         `Error finding nearby jobs: ${error.message}`,

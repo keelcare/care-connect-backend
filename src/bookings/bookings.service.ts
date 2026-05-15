@@ -9,26 +9,31 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { PricingUtils } from "../common/utils/pricing.utils";
-import { ChatService } from "../chat/chat.service";
-import { NotificationsService } from "../notifications/notifications.service";
-import { RequestsService } from "../requests/requests.service";
-import { SseService } from "../sse/sse.service";
-import { SSE_EVENTS } from "../events/sse-event.types";
-import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { GeoUtils } from "../common/utils/geo.utils";
+import { EventEmitter2 } from "@nestjs/event-emitter";
+import { 
+  BOOKING_EVENTS, 
+  BookingCreatedEvent, 
+  BookingStartedEvent, 
+  BookingCompletedEvent, 
+  BookingCancelledEvent 
+} from "./events/booking.events";
+import { BookingStatus } from "../constants";
+import { PricingService } from "../common/pricing.service";
+import { RequestsService } from "../requests/requests.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
+import { BookingRescheduledEvent } from "./events/booking.events";
 
 @Injectable()
 export class BookingsService {
   private readonly logger = new Logger(BookingsService.name);
   constructor(
     private prisma: PrismaService,
-    private chatService: ChatService,
-    private notificationsService: NotificationsService,
     private requestsService: RequestsService,
-    private sseService: SseService,
-    private mailService: MailService,
+    private eventEmitter: EventEmitter2,
+    private pricingService: PricingService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
   ) {}
@@ -94,88 +99,14 @@ export class BookingsService {
         job_id: jobId,
         parent_id: parentId,
         nanny_id: nannyId,
-        status: "CONFIRMED",
+        status: BookingStatus.CONFIRMED,
         start_time: finalStartTime,
         end_time: finalEndTime,
       },
     });
 
-    // Create a chat for this booking
-    await this.chatService.createChat(booking.id);
-
-    // Notify Nanny
-    await this.notificationsService.createNotification(
-      nannyId,
-      "New Booking",
-      `You have a new booking confirmed for ${finalStartTime.toDateString()}.`,
-      "success",
-    );
-
-    // Notify Parent
-    await this.notificationsService.createNotification(
-      parentId,
-      "Booking Confirmed!",
-      `Your booking for ${finalStartTime.toDateString()} is confirmed.`,
-      "success",
-    );
-
-    // Send Confirmation Emails (Outside the core logic but within the function context)
-    const parent = await this.prisma.users.findUnique({
-      where: { id: parentId },
-      include: { profiles: true },
-    });
-
-    if (parent && nanny) {
-      const parentName =
-        `${parent.profiles?.first_name || ""} ${parent.profiles?.last_name || ""}`.trim() ||
-        "Parent";
-      const nannyName =
-        `${nanny.profiles?.first_name || ""} ${nanny.profiles?.last_name || ""}`.trim() ||
-        "Nanny";
-
-      const bookingDetails = {
-        date: finalStartTime.toISOString().split("T")[0],
-        time: finalStartTime.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        duration: finalEndTime
-          ? Math.round(
-              (finalEndTime.getTime() - finalStartTime.getTime()) /
-                (1000 * 60 * 60),
-            )
-          : 0,
-        location: parent.profiles?.address || "Location specified in profile",
-      };
-
-      // Email to Parent
-      this.mailService
-        .sendBookingConfirmationEmail(parent.email, parentName, "parent", {
-          ...bookingDetails,
-          otherPartyName: nannyName,
-        })
-        .catch((err) =>
-          console.error("Failed to send direct booking parent email", err),
-        );
-
-      // Email to Nanny
-      this.mailService
-        .sendBookingConfirmationEmail(nanny.email, nannyName, "nanny", {
-          ...bookingDetails,
-          otherPartyName: parentName,
-        })
-        .catch((err) =>
-          console.error("Failed to send direct booking nanny email", err),
-        );
-    }
-
-    // Emit SSE event to both parties
-    const bookingCreatedEvent = {
-      type: SSE_EVENTS.BOOKING_CREATED,
-      data: booking,
-      timestamp: new Date().toISOString(),
-    };
-    this.sseService.emitToUsers([nannyId, parentId], bookingCreatedEvent);
+    // Emit event - side effects (Chat, Notifications, Mail, SSE) are handled by listeners
+    this.eventEmitter.emit(BOOKING_EVENTS.CREATED, new BookingCreatedEvent(booking));
 
     return booking;
   }
@@ -216,13 +147,8 @@ export class BookingsService {
           (1000 * 60 * 60)
         : 0;
 
-    const service = await this.prisma.services.findUnique({
-      where: { name: booking.service_requests?.category || "CC" },
-    });
-    const hourlyRate = Number(service?.hourly_rate || 500);
-
-    const { totalAmount } = PricingUtils.calculateTotal(
-      hourlyRate,
+    const { totalAmount } = await this.pricingService.calculateCost(
+      booking.service_requests?.category || "CC",
       durationHours > 0
         ? durationHours
         : Number(booking.service_requests?.duration_hours || 0),
@@ -230,6 +156,8 @@ export class BookingsService {
       Number(booking.service_requests?.["plan_duration_months"] || 1),
       booking.service_requests?.["plan_type"] || "ONE_TIME",
     );
+
+    const hourlyRate = await this.pricingService.getHourlyRate(booking.service_requests?.category || "CC");
 
     return {
       ...booking,
@@ -415,27 +343,12 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "IN_PROGRESS",
-        actual_start_time: new Date(), // Use actual_start_time instead of overwriting start_time
+        status: BookingStatus.IN_PROGRESS,
+        actual_start_time: new Date(),
       },
     });
 
-    // Notify Parent
-    if (booking.parent_id) {
-      await this.notificationsService.createNotification(
-        booking.parent_id,
-        "Booking Started",
-        `The nanny has started the booking.`,
-        "info",
-      );
-
-      // Emit SSE
-      this.sseService.emitToUser(booking.parent_id, {
-        type: SSE_EVENTS.BOOKING_STARTED,
-        data: updatedBooking,
-        timestamp: new Date().toISOString(),
-      });
-    }
+    this.eventEmitter.emit(BOOKING_EVENTS.STARTED, new BookingStartedEvent(updatedBooking));
 
     return updatedBooking;
   }
@@ -447,30 +360,15 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: booking.status === "CONFIRMED" ? "EXPIRED" : "PARENT_NO_SHOW", // Adaptive status
+        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW,
         cancellation_reason: reason,
       },
     });
 
-    // Notify Parent
-    if (booking.parent_id) {
-      await this.notificationsService.createNotification(
-        booking.parent_id,
-        "Booking Status Updated",
-        `Your booking was marked as: ${updatedBooking.status}`,
-        "info",
-      );
-    }
-
-    // Notify Nanny
-    if (booking.nanny_id) {
-      await this.notificationsService.createNotification(
-        booking.nanny_id,
-        "Booking Status Updated",
-        `The booking with session ID ${id.split("-")[0]} was marked as: ${updatedBooking.status}`,
-        "info",
-      );
-    }
+    this.eventEmitter.emit(
+      BOOKING_EVENTS.CANCELLED,
+      new BookingCancelledEvent(updatedBooking, reason),
+    );
 
     return updatedBooking;
   }
@@ -514,79 +412,23 @@ export class BookingsService {
     const startTime = booking.start_time;
     const endTime = booking.end_time;
 
-    // Calculate duration based on original scheduled times
-    const durationHours =
-      (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+    const durationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
-    const service = await this.prisma.services.findUnique({
-      where: { name: booking.service_requests?.category || "CC" },
-    });
-    const hourlyRate = Number(service?.hourly_rate || 500);
-    const totalAmount = durationHours * hourlyRate;
+    const { totalAmount } = await this.pricingService.calculateCost(
+      booking.service_requests?.category || "CC",
+      durationHours
+    );
 
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "COMPLETED",
-        actual_end_time: actualEndTime, // Use actual_end_time instead of overwriting end_time
+        status: BookingStatus.COMPLETED,
+        actual_end_time: actualEndTime,
         is_review_prompted: true,
       },
     });
 
-    // 2. Handle Payment: Update existing or create pending_release
-    // Check if any payment already exists for this booking (could be captured from a subscription)
-    const existingPayment = booking.payments?.[0];
-
-    if (existingPayment) {
-      if (existingPayment.status === "captured") {
-        // Parent already paid, now it's "pending_release" to the nanny
-        await this.paymentsService.updatePaymentStatus(
-          existingPayment.id,
-          "pending_release",
-          "bookings:booking_completed",
-          { booking_id: id },
-        );
-      }
-      // If payment is already pending_release or other, keep it as is
-    } else {
-      // No payment found, create a manual pending_release record
-      await this.prisma.payments.create({
-        data: {
-          booking_id: id,
-          amount: totalAmount,
-          status: "pending_release",
-          order_id: `manual_pending_${id}_${Date.now()}`,
-          provider: "manual_pending",
-        },
-      });
-    }
-
-    // Notify Parent
-    await this.notificationsService.createNotification(
-      booking.parent_id,
-      "Booking Completed",
-      `The booking has been completed. Total amount: ₹${totalAmount.toFixed(2)}. Please leave a review!`,
-      "success",
-    );
-
-    // Notify Nanny
-    await this.notificationsService.createNotification(
-      booking.nanny_id,
-      "Booking Completed",
-      `Great job! The booking is complete. Earnings: ₹${totalAmount.toFixed(2)}.`,
-      "success",
-    );
-
-    // Emit SSE
-    const completedEvent = {
-      type: SSE_EVENTS.BOOKING_COMPLETED,
-      data: { ...updatedBooking, totalAmount },
-      timestamp: new Date().toISOString(),
-    };
-    this.sseService.emitToUsers(
-      [booking.parent_id, booking.nanny_id].filter(Boolean) as string[],
-      completedEvent,
-    );
+    this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, new BookingCompletedEvent(updatedBooking, totalAmount));
 
     return updatedBooking;
   }
@@ -652,7 +494,7 @@ export class BookingsService {
         },
       });
 
-      await this.chatService.deleteChatByBookingId(id);
+      // Chat deletion will be handled by the listener on CANCELLED event
 
       // 3. Update Service Request (set back to pending from assigned)
       await this.prisma.service_requests.update({
@@ -665,11 +507,9 @@ export class BookingsService {
         console.error("Failed to re-trigger matching", err);
       });
 
-      await this.notificationsService.notifyNannyCancellationToParent(
-        booking.parent_id,
-        booking.id,
-        true, // willRematch = true
-        reason,
+      this.eventEmitter.emit(
+        BOOKING_EVENTS.CANCELLED,
+        new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId),
       );
 
       return updatedBooking;
@@ -725,104 +565,14 @@ export class BookingsService {
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: "CANCELLED",
+        status: BookingStatus.CANCELLED,
         cancellation_reason: reason,
         cancellation_fee: cancellationFee,
         cancellation_fee_status: feeStatus,
       },
     });
 
-    // Notify both parties
-    try {
-      const parentUser = booking.users_bookings_parent_idTousers;
-      const nannyUser = booking.users_bookings_nanny_idTousers;
-      const parentName =
-        `${parentUser?.profiles?.first_name || ""} ${parentUser?.profiles?.last_name || ""}`.trim() ||
-        "Parent";
-      const nannyName =
-        `${nannyUser?.profiles?.first_name || ""} ${nannyUser?.profiles?.last_name || ""}`.trim() ||
-        "Nanny";
-      const bookingDate = booking.start_time
-        ? booking.start_time.toLocaleDateString()
-        : "Scheduled Date";
-
-      if (booking.nanny_id) {
-        // If parent cancelled, notify nanny. If nanny cancelled herself, she knows.
-        if (cancelledByUserId === booking.parent_id) {
-          await this.notificationsService.createNotification(
-            booking.nanny_id,
-            "Booking Cancelled",
-            `The booking has been cancelled by the parent. Reason: ${reason || "No reason provided"}.`,
-            "warning",
-          );
-
-          // Send email to Nanny Since Parent Cancelled
-          if (nannyUser?.email) {
-            this.mailService
-              .sendCancellationEmail(nannyUser.email, nannyName, "nanny", {
-                date: bookingDate,
-                reason: reason || "No reason provided",
-                otherPartyName: parentName,
-                cancelledBy: "parent",
-              })
-              .catch((err) =>
-                console.error(
-                  "Failed to send cancellation email to nanny",
-                  err,
-                ),
-              );
-          }
-        }
-      }
-
-      // Notify parent if nanny cancelled
-      if (cancelledByUserId === booking.nanny_id) {
-        await this.notificationsService.notifyNannyCancellationToParent(
-          booking.parent_id,
-          booking.id,
-          false, // willRematch = false
-          reason,
-        );
-
-        // Send email to Parent Since Nanny Cancelled
-        if (parentUser?.email) {
-          this.mailService
-            .sendCancellationEmail(parentUser.email, parentName, "parent", {
-              date: bookingDate,
-              reason: reason || "No reason provided",
-              otherPartyName: nannyName,
-              cancelledBy: "nanny",
-            })
-            .catch((err) =>
-              console.error("Failed to send cancellation email to parent", err),
-            );
-        }
-      } else if (cancelledByUserId && cancelledByUserId !== booking.parent_id) {
-        // Some other cancellation (admin?)
-        if (booking.parent_id) {
-          await this.notificationsService.createNotification(
-            booking.parent_id,
-            "Booking Cancelled",
-            `Your booking has been cancelled.${cancellationFee > 0 ? ` A cancellation fee of ₹${cancellationFee} applies.` : ""}`,
-            "warning",
-          );
-        }
-      }
-    } catch (error) {
-      console.error("Failed to send cancellation notification:", error);
-      // Don't fail the request if notification fails, the booking is already cancelled
-    }
-
-    // Emit SSE cancellation event to both parties
-    const cancelledEvent = {
-      type: SSE_EVENTS.BOOKING_CANCELLED,
-      data: { ...updatedBooking, cancellation_reason: reason },
-      timestamp: new Date().toISOString(),
-    };
-    const recipients = [booking.parent_id, booking.nanny_id].filter(
-      Boolean,
-    ) as string[];
-    this.sseService.emitToUsers(recipients, cancelledEvent);
+    this.eventEmitter.emit(BOOKING_EVENTS.CANCELLED, new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId));
 
     return updatedBooking;
   }
@@ -896,7 +646,7 @@ export class BookingsService {
     // 1. Handle Unstarted Bookings (CONFIRMED -> EXPIRED)
     const unstartedBookings = await this.prisma.bookings.findMany({
       where: {
-        status: { in: ["CONFIRMED", "requested"] },
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.REQUESTED] },
         start_time: { lt: unstartedCutoff },
       },
     });
@@ -911,7 +661,7 @@ export class BookingsService {
     // 2. Handle Stuck In-Progress (IN_PROGRESS -> COMPLETED)
     const stuckBookings = await this.prisma.bookings.findMany({
       where: {
-        status: "IN_PROGRESS",
+        status: BookingStatus.IN_PROGRESS,
         end_time: { lt: inProgressCutoff },
       },
     });
@@ -980,11 +730,9 @@ export class BookingsService {
       ? booking.parent_id
       : booking.nanny_id;
     if (notifiedUserId) {
-      await this.notificationsService.createNotification(
-        notifiedUserId,
-        "Booking Cancelled (No-Show Reported)",
-        `The other party reported a no-show for this booking. Reason: ${reason}`,
-        "warning",
+      this.eventEmitter.emit(
+        BOOKING_EVENTS.CANCELLED,
+        new BookingCancelledEvent(updatedBooking, reason, reportingUserId),
       );
     }
 
@@ -1101,38 +849,10 @@ export class BookingsService {
       });
     }
 
-    // 9. Send notifications
-    const nannyProfile = booking.users_bookings_nanny_idTousers?.profiles;
-    const nannyName = nannyProfile
-      ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-      : "the nanny";
-
-    if (booking.nanny_id) {
-      await this.notificationsService.createNotification(
-        booking.nanny_id,
-        "Booking Rescheduled",
-        `A booking has been rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
-        "info",
-      );
-    }
-
-    await this.notificationsService.createNotification(
-      booking.parent_id,
-      "Booking Rescheduled",
-      `Your booking ${nannyProfile ? `with ${nannyName}` : "request"} has been successfully rescheduled to ${newStartDateTime.toLocaleDateString()} at ${newStartTime}.`,
-      "success",
+    this.eventEmitter.emit(
+      BOOKING_EVENTS.RESCHEDULED,
+      new BookingRescheduledEvent(updatedBooking, booking),
     );
-
-    // Emit SSE
-    const rescheduledEvent = {
-      type: SSE_EVENTS.BOOKING_RESCHEDULED,
-      data: updatedBooking,
-      timestamp: new Date().toISOString(),
-    };
-    const rescheduledRecipients = [booking.parent_id, booking.nanny_id].filter(
-      Boolean,
-    ) as string[];
-    this.sseService.emitToUsers(rescheduledRecipients, rescheduledEvent);
 
     return updatedBooking;
   }
