@@ -34,7 +34,8 @@ export class PricingService {
     durationHours: number,
     discountPercentage: number = 0,
     planDurationMonths: number = 1,
-    planType: string = "ONE_TIME"
+    planType: string = "ONE_TIME",
+    sessionsPerMonth?: number
   ): Promise<PricingCalculationResult> {
     const hourlyRate = await this.getHourlyRate(category);
     return PricingUtils.calculateTotal(
@@ -42,7 +43,8 @@ export class PricingService {
       durationHours,
       discountPercentage,
       planDurationMonths,
-      planType
+      planType,
+      sessionsPerMonth
     );
   }
 

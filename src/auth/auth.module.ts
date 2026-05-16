@@ -35,6 +35,6 @@ import { MailModule } from "../mail/mail.module";
     TokenBlacklistService,
     TransparentJwtAuthGuard,
   ],
-  exports: [AuthService, TransparentJwtAuthGuard],
+  exports: [AuthService, TransparentJwtAuthGuard, JwtModule],
 })
 export class AuthModule {}
