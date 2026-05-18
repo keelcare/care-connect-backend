@@ -8,7 +8,7 @@ import { ConfigService } from "@nestjs/config";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
-import * as crypto from "crypto";
+import * as crypto from "node:crypto";
 import { SignupDto } from "./dto/signup.dto";
 import { PrismaService } from "../prisma/prisma.service";
 import { MailService } from "../mail/mail.service";

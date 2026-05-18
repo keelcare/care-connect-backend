@@ -15,6 +15,7 @@ import { Response } from "express";
 import { GoogleOauthGuard } from "./guards/google-oauth.guard";
 import { ConfigService } from "@nestjs/config";
 import { StrictThrottle } from "../common/decorators/throttle.decorator";
+import { Throttle } from "@nestjs/throttler";
 import { SignupDto } from "./dto/signup.dto";
 import { LoginDto } from "./dto/login.dto";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
@@ -33,7 +34,7 @@ export class AuthController {
    * SECURITY: Strict rate limiting (10 req/min) to prevent automated account creation
    */
   @Post("signup")
-  @StrictThrottle()
+  @Throttle({ default: { limit: 5, ttl: 300000 } })
   @ApiOperation({ summary: "Register a new user" })
   @ApiResponse({ status: 201, description: "User successfully registered" })
   @ApiResponse({ status: 400, description: "Invalid input" })
@@ -70,7 +71,7 @@ export class AuthController {
    * SECURITY: Strict rate limiting (10 req/min) to prevent brute force attacks
    */
   @Post("login")
-  @StrictThrottle()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({ summary: "User login" })
   @ApiResponse({
     status: 200,
@@ -169,7 +170,7 @@ export class AuthController {
    * SECURITY: Strict rate limiting (10 req/min) to prevent email bombing
    */
   @Post("forgot-password")
-  @StrictThrottle()
+  @Throttle({ default: { limit: 5, ttl: 300000 } })
   async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req) {
     const origin = req.headers.origin || req.headers.referer;
     return this.authService.forgotPassword(dto.email, origin);

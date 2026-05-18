@@ -12,7 +12,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { WhatsAppBotService } from "./whatsapp-bot.service";
 

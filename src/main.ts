@@ -51,8 +51,9 @@ async function bootstrap() {
     "ionic://localhost",
     "http://192.168.1.38:3000",
     "http://192.168.0.3:3000",
-    // Match any vercel.app or netlify.app subdomains for development
   ].filter(Boolean) as string[];
+
+  const allowedOriginsSet = new Set(allowedOrigins);
 
   // Security Headers using Helmet
   app.use(
@@ -97,12 +98,10 @@ async function bootstrap() {
   app.enableCors({
     origin: (origin, callback) => {
       // Allow if no origin (server-to-server or mobile app bypass)
-      // or if it matches our list or specific patterns
+      // or if it matches our allowed origins Set exactly or mobile URL schemes
       if (
         !origin ||
-        allowedOrigins.includes(origin) ||
-        origin.includes(".vercel.app") ||
-        origin.includes(".netlify.app") ||
+        allowedOriginsSet.has(origin) ||
         origin.startsWith("capacitor://") ||
         origin.startsWith("keel://") ||
         origin.startsWith("careconnect://")
@@ -139,31 +138,35 @@ async function bootstrap() {
   expressApp.set("trust proxy", 1); // Trust first proxy
 
   // Swagger Documentation configuration
-  const { DocumentBuilder, SwaggerModule } = await import("@nestjs/swagger");
-  const config = new DocumentBuilder()
-    .setTitle("Care Connect API")
-    .setDescription("The API documentation for Care Connect backend services.")
-    .setVersion("1.0")
-    .addBearerAuth()
-    .addTag("Authentication", "User authentication and authorization")
-    .addTag("Users", "User profile and management")
-    .addTag("Nannies", "Nanny specific operations")
-    .addTag("Requests", "Care service requests")
-    .addTag("Bookings", "Booking management")
-    .addTag("Payments", "Payment processing")
-    .build();
+  if (process.env.NODE_ENV !== 'production') {
+    const { DocumentBuilder, SwaggerModule } = await import("@nestjs/swagger");
+    const config = new DocumentBuilder()
+      .setTitle("Care Connect API")
+      .setDescription("The API documentation for Care Connect backend services.")
+      .setVersion("1.0")
+      .addBearerAuth()
+      .addTag("Authentication", "User authentication and authorization")
+      .addTag("Users", "User profile and management")
+      .addTag("Nannies", "Nanny specific operations")
+      .addTag("Requests", "Care service requests")
+      .addTag("Bookings", "Booking management")
+      .addTag("Payments", "Payment processing")
+      .build();
 
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup("api/docs", app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-    customSiteTitle: "Care Connect API Docs",
-  });
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup("api/docs", app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+      customSiteTitle: "Care Connect API Docs",
+    });
+  }
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port, '0.0.0.0');
   logger.log(`🚀 Application is running on port ${port}`);
-  logger.log(`📖 Swagger docs at: http://0.0.0.0:${port}/api/docs`);
+  if (process.env.NODE_ENV !== 'production') {
+    logger.log(`📖 Swagger docs at: http://0.0.0.0:${port}/api/docs`);
+  }
 }
 bootstrap();

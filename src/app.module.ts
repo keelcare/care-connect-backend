@@ -1,6 +1,7 @@
-import { Module } from "@nestjs/common";
+import { Module, NestModule, MiddlewareConsumer } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_FILTER } from "@nestjs/core";
+import { CorrelationIdMiddleware } from "./common/middleware/correlation-id.middleware";
 import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
 import { ServeStaticModule } from "@nestjs/serve-static";
@@ -49,6 +50,9 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
     SentryModule.forRoot(),
     LoggerModule.forRoot({
       pinoHttp: {
+        genReqId: (req: any) => {
+          return req.headers["x-request-id"] || req.id;
+        },
         transport:
           process.env.NODE_ENV !== "production"
             ? {
@@ -113,4 +117,8 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationIdMiddleware).forRoutes("*");
+  }
+}

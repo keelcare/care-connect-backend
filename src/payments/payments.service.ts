@@ -7,7 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import Razorpay from "razorpay";
-import * as crypto from "crypto";
+import * as crypto from "node:crypto";
 import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PricingUtils } from "../common/utils/pricing.utils";

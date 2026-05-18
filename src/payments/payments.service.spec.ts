@@ -3,6 +3,9 @@ import { PaymentsService } from "./payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ConfigService } from "@nestjs/config";
+import { PaymentGatewayService } from "./payment-gateway.service";
+import { PaymentAuditService } from "./payment-audit.service";
+import { PricingService } from "../common/pricing.service";
 
 describe("PaymentsService", () => {
   let service: PaymentsService;
@@ -38,12 +41,29 @@ describe("PaymentsService", () => {
     createNotification: jest.fn(),
   };
 
+  const mockPaymentGatewayService = {
+    createOrder: jest.fn(),
+    verifySignature: jest.fn(),
+    verifyWebhookSignature: jest.fn(),
+  };
+
+  const mockPaymentAuditService = {
+    writeLog: jest.fn(),
+  };
+
+  const mockPricingService = {
+    calculateCost: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentsService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: NotificationsService, useValue: mockNotificationsService },
+        { provide: PaymentGatewayService, useValue: mockPaymentGatewayService },
+        { provide: PaymentAuditService, useValue: mockPaymentAuditService },
+        { provide: PricingService, useValue: mockPricingService },
         {
           provide: ConfigService,
           useValue: {
