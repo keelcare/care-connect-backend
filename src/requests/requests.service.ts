@@ -336,6 +336,24 @@ export class RequestsService {
     // These will be manually assigned by admins
     if (request.category === "ST" || request.category === "SN") {
       this.logger.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Awaiting manual assignment.`);
+      
+      try {
+        const admins = await prisma.users.findMany({
+          where: { role: "admin" },
+          select: { id: true },
+        });
+        for (const admin of admins) {
+          await this.notificationsService.createNotification(
+            admin.id,
+            "Manual Assignment Required",
+            `A new ${request.category} request (${requestId.substring(0, 8)}) requires manual nanny assignment.`,
+            "info"
+          );
+        }
+      } catch (err) {
+        this.logger.error("Failed to notify admins for manual matching request", err);
+      }
+
       return null;
     }
 

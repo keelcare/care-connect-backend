@@ -21,6 +21,7 @@ import { PricingUtils } from "../common/utils/pricing.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
+import { PaginationDto } from "./dto/pagination.dto";
 
 @Injectable()
 export class AdminService {
@@ -584,25 +585,45 @@ export class AdminService {
   }
 
   // User Management
-  async getAllUsers() {
-    return this.prisma.users.findMany({
-      orderBy: { created_at: "desc" },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        is_verified: true,
-        is_active: true,
-        ban_reason: true,
-        created_at: true,
-        profiles: {
-          select: {
-            first_name: true,
-            last_name: true,
+  async getAllUsers(query?: PaginationDto) {
+    const page = query?.page || 1;
+    const pageSize = query?.pageSize || 10;
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.users.findMany({
+        skip,
+        take,
+        orderBy: { created_at: "desc" },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          is_verified: true,
+          is_active: true,
+          ban_reason: true,
+          created_at: true,
+          profiles: {
+            select: {
+              first_name: true,
+              last_name: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.users.count()
+    ]);
+
+    return {
+      items,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      }
+    };
   }
 
   async verifyUser(userId: string) {
@@ -633,36 +654,56 @@ export class AdminService {
   }
 
   // Booking Management
-  async getAllBookings() {
-    return this.prisma.bookings.findMany({
-      orderBy: { created_at: "desc" },
-      include: {
-        jobs: true,
-        service_requests: true,
-        users_bookings_parent_idTousers: {
-          select: {
-            email: true,
-            profiles: {
-              select: {
-                first_name: true,
-                last_name: true,
+  async getAllBookings(query?: PaginationDto) {
+    const page = query?.page || 1;
+    const pageSize = query?.pageSize || 10;
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.bookings.findMany({
+        skip,
+        take,
+        orderBy: { created_at: "desc" },
+        include: {
+          jobs: true,
+          service_requests: true,
+          users_bookings_parent_idTousers: {
+            select: {
+              email: true,
+              profiles: {
+                select: {
+                  first_name: true,
+                  last_name: true,
+                },
+              },
+            },
+          },
+          users_bookings_nanny_idTousers: {
+            select: {
+              email: true,
+              profiles: {
+                select: {
+                  first_name: true,
+                  last_name: true,
+                },
               },
             },
           },
         },
-        users_bookings_nanny_idTousers: {
-          select: {
-            email: true,
-            profiles: {
-              select: {
-                first_name: true,
-                last_name: true,
-              },
-            },
-          },
-        },
-      },
-    });
+      }),
+      this.prisma.bookings.count()
+    ]);
+
+    return {
+      items,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      }
+    };
   }
 
   // Dispute Resolution (Delegated to DisputesService)
@@ -679,28 +720,48 @@ export class AdminService {
   }
 
   // Payment Monitoring
-  async getAllPayments() {
-    return this.prisma.payments.findMany({
-      orderBy: { created_at: "desc" },
-      include: {
-        bookings: {
-          include: {
-            users_bookings_parent_idTousers: {
-              select: {
-                email: true,
-                profiles: { select: { first_name: true, last_name: true } },
+  async getAllPayments(query?: PaginationDto) {
+    const page = query?.page || 1;
+    const pageSize = query?.pageSize || 10;
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.payments.findMany({
+        skip,
+        take,
+        orderBy: { created_at: "desc" },
+        include: {
+          bookings: {
+            include: {
+              users_bookings_parent_idTousers: {
+                select: {
+                  email: true,
+                  profiles: { select: { first_name: true, last_name: true } },
+                },
               },
-            },
-            users_bookings_nanny_idTousers: {
-              select: {
-                email: true,
-                profiles: { select: { first_name: true, last_name: true } },
+              users_bookings_nanny_idTousers: {
+                select: {
+                  email: true,
+                  profiles: { select: { first_name: true, last_name: true } },
+                },
               },
             },
           },
         },
-      },
-    });
+      }),
+      this.prisma.payments.count()
+    ]);
+
+    return {
+      items,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      }
+    };
   }
 
   async getPaymentStats() {
@@ -764,25 +825,45 @@ export class AdminService {
   }
 
   // Review Moderation
-  async getAllReviews() {
-    return this.prisma.reviews.findMany({
-      orderBy: { created_at: "desc" },
-      include: {
-        users_reviews_reviewer_idTousers: {
-          select: {
-            email: true,
-            profiles: { select: { first_name: true, last_name: true } },
+  async getAllReviews(query?: PaginationDto) {
+    const page = query?.page || 1;
+    const pageSize = query?.pageSize || 10;
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.reviews.findMany({
+        skip,
+        take,
+        orderBy: { created_at: "desc" },
+        include: {
+          users_reviews_reviewer_idTousers: {
+            select: {
+              email: true,
+              profiles: { select: { first_name: true, last_name: true } },
+            },
           },
-        },
-        users_reviews_reviewee_idTousers: {
-          select: {
-            email: true,
-            profiles: { select: { first_name: true, last_name: true } },
+          users_reviews_reviewee_idTousers: {
+            select: {
+              email: true,
+              profiles: { select: { first_name: true, last_name: true } },
+            },
           },
+          bookings: true,
         },
-        bookings: true,
-      },
-    });
+      }),
+      this.prisma.reviews.count()
+    ]);
+
+    return {
+      items,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      }
+    };
   }
 
   async approveReview(id: string) {

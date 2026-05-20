@@ -54,4 +54,16 @@ export class PaymentGatewayService {
 
     return digest === signature;
   }
+  async refund(paymentId: string, amountPaise?: number) {
+    try {
+      const data: any = { payment_id: paymentId };
+      if (amountPaise !== undefined) {
+        data.amount = amountPaise;
+      }
+      return await (this.razorpay as any).refunds.create(data);
+    } catch (error) {
+      this.logger.error("Razorpay refund failed", error);
+      throw new BadRequestException(error.error?.description || "Refund processing failed");
+    }
+  }
 }

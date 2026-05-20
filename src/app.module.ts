@@ -53,6 +53,14 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
         genReqId: (req: any) => {
           return req.headers["x-request-id"] || req.id;
         },
+        redact: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.body.password",
+          "req.body.token",
+          "req.body.access_token",
+          "req.body.refresh_token",
+        ],
         transport:
           process.env.NODE_ENV !== "production"
             ? {

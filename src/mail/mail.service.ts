@@ -158,4 +158,77 @@ export class MailService {
 
     await this.sendMail(to, subject, template, {});
   }
+
+  async sendPaymentReceiptEmail(
+    to: string,
+    userName: string,
+    details: {
+      amount: number;
+      currency: string;
+      date: string;
+      receiptId: string;
+      bookingDetails: string;
+    },
+  ) {
+    const subject = `Payment Receipt - ${details.receiptId}`;
+    const template = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #2c3e50;">Payment Receipt</h2>
+        <p>Hello ${userName},</p>
+        <p>We have successfully received your payment of <strong>${details.currency.toUpperCase()} ${details.amount.toFixed(2)}</strong>.</p>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0; color: #34495e;">Payment Details</h3>
+          <p><strong>Receipt ID:</strong> ${details.receiptId}</p>
+          <p><strong>Date:</strong> ${details.date}</p>
+          <p><strong>Amount:</strong> ${details.currency.toUpperCase()} ${details.amount.toFixed(2)}</p>
+          <p><strong>Booking:</strong> ${details.bookingDetails}</p>
+        </div>
+        
+        <p>If you have any questions about this payment, please contact CareConnect support.</p>
+        <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
+          Thank you for using CareConnect!<br>
+          <i>The CareConnect Team</i>
+        </p>
+      </div>
+    `;
+
+    await this.sendMail(to, subject, template, {});
+  }
+
+  async sendInstallmentReminderEmail(
+    to: string,
+    userName: string,
+    details: {
+      amount: number;
+      dueDate: string;
+      installmentNo: number;
+      bookingDetails: string;
+    },
+  ) {
+    const subject = `Upcoming Payment Reminder - Installment #${details.installmentNo}`;
+    const template = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #2c3e50;">Upcoming Payment Reminder</h2>
+        <p>Hello ${userName},</p>
+        <p>This is a friendly reminder that an upcoming installment for your booking is due in 3 days.</p>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h3 style="margin-top: 0; color: #34495e;">Installment Details</h3>
+          <p><strong>Booking:</strong> ${details.bookingDetails}</p>
+          <p><strong>Installment:</strong> #${details.installmentNo}</p>
+          <p><strong>Amount Due:</strong> ₹${details.amount}</p>
+          <p><strong>Due Date:</strong> ${details.dueDate}</p>
+        </div>
+        
+        <p>Please log in to the CareConnect app to make the payment.</p>
+        <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
+          Thank you for using CareConnect!<br>
+          <i>The CareConnect Team</i>
+        </p>
+      </div>
+    `;
+
+    await this.sendMail(to, subject, template, {});
+  }
 }

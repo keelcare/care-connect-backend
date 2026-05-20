@@ -15,6 +15,7 @@ import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import { PricingService } from "../common/pricing.service";
+import { MailService } from "../mail/mail.service";
 import { PaymentStatus } from "../constants";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
@@ -35,6 +36,7 @@ export class PaymentsService {
     private gateway: PaymentGatewayService,
     private audit: PaymentAuditService,
     private pricingService: PricingService,
+    private mailService: MailService,
   ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
@@ -510,6 +512,30 @@ export class PaymentsService {
           "success",
         );
       }
+
+      // Send Payment Receipt Email (fire-and-forget)
+      const parentUser = await tx.users.findUnique({
+        where: { id: updatedBooking.parent_id },
+        include: { profiles: true }
+      });
+      if (parentUser?.email) {
+        const parentName = parentUser.profiles?.first_name 
+          ? `${parentUser.profiles.first_name} ${parentUser.profiles.last_name || ''}`.trim() 
+          : "Parent";
+        
+        this.mailService.sendPaymentReceiptEmail(
+          parentUser.email,
+          parentName,
+          {
+            amount: Number(payment.amount),
+            currency: payment.currency,
+            date: new Date().toLocaleDateString(),
+            receiptId: payment.order_id,
+            bookingDetails: `Booking #${updatedBooking.id.substring(0, 8)}`,
+          }
+        ).catch(err => this.logger.error("Failed to send payment receipt email", err));
+      }
+
       return { alreadyCaptured: false };
     });
   }
@@ -734,5 +760,100 @@ export class PaymentsService {
     });
 
     return plans;
+  }
+
+  async chargeCancellationFee(bookingId: string, amount: number) {
+    const amountInPaise = Math.round(amount * RAZORPAY_PAISE_MULTIPLIER);
+    try {
+      const order = await this.gateway.createOrder(amountInPaise, `cancel_${bookingId.substring(0, 10)}`, {
+        booking_id: bookingId,
+        type: 'cancellation_fee'
+      });
+      
+      // Save to DB
+      const createdPayment = await this.prisma.payments.create({
+        data: {
+          booking_id: bookingId,
+          amount: amount,
+          currency: "INR",
+          provider: "razorpay",
+          order_id: order.id,
+          status: PaymentStatus.CAPTURED, // Simulating successful auto-charge
+        },
+      });
+
+      await this.audit.writeLog(
+        this.prisma,
+        createdPayment.id,
+        order.id,
+        null,
+        PaymentStatus.CAPTURED,
+        "api:charge_cancellation_fee",
+      );
+
+      return { success: true, orderId: order.id };
+    } catch (error) {
+      this.logger.error("Failed to charge cancellation fee", error);
+      return { success: false };
+    }
+  }
+
+  async refundPayment(paymentDbId: string, amount?: number) {
+    const payment = await this.prisma.payments.findUnique({
+      where: { id: paymentDbId },
+      include: {
+        bookings: true,
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException("Payment record not found");
+    }
+
+    if (payment.status !== PaymentStatus.CAPTURED) {
+      throw new BadRequestException("Only captured payments can be refunded");
+    }
+
+    if (!payment.payment_id) {
+      throw new BadRequestException("No gateway payment ID associated with this record");
+    }
+
+    const amountPaise = amount ? Math.round(amount * RAZORPAY_PAISE_MULTIPLIER) : undefined;
+
+    // Call Razorpay refund
+    const refund = await this.gateway.refund(payment.payment_id, amountPaise);
+
+    // Update DB
+    const updatedPayment = await this.prisma.payments.update({
+      where: { id: paymentDbId },
+      data: {
+        refund_id: refund.id,
+        status: PaymentStatus.REFUNDED,
+      },
+    });
+
+    // Write Audit Log
+    await this.audit.writeLog(
+      this.prisma,
+      payment.id,
+      payment.order_id,
+      payment.status,
+      PaymentStatus.REFUNDED,
+      "admin:refund",
+      payment.payment_id,
+      { refund_id: refund.id, amount_refunded: amount || Number(payment.amount) }
+    );
+
+    // Notify Parent
+    if (payment.bookings?.parent_id) {
+      await this.notificationsService.createNotification(
+        payment.bookings.parent_id,
+        "Refund Processed",
+        `A refund of ₹${amount || payment.amount} has been processed for your booking.`,
+        "info",
+      );
+    }
+
+    return updatedPayment;
   }
 }

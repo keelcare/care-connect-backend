@@ -165,4 +165,16 @@ export class PaymentsController {
   async getSubscriptionPlans(@Req() req: any) {
     return this.paymentsService.getSubscriptionPlans(req.user.id);
   }
+
+  @Post("refund/:paymentId")
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @ApiOperation({ summary: "Refund a captured payment (Admin only)" })
+  @ApiResponse({ status: 200, description: "Payment refunded successfully" })
+  async refundPayment(
+    @Param("paymentId") paymentId: string,
+    @Body("amount") amount?: number,
+  ) {
+    return this.paymentsService.refundPayment(paymentId, amount);
+  }
 }

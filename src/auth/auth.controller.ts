@@ -7,6 +7,7 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  Logger,
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { AuthService } from "./auth.service";
@@ -25,6 +26,8 @@ import { SessionDto } from "./dto/session.dto";
 @ApiTags("Authentication")
 @Controller("auth")
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
@@ -209,22 +212,22 @@ export class AuthController {
   @UseGuards(AuthGuard("google"))
   async googleAuthRedirect(@Req() req, @Res() res: Response) {
     try {
-      console.log("[Auth] Google Callback Received");
-      console.log("[Auth] Request User:", JSON.stringify(req.user));
+      this.logger.debug("Google Callback Received");
+      this.logger.debug(`Request User: ${JSON.stringify(req.user)}`);
 
       if (!req.user) {
-        console.error("[Auth] No user found in request");
+        this.logger.error("No user found in request");
         throw new UnauthorizedException("Google authentication failed");
       }
 
       const result = await this.authService.googleLogin(req.user);
-      console.log("[Auth] Google Login Result:", JSON.stringify(result));
+      this.logger.debug(`Google Login Result: ${JSON.stringify(result)}`);
 
       // Generate a short-lived session token
       const sessionToken = await this.authService.generateSessionToken(
         result.user,
       );
-      console.log("[Auth] Session Token Generated");
+      this.logger.debug("Session Token Generated");
 
       // Parse origin from state
       let redirectUrl = `${this.configService.get("FRONTEND_URL") || "http://localhost:3000"}/auth/callback`;
@@ -273,7 +276,7 @@ export class AuthController {
             redirectUrl = "keel://auth/callback";
           }
         } catch (e) {
-          console.error("[Auth] Failed to parse state origin:", e);
+          this.logger.error("Failed to parse state origin", e);
         }
       }
 
@@ -287,13 +290,13 @@ export class AuthController {
       ) {
         // Fallback to production frontend if redirect is accidentally localhost
         redirectUrl = `${this.configService.get("FRONTEND_URL")}/auth/callback`;
-        console.log("[Auth] Fallback redirect to production FRONTEND_URL");
+        this.logger.debug("Fallback redirect to production FRONTEND_URL");
       }
 
-      console.log(`[Auth] Redirecting to: ${redirectUrl}`);
+      this.logger.debug(`Redirecting to: ${redirectUrl}`);
       return res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
-      console.error("[Auth] Google Callback Error:", error);
+      this.logger.error("Google Callback Error", error);
 
       let frontendUrl =
         this.configService.get("FRONTEND_URL") || "http://localhost:3000";

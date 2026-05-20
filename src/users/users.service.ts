@@ -208,8 +208,8 @@ export class UsersService {
     const user = await this.prisma.users.findUnique({
       where: { id },
     });
-    console.log(
-      `[UsersService] findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
+    this.logger.debug(
+      `findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
     );
     return user;
   }
@@ -218,8 +218,8 @@ export class UsersService {
     const user = await this.prisma.users.findUnique({
       where: { email },
     });
-    console.log(
-      `[UsersService] findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
+    this.logger.debug(
+      `findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
     );
     return user;
   }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { TimeUtils } from "../common/utils/time.utils";
@@ -6,6 +6,8 @@ import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class RecurringBookingsService {
+  private readonly logger = new Logger(RecurringBookingsService.name);
+
   constructor(private prisma: PrismaService) {}
 
   async create(parentId: string, data: any) {
@@ -80,7 +82,7 @@ export class RecurringBookingsService {
   // Cron job to generate bookings from recurring patterns
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async generateRecurringBookings() {
-    console.log("Running recurring bookings generation...");
+    this.logger.debug("Running recurring bookings generation...");
 
     const activeRecurring = await this.prisma.recurring_bookings.findMany({
       where: { is_active: true },
@@ -134,7 +136,7 @@ export class RecurringBookingsService {
                 reason: `Nanny is already booked for a confirmed slot: ${conflict.start_time.toLocaleTimeString()} - ${conflict.end_time.toLocaleTimeString()}`,
               },
             });
-            console.log(
+            this.logger.debug(
               `Conflict detected for recurring ${recurring.id} on ${tomorrow.toDateString()}`,
             );
             continue;
@@ -152,7 +154,7 @@ export class RecurringBookingsService {
           });
 
           if (existingSamePattern) {
-            console.log(
+            this.logger.debug(
               `Booking for recurring ${recurring.id} already exists for ${tomorrow.toDateString()}, skipping.`,
             );
             continue;
@@ -181,12 +183,12 @@ export class RecurringBookingsService {
             });
           });
 
-          console.log(
+          this.logger.debug(
             `Created booking for recurring ${recurring.id} on ${tomorrow.toDateString()}`,
           );
         }
       } catch (error) {
-        console.error(
+        this.logger.error(
           `Error generating booking for recurring ${recurring.id}:`,
           error,
         );
@@ -200,7 +202,7 @@ export class RecurringBookingsService {
             },
           })
           .catch((err) =>
-            console.error("Failed to log generation error to DB", err),
+            this.logger.error("Failed to log generation error to DB", err),
           );
       }
     }

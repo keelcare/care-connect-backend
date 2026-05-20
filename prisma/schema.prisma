@@ -63,6 +63,10 @@ model bookings {
   progress_reports                progress_reports?
   reviews                         reviews[]
   subscription_plans              subscription_plans?
+
+  @@index([parent_id, status])
+  @@index([nanny_id, status])
+  @@index([start_time, status])
 }
 
 model chats {
@@ -151,7 +155,7 @@ model service_requests {
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
   sessions_per_month    Int?
-//  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
+  max_hourly_rate       Decimal?            @db.Decimal(10, 2)
   assignments           assignments[]
   bookings              bookings?
   matching_feedback     matching_feedback[]
@@ -176,6 +180,7 @@ model assignments {
   service_requests  service_requests @relation(fields: [request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([request_id, nanny_id])
+  @@index([request_id, status])
 }
 
 model payments {
@@ -245,6 +250,8 @@ model reviews {
   bookings                         bookings? @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
   users_reviews_reviewee_idTousers users?    @relation("reviews_reviewee_idTousers", fields: [reviewee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   users_reviews_reviewer_idTousers users?    @relation("reviews_reviewer_idTousers", fields: [reviewer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([reviewee_id])
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -331,6 +338,8 @@ model notifications {
   category   String?   @db.VarChar(50)
   related_id String?   @db.Uuid
   users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, is_read])
 }
 
 model disputes {

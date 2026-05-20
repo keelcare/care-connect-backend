@@ -3,6 +3,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { BookingsService } from "../bookings/bookings.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { MailService } from "../mail/mail.service";
 
 @Injectable()
 export class TasksService {
@@ -12,6 +13,7 @@ export class TasksService {
     private readonly bookingsService: BookingsService,
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
+    private readonly mailService: MailService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_MINUTES)
@@ -108,4 +110,107 @@ export class TasksService {
       this.logger.log(`Sent ${dueSoon.length} subscription renewal reminders`);
     }
   }
+
+  // 5. Upcoming installment reminders (due in 3 days) — runs daily at 9am IST (03:30 UTC)
+  @Cron("0 30 3 * * *")
+  async checkUpcomingInstallments() {
+    this.logger.debug("Running Cron Job: Checking for upcoming installments due in 3 days...");
+    try {
+      const now = new Date();
+      // Target date: exactly 3 days from now
+      const targetDateMin = new Date(now);
+      targetDateMin.setDate(targetDateMin.getDate() + 3);
+      targetDateMin.setHours(0, 0, 0, 0);
+
+      const targetDateMax = new Date(targetDateMin);
+      targetDateMax.setHours(23, 59, 59, 999);
+
+      const upcomingInstallments = await this.prisma.payment_installments.findMany({
+        where: {
+          status: "pending",
+          due_date: {
+            gte: targetDateMin,
+            lte: targetDateMax,
+          },
+        },
+        include: {
+          bookings: {
+            include: {
+              users_bookings_parent_idTousers: {
+                include: {
+                  profiles: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      for (const inst of upcomingInstallments) {
+        const parent = inst.bookings?.users_bookings_parent_idTousers;
+        if (!parent) continue;
+
+        // 1. Send in-app notification
+        await this.notificationsService.createNotification(
+          parent.id,
+          "Upcoming Payment Reminder",
+          `Installment #${inst.installment_no} of ₹${inst.amount_due} is due in 3 days.`,
+          "info",
+        );
+
+        // 2. Send email reminder (fire-and-forget)
+        if (parent.email) {
+          const parentName = parent.profiles?.first_name 
+            ? `${parent.profiles.first_name} ${parent.profiles.last_name || ''}`.trim() 
+            : "Parent";
+            
+          const bookingDetails = `Booking #${inst.booking_id.substring(0, 8)}`;
+          
+          this.mailService.sendInstallmentReminderEmail(
+            parent.email,
+            parentName,
+            {
+              amount: Number(inst.amount_due),
+              dueDate: inst.due_date.toLocaleDateString(),
+              installmentNo: inst.installment_no,
+              bookingDetails,
+            }
+          ).catch((err) => 
+            this.logger.error(`Failed to send upcoming installment email to ${parent.email}`, err)
+          );
+        }
+      }
+
+      if (upcomingInstallments.length > 0) {
+        this.logger.log(`Sent ${upcomingInstallments.length} upcoming installment reminders.`);
+      }
+    } catch (error) {
+      this.logger.error("Error in checkUpcomingInstallments cron job", error);
+    }
+  }
+
+  // 6. Weekly location updates cleanup — runs weekly (Sundays at midnight UTC)
+  @Cron("0 0 0 * * 0")
+  async cleanLocationUpdates() {
+    this.logger.debug("Running Cron Job: Cleaning up location updates older than 30 days...");
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - 30);
+
+      const result = await this.prisma.location_updates.deleteMany({
+        where: {
+          timestamp: {
+            lt: cutoffDate,
+          },
+        },
+      });
+
+      if (result.count > 0) {
+        this.logger.log(`Cleaned up ${result.count} stale location updates.`);
+      }
+    } catch (error) {
+      this.logger.error("Error in cleanLocationUpdates cron job", error);
+    }
+  }
 }
+

@@ -578,6 +578,12 @@ export class BookingsService {
 
         cancellationFee = hourlyRate;
         feeStatus = "pending";
+
+        // Trigger cancellation fee charge
+        const chargeResult = await this.paymentsService.chargeCancellationFee(id, cancellationFee);
+        if (chargeResult.success) {
+          feeStatus = "charged";
+        }
       }
     }
 

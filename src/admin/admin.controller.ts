@@ -16,6 +16,7 @@ import { Roles } from "../auth/decorators/roles.decorator";
 import { RolesGuard } from "../auth/guards/roles.guard";
 
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
+import { PaginationDto } from "./dto/pagination.dto";
 
 @Controller("admin")
 @Roles(UserRole.ADMIN)
@@ -41,8 +42,8 @@ export class AdminController {
 
   // User Management
   @Get("users")
-  async getAllUsers() {
-    return this.adminService.getAllUsers();
+  async getAllUsers(@Query() query: PaginationDto) {
+    return this.adminService.getAllUsers(query);
   }
 
   @Put("users/:id/verify")
@@ -84,8 +85,8 @@ export class AdminController {
 
   // Booking Management
   @Get("bookings")
-  async getAllBookings() {
-    return this.adminService.getAllBookings();
+  async getAllBookings(@Query() query: PaginationDto) {
+    return this.adminService.getAllBookings(query);
   }
 
   // Dispute Resolution
@@ -110,8 +111,8 @@ export class AdminController {
 
   // Payment Monitoring
   @Get("payments")
-  async getAllPayments() {
-    return this.adminService.getAllPayments();
+  async getAllPayments(@Query() query: PaginationDto) {
+    return this.adminService.getAllPayments(query);
   }
 
   @Get("payments/stats")
@@ -131,8 +132,8 @@ export class AdminController {
 
   // Review Moderation
   @Get("reviews")
-  async getAllReviews() {
-    return this.adminService.getAllReviews();
+  async getAllReviews(@Query() query: PaginationDto) {
+    return this.adminService.getAllReviews(query);
   }
 
   @Put("reviews/:id/approve")

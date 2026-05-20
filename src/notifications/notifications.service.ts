@@ -5,10 +5,12 @@ import { NotificationsGateway } from "./notifications.gateway";
 import { FcmService } from "./fcm.service";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
+import { Twilio } from "twilio";
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
+  private twilioClient: Twilio;
 
   constructor(
     private configService: ConfigService,
@@ -16,7 +18,16 @@ export class NotificationsService {
     private notificationsGateway: NotificationsGateway,
     private fcmService: FcmService,
     private sseService: SseService,
-  ) {}
+  ) {
+    //commented for now till we get credentials
+    // const accountSid = this.configService.get<string>("TWILIO_ACCOUNT_SID");
+    // const authToken = this.configService.get<string>("TWILIO_AUTH_TOKEN");
+    // if (accountSid && authToken) {
+    //   this.twilioClient = new Twilio(accountSid, authToken);
+    // } else {
+    //   this.logger.warn("Twilio credentials not found. SMS notifications will be simulated.");
+    // }
+  }
 
   async createNotification(
     userId: string,
@@ -166,18 +177,34 @@ export class NotificationsService {
 
   // Legacy methods adapted
   async sendEmail(to: string, subject: string, text: string) {
-    console.log(`[Email] To: ${to}, Subject: ${subject}, Body: ${text}`);
+    this.logger.debug(`[Email] To: ${to}, Subject: ${subject}, Body: ${text}`);
     return { success: true, method: "email" };
   }
 
   async sendPushNotification(userId: string, title: string, body: string) {
-    console.log(`[Push] User: ${userId}, Title: ${title}, Body: ${body}`);
+    this.logger.debug(`[Push] User: ${userId}, Title: ${title}, Body: ${body}`);
     return { success: true, method: "push" };
   }
 
   async sendSms(phoneNumber: string, message: string) {
-    console.log(`[SMS] To: ${phoneNumber}, Message: ${message}`);
-    return { success: true, method: "sms" };
+    const fromNumber = this.configService.get<string>("TWILIO_FROM_NUMBER");
+    if (this.twilioClient && fromNumber) {
+      try {
+        const response = await this.twilioClient.messages.create({
+          body: message,
+          from: fromNumber,
+          to: phoneNumber,
+        });
+        this.logger.log(`SMS sent successfully to ${phoneNumber}: ${response.sid}`);
+        return { success: true, sid: response.sid, method: "sms" };
+      } catch (error) {
+        this.logger.error(`Failed to send SMS to ${phoneNumber}`, error);
+        return { success: false, error: error.message, method: "sms" };
+      }
+    } else {
+      this.logger.debug(`[SMS Simulation] To: ${phoneNumber}, Message: ${message}`);
+      return { success: true, method: "sms", simulated: true };
+    }
   }
 
   async notifyBookingConfirmed(
