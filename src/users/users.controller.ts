@@ -8,6 +8,7 @@ import {
   UseGuards,
   Request,
   ForbiddenException,
+  Delete
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -37,7 +38,7 @@ import {
 @ApiTags("Users")
 @Controller("users")
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) { }
 
   @ApiBearerAuth()
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -108,5 +109,14 @@ export class UsersController {
   async updatePushToken(@Request() req, @Body() body: UpdatePushTokenDto) {
     await this.usersService.updatePushToken(req.user.id, body.token);
     return { message: "Push token updated successfully" };
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Delete("me")
+  @ApiOperation({ summary: "Delete current user account (anonymise PII)" })
+  @ApiResponse({ status: 200, description: "Account deleted successfully" })
+  async deleteAccount(@Request() req) {
+    return this.usersService.deleteMe(req.user.id);
   }
 }

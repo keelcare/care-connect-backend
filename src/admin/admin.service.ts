@@ -22,6 +22,7 @@ import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { PaginationDto } from "./dto/pagination.dto";
+import { AdminAuditService } from "./admin-audit.service";
 
 @Injectable()
 export class AdminService {
@@ -36,6 +37,7 @@ export class AdminService {
     private disputesService: DisputesService,
     private mailService: MailService,
     private availabilityService: AvailabilityService,
+    private auditService: AdminAuditService,
   ) {}
 
   // Manual Assignment Management
@@ -538,6 +540,8 @@ export class AdminService {
     requestId: string,
     status: "approved" | "rejected",
     adminNotes?: string,
+    adminId?: string,
+    ipAddress?: string,
   ) {
     return this.prisma.$transaction(async (prisma) => {
       const existingRequest = await prisma.nanny_category_requests.findUnique({
@@ -581,6 +585,18 @@ export class AdminService {
       }
 
       return request;
+    }).then(async (result) => {
+      if (adminId) {
+        await this.auditService.logAction({
+          adminId,
+          action: status === "approved" ? "APPROVE_CATEGORY_REQUEST" : "REJECT_CATEGORY_REQUEST",
+          targetType: "nanny_category_request",
+          targetId: requestId,
+          metadata: { status, adminNotes },
+          ipAddress,
+        });
+      }
+      return result;
     });
   }
 
@@ -626,31 +642,62 @@ export class AdminService {
     };
   }
 
-  async verifyUser(userId: string) {
-    return this.prisma.users.update({
+  async verifyUser(userId: string, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.users.update({
       where: { id: userId },
       data: { is_verified: true },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "VERIFY_USER",
+        targetType: "user",
+        targetId: userId,
+        ipAddress,
+      });
+    }
+    return result;
   }
 
-  async banUser(userId: string, reason?: string) {
-    return this.prisma.users.update({
+  async banUser(userId: string, reason?: string, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.users.update({
       where: { id: userId },
       data: {
         is_active: false,
         ban_reason: reason,
       },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "BAN_USER",
+        targetType: "user",
+        targetId: userId,
+        metadata: { reason },
+        ipAddress,
+      });
+    }
+    return result;
   }
 
-  async unbanUser(userId: string) {
-    return this.prisma.users.update({
+  async unbanUser(userId: string, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.users.update({
       where: { id: userId },
       data: {
         is_active: true,
         ban_reason: null,
       },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "UNBAN_USER",
+        targetType: "user",
+        targetId: userId,
+        ipAddress,
+      });
+    }
+    return result;
   }
 
   // Booking Management
@@ -715,8 +762,17 @@ export class AdminService {
     return this.disputesService.findOne(id);
   }
 
-  async resolveDispute(id: string, resolution: string, resolvedBy: string) {
-    return this.disputesService.resolve(id, resolvedBy, { resolution });
+  async resolveDispute(id: string, resolution: string, resolvedBy: string, ipAddress?: string) {
+    const result = await this.disputesService.resolve(id, resolvedBy, { resolution });
+    await this.auditService.logAction({
+      adminId: resolvedBy,
+      action: "RESOLVE_DISPUTE",
+      targetType: "dispute",
+      targetId: id,
+      metadata: { resolution },
+      ipAddress,
+    });
+    return result;
   }
 
   // Payment Monitoring
@@ -897,12 +953,22 @@ export class AdminService {
     });
   }
 
-  async updateSetting(key: string, value: any) {
-    return this.prisma.system_settings.upsert({
+  async updateSetting(key: string, value: any, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.system_settings.upsert({
       where: { key },
       update: { value, updated_at: new Date() },
       create: { key, value },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "UPDATE_SETTING",
+        targetType: "system_setting",
+        metadata: { key, value },
+        ipAddress,
+      });
+    }
+    return result;
   }
 
   // Analytics

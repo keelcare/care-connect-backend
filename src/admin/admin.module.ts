@@ -3,6 +3,7 @@ import { PassportModule } from "@nestjs/passport";
 import { JwtModule } from "@nestjs/jwt";
 import { AdminService } from "./admin.service";
 import { AdminController } from "./admin.controller";
+import { AdminAuditService } from "./admin-audit.service";
 
 import { NotificationsModule } from "../notifications/notifications.module";
 import { FavoritesModule } from "../favorites/favorites.module";
@@ -25,7 +26,7 @@ import { AvailabilityModule } from "../availability/availability.module";
     AvailabilityModule,
   ],
   controllers: [AdminController],
-  providers: [AdminService],
-  exports: [AdminService],
+  providers: [AdminService, AdminAuditService],
+  exports: [AdminService, AdminAuditService],
 })
 export class AdminModule {}

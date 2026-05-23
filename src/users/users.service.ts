@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { Prisma } from "@prisma/client";
 import { users, profiles } from "@prisma/client";
 import { UpdateUserDto } from "./dto/update-user.dto";
@@ -8,7 +9,10 @@ import { UpdateUserDto } from "./dto/update-user.dto";
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notificationsService: NotificationsService,
+  ) {}
 
   // Auth-related methods
   async create(
@@ -351,5 +355,85 @@ export class UsersService {
       where: { id },
       data: { fcm_token: token },
     });
+  }
+
+  async deleteMe(userId: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      include: { profiles: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    // 1. Cancel active bookings
+    const activeStatuses = ["requested", "accepted", "confirmed", "in_progress"];
+    let activeBookings = [];
+    if (user.role === "parent") {
+      activeBookings = await this.prisma.bookings.findMany({
+        where: {
+          parent_id: userId,
+          status: { in: activeStatuses },
+        },
+      });
+
+      await this.prisma.bookings.updateMany({
+        where: {
+          parent_id: userId,
+          status: { in: activeStatuses },
+        },
+        data: {
+          status: "cancelled",
+          cancellation_reason: "Parent account deleted",
+        },
+      });
+
+      // Notify nannies
+      for (const booking of activeBookings) {
+        if (booking.nanny_id) {
+          await this.notificationsService.createNotification(
+            booking.nanny_id,
+            "Booking Cancelled",
+            "A booking was cancelled because the parent deleted their account.",
+            "warning"
+          );
+        }
+      }
+    }
+
+    // 2. Anonymise PII
+    const deletedEmail = `deleted-${user.id}@keel.dev`;
+    
+    await this.prisma.$transaction([
+      this.prisma.users.update({
+        where: { id: userId },
+        data: {
+          email: deletedEmail,
+          is_active: false,
+          oauth_provider: null,
+          oauth_provider_id: null,
+          oauth_access_token: null,
+          oauth_refresh_token: null,
+          password_hash: null,
+          fcm_token: null,
+          refresh_token_hash: null,
+        },
+      }),
+      this.prisma.profiles.update({
+        where: { user_id: userId },
+        data: {
+          first_name: "Deleted",
+          last_name: "User",
+          phone: null,
+          address: null,
+          profile_image_url: null,
+          lat: null,
+          lng: null,
+        },
+      }),
+    ]);
+
+    return { message: "Account deleted and data anonymised successfully" };
   }
 }

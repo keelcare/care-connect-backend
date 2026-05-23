@@ -18,6 +18,15 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 import { PaginationDto } from "./dto/pagination.dto";
 
+/** Helper: extract the real client IP from the request */
+function getClientIp(req: any): string {
+  return (
+    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+    req.socket?.remoteAddress ||
+    "unknown"
+  );
+}
+
 @Controller("admin")
 @Roles(UserRole.ADMIN)
 @UseGuards(AuthGuard("jwt"), RolesGuard)
@@ -47,18 +56,22 @@ export class AdminController {
   }
 
   @Put("users/:id/verify")
-  async verifyUser(@Param("id") userId: string) {
-    return this.adminService.verifyUser(userId);
+  async verifyUser(@Param("id") userId: string, @Req() req: any) {
+    return this.adminService.verifyUser(userId, req.user.id, getClientIp(req));
   }
 
   @Put("users/:id/ban")
-  async banUser(@Param("id") userId: string, @Body("reason") reason?: string) {
-    return this.adminService.banUser(userId, reason);
+  async banUser(
+    @Param("id") userId: string,
+    @Body("reason") reason: string | undefined,
+    @Req() req: any,
+  ) {
+    return this.adminService.banUser(userId, reason, req.user.id, getClientIp(req));
   }
 
   @Put("users/:id/unban")
-  async unbanUser(@Param("id") userId: string) {
-    return this.adminService.unbanUser(userId);
+  async unbanUser(@Param("id") userId: string, @Req() req: any) {
+    return this.adminService.unbanUser(userId, req.user.id, getClientIp(req));
   }
 
   // Category Request Management
@@ -70,17 +83,31 @@ export class AdminController {
   @Put("category-requests/:id/approve")
   async approveCategoryRequest(
     @Param("id") id: string,
-    @Body("notes") notes?: string,
+    @Body("notes") notes: string | undefined,
+    @Req() req: any,
   ) {
-    return this.adminService.updateCategoryRequestStatus(id, "approved", notes);
+    return this.adminService.updateCategoryRequestStatus(
+      id,
+      "approved",
+      notes,
+      req.user.id,
+      getClientIp(req),
+    );
   }
 
   @Put("category-requests/:id/reject")
   async rejectCategoryRequest(
     @Param("id") id: string,
-    @Body("notes") notes?: string,
+    @Body("notes") notes: string | undefined,
+    @Req() req: any,
   ) {
-    return this.adminService.updateCategoryRequestStatus(id, "rejected", notes);
+    return this.adminService.updateCategoryRequestStatus(
+      id,
+      "rejected",
+      notes,
+      req.user.id,
+      getClientIp(req),
+    );
   }
 
   // Booking Management
@@ -106,7 +133,7 @@ export class AdminController {
     @Body("resolution") resolution: string,
     @Req() req: any,
   ) {
-    return this.adminService.resolveDispute(id, resolution, req.user.id);
+    return this.adminService.resolveDispute(id, resolution, req.user.id, getClientIp(req));
   }
 
   // Payment Monitoring
@@ -158,8 +185,12 @@ export class AdminController {
   }
 
   @Post("settings/:key")
-  async updateSetting(@Param("key") key: string, @Body("value") value: any) {
-    return this.adminService.updateSetting(key, value);
+  async updateSetting(
+    @Param("key") key: string,
+    @Body("value") value: any,
+    @Req() req: any,
+  ) {
+    return this.adminService.updateSetting(key, value, req.user.id, getClientIp(req));
   }
 
   // Analytics

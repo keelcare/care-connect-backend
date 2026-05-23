@@ -4,9 +4,7 @@ import { APP_FILTER } from "@nestjs/core";
 import { CorrelationIdMiddleware } from "./common/middleware/correlation-id.middleware";
 import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
-import { ServeStaticModule } from "@nestjs/serve-static";
 import { EventEmitterModule } from "@nestjs/event-emitter";
-import { join } from "path";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { AuthModule } from "./auth/auth.module";
@@ -79,10 +77,6 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
         limit: 300, // Balanced global limit for SPA usage
       },
     ]),
-    ServeStaticModule.forRoot({
-      rootPath: join(process.cwd(), "uploads"),
-      serveRoot: "/uploads",
-    }),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
     SseModule,

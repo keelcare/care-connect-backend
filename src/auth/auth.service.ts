@@ -36,6 +36,9 @@ export class AuthService {
     if (!this.configService.get<string>("JWT_SECRET")) {
       throw new Error("JWT_SECRET must be configured");
     }
+    if (!this.configService.get<string>("JWT_REFRESH_SECRET")) {
+      throw new Error("JWT_REFRESH_SECRET must be configured");
+    }
   }
 
   async validateUser(email: string, pass: string): Promise<any> {
@@ -61,8 +64,9 @@ export class AuthService {
     };
 
     const secret = this.configService.get<string>("JWT_SECRET");
-    if (!secret) {
-      throw new Error("JWT_SECRET is not configured");
+    const refreshSecret = this.configService.get<string>("JWT_REFRESH_SECRET");
+    if (!secret || !refreshSecret) {
+      throw new Error("JWT_SECRET and JWT_REFRESH_SECRET must be configured");
     }
 
     const accessToken = this.jwtService.sign(payload, {
@@ -72,7 +76,7 @@ export class AuthService {
 
     const refreshToken = this.jwtService.sign(payload, {
       expiresIn: "7d",
-      secret: secret,
+      secret: refreshSecret,
     });
 
     // Hash and store refresh token
@@ -101,11 +105,20 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     try {
-      const secret = this.configService.get<string>("JWT_SECRET");
-      if (!secret) {
-        throw new Error("JWT_SECRET is not configured");
+      const refreshSecret = this.configService.get<string>("JWT_REFRESH_SECRET");
+      if (!refreshSecret) {
+        throw new Error("JWT_REFRESH_SECRET is not configured");
       }
-      const payload = this.jwtService.verify(refreshToken, { secret });
+      const payload = this.jwtService.verify(refreshToken, { secret: refreshSecret });
+      
+      // Check if token was revoked
+      const revokedToken = await this.prisma.revoked_tokens.findUnique({
+        where: { token: refreshToken },
+      });
+      if (revokedToken) {
+        throw new UnauthorizedException("Refresh token has been revoked");
+      }
+
       // Directly using findUnique to be 100% sure we get the hash
       const user = await this.prisma.users.findUnique({
         where: { email: payload.email },
@@ -122,6 +135,14 @@ export class AuthService {
       if (!isValid) {
         throw new UnauthorizedException("Invalid refresh token");
       }
+
+      // Rotate token: revoke the old one
+      const expiresAt = new Date((payload.exp || 0) * 1000);
+      await this.prisma.revoked_tokens.create({
+        data: { token: refreshToken, expires_at: expiresAt },
+      }).catch(err => {
+        console.warn(`[Auth] Failed to revoke refresh token: ${err.message}`);
+      });
 
       // Generate new tokens
       return this.login(user);
