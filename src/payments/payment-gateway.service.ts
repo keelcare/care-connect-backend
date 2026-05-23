@@ -12,13 +12,22 @@ export class PaymentGatewayService {
     const keyId = this.configService.get<string>("RAZORPAY_KEY_ID");
     const keySecret = this.configService.get<string>("RAZORPAY_KEY_SECRET");
 
-    this.razorpay = new Razorpay({
-      key_id: keyId || "",
-      key_secret: keySecret || "",
-    });
+    if (keyId && keySecret) {
+      this.razorpay = new Razorpay({
+        key_id: keyId,
+        key_secret: keySecret,
+      });
+    } else {
+      this.logger.warn(
+        "RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET not set. Razorpay integration will not be available.",
+      );
+    }
   }
 
   async createOrder(amountPaise: number, receipt: string, notes: any) {
+    if (!this.razorpay) {
+      throw new BadRequestException("Payment gateway is not configured");
+    }
     try {
       return await this.razorpay.orders.create({
         amount: amountPaise,
@@ -28,11 +37,18 @@ export class PaymentGatewayService {
       });
     } catch (error) {
       this.logger.error("Razorpay order creation failed", error);
-      throw new BadRequestException(error.error?.description || "Payment gateway error");
+      const gatewayError = error as { error?: { description?: string } };
+      throw new BadRequestException(
+        gatewayError.error?.description || "Payment gateway error",
+      );
     }
   }
 
-  verifySignature(orderId: string, paymentId: string, signature: string): boolean {
+  verifySignature(
+    orderId: string,
+    paymentId: string,
+    signature: string,
+  ): boolean {
     const secret = this.configService.get<string>("RAZORPAY_KEY_SECRET");
     if (!secret) return false;
 
@@ -54,7 +70,11 @@ export class PaymentGatewayService {
 
     return digest === signature;
   }
+
   async refund(paymentId: string, amountPaise?: number) {
+    if (!this.razorpay) {
+      throw new BadRequestException("Payment gateway is not configured");
+    }
     try {
       const data: any = { payment_id: paymentId };
       if (amountPaise !== undefined) {
@@ -63,7 +83,10 @@ export class PaymentGatewayService {
       return await (this.razorpay as any).refunds.create(data);
     } catch (error) {
       this.logger.error("Razorpay refund failed", error);
-      throw new BadRequestException(error.error?.description || "Refund processing failed");
+      const gatewayError = error as { error?: { description?: string } };
+      throw new BadRequestException(
+        gatewayError.error?.description || "Refund processing failed",
+      );
     }
   }
 }
