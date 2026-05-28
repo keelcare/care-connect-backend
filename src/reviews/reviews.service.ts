@@ -34,12 +34,15 @@ export class ReviewsService {
       throw new BadRequestException("Can only review completed bookings");
     }
 
-    // 3. Determine reviewee (the other party)
+    // 3. Determine reviewee (the other party) and reviewer's role
     let revieweeId: string;
+    let reviewerRole: string;
     if (reviewerId === booking.parent_id) {
       revieweeId = booking.nanny_id;
+      reviewerRole = "parent";
     } else if (reviewerId === booking.nanny_id) {
       revieweeId = booking.parent_id;
+      reviewerRole = "nanny";
     } else {
       throw new BadRequestException("User is not part of this booking");
     }
@@ -56,14 +59,18 @@ export class ReviewsService {
       throw new BadRequestException("You have already reviewed this booking");
     }
 
-    // 5. Create review
+    // 5. Create review (nanny reviews of parents are held for moderation)
     const review = await this.prisma.reviews.create({
       data: {
         booking_id: bookingId,
         reviewer_id: reviewerId,
         reviewee_id: revieweeId,
+        reviewer_role: reviewerRole,
         rating,
         comment,
+        // Nanny → Parent reviews require admin moderation before appearing on parent profile
+        is_approved: reviewerRole === "parent" ? true : false,
+        moderation_status: reviewerRole === "parent" ? "approved" : "pending",
       },
       include: {
         users_reviews_reviewee_idTousers: {

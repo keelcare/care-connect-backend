@@ -12,7 +12,7 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
-  ) {}
+  ) { }
 
   // Auth-related methods
   async create(
@@ -107,10 +107,10 @@ export class UsersService {
         const averageRating =
           totalReviews > 0
             ? Math.round(
-                (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-                  totalReviews) *
-                  10,
-              ) / 10
+              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+                totalReviews) *
+              10,
+            ) / 10
             : null;
 
         // Exclude sensitive fields
@@ -192,10 +192,10 @@ export class UsersService {
       const averageRating =
         totalReviews > 0
           ? Math.round(
-              (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
-                totalReviews) *
-                10,
-            ) / 10
+            (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+              totalReviews) *
+            10,
+          ) / 10
           : null;
 
       return {
@@ -357,6 +357,14 @@ export class UsersService {
     });
   }
 
+  async completeOnboarding(userId: string) {
+    return this.prisma.profiles.upsert({
+      where: { user_id: userId },
+      update: { onboarding_completed: true },
+      create: { user_id: userId, onboarding_completed: true },
+    });
+  }
+
   async deleteMe(userId: string) {
     const user = await this.prisma.users.findUnique({
       where: { id: userId },
@@ -404,7 +412,7 @@ export class UsersService {
 
     // 2. Anonymise PII
     const deletedEmail = `deleted-${user.id}@keel.dev`;
-    
+
     await this.prisma.$transaction([
       this.prisma.users.update({
         where: { id: userId },

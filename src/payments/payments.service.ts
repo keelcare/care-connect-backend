@@ -798,6 +798,69 @@ export class PaymentsService {
     }
   }
 
+  async getNannyEarnings(nannyId: string) {
+    // 1. Calculate total earned from captured payments
+    const capturedPayments = await this.prisma.payments.aggregate({
+      where: {
+        nanny_id: nannyId,
+        status: PaymentStatus.CAPTURED,
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+    const totalEarned = Number(capturedPayments._sum.amount || 0);
+
+    // 2. Fetch pending bookings to calculate pending earnings
+    // "Pending" could mean bookings that are CONFIRMED or IN_PROGRESS, but not yet paid.
+    // To simplify, we sum up the amount from created/pending payments for this nanny, or estimate from bookings.
+    // Let's sum the amount from payments with status 'created' for this nanny.
+    const pendingPayments = await this.prisma.payments.aggregate({
+      where: {
+        nanny_id: nannyId,
+        status: PaymentStatus.CREATED,
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+    const pendingEarned = Number(pendingPayments._sum.amount || 0);
+
+    // 3. Fetch recent transactions (captured payments)
+    const recentTransactions = await this.prisma.payments.findMany({
+      where: {
+        nanny_id: nannyId,
+        status: PaymentStatus.CAPTURED,
+      },
+      include: {
+        bookings: {
+          select: {
+            id: true,
+            start_time: true,
+            end_time: true,
+            service_requests: {
+              select: {
+                category: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        updated_at: "desc",
+      },
+      take: 10,
+    });
+
+    return {
+      totalEarned,
+      pendingEarned,
+      bookings: recentTransactions,
+    };
+  }
+
   async refundPayment(paymentDbId: string, amount?: number) {
     const payment = await this.prisma.payments.findUnique({
       where: { id: paymentDbId },

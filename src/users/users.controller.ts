@@ -113,6 +113,15 @@ export class UsersController {
 
   @ApiBearerAuth()
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Put("me/onboarding")
+  @ApiOperation({ summary: "Mark onboarding wizard as completed for the authenticated user" })
+  @ApiResponse({ status: 200, description: "Onboarding marked complete" })
+  async completeOnboarding(@Request() req) {
+    return this.usersService.completeOnboarding(req.user.id);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Delete("me")
   @ApiOperation({ summary: "Delete current user account (anonymise PII)" })
   @ApiResponse({ status: 200, description: "Account deleted successfully" })

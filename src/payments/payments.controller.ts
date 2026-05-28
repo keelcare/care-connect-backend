@@ -177,4 +177,13 @@ export class PaymentsController {
   ) {
     return this.paymentsService.refundPayment(paymentId, amount);
   }
+
+  @Get("nanny/earnings")
+  @Roles(UserRole.NANNY)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @ApiOperation({ summary: "Get aggregated earnings and pending amounts for the authenticated nanny" })
+  @ApiResponse({ status: 200, description: "Nanny earnings fetched successfully" })
+  async getNannyEarnings(@Req() req: any) {
+    return this.paymentsService.getNannyEarnings(req.user.id);
+  }
 }
