@@ -145,6 +145,14 @@ export class AssignmentsService {
         nannyId,
       );
 
+      // 3.6 Create payment plan if subscription
+      await this.requestsService.createPaymentPlan(
+        tx,
+        assignment.request_id,
+        updatedBooking.id,
+        updatedAssignment.service_requests.parent_id
+      );
+
       // 4. Create Chat for this booking (Atomically)
       try {
         await this.chatService.createChat(updatedBooking.id);

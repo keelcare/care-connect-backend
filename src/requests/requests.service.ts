@@ -119,6 +119,7 @@ export class RequestsService {
               status: BookingStatus.REQUESTED,
               start_time: bookingStartTime,
               end_time: bookingEndTime,
+              tags: createRequestDto.use_installments ? ["use_installments"] : [],
             },
           });
 
@@ -134,53 +135,7 @@ export class RequestsService {
             });
           }
 
-          // Create Payment Installments and Plan if subscription and opted-in
-          if (
-            createRequestDto.use_installments &&
-            (createRequestDto.plan_duration_months || 1) > 1
-          ) {
-            const { monthlyCost } = PricingUtils.calculateTotal(
-              Number(serviceSettings.hourly_rate),
-              Number(createRequestDto.duration_hours),
-              Number(createRequestDto.discount_percentage || 0),
-              Number(createRequestDto.plan_duration_months || 1),
-              createRequestDto.plan_type || "ONE_TIME",
-              createRequestDto.sessions_per_month,
-            );
-
-            const planMonths = Number(createRequestDto.plan_duration_months);
-
-            // 1. Create the Subscription Plan contract
-            const plan = await tx.subscription_plans.create({
-              data: {
-                request_id: request.id,
-                booking_id: booking.id,
-                parent_id: parentId,
-                status: "active",
-                total_months: planMonths,
-                monthly_amount: monthlyCost,
-                start_date: new Date(createRequestDto.date),
-                next_due_date: new Date(createRequestDto.date), // First installment is due now
-              },
-            });
-
-            // 2. Create the individual Installments linked to the plan
-            const installments = Array.from({ length: planMonths }).map(
-              (_, index) => {
-                const dueDate = TimeUtils.addMonths(new Date(createRequestDto.date), index);
-                return {
-                  booking_id: booking.id,
-                  subscription_plan_id: plan.id,
-                  installment_no: index + 1,
-                  amount_due: monthlyCost,
-                  due_date: dueDate,
-                  status: "pending",
-                };
-              },
-            );
-
-            await tx.payment_installments.createMany({ data: installments });
-          }
+          // Payment Installments and Plan are now initialized when a nanny is successfully assigned
 
           // 3. Trigger auto-matching (Inside transaction)
           await this.triggerMatching(request.id, tx);
@@ -580,6 +535,9 @@ export class RequestsService {
 
             // 5. Create recurring records if applicable
             await this.createRecurringRecord(transaction, requestId, bestMatch.id);
+            
+            // 6. Create payment plan if applicable
+            await this.createPaymentPlan(transaction, requestId, updatedBooking.id, request.parent_id);
 
             return { assignment, booking: updatedBooking };
           };
@@ -811,6 +769,68 @@ export class RequestsService {
         is_active: true,
       },
     });
+  }
+
+  /**
+   * Helper to initialize payment plan (subscription and installments) when a nanny is successfully assigned.
+   */
+  async createPaymentPlan(tx: Prisma.TransactionClient, requestId: string, bookingId: string, parentId: string) {
+    const request = await tx.service_requests.findUnique({ where: { id: requestId } });
+    const booking = await tx.bookings.findUnique({ where: { id: bookingId } });
+    
+    if (!request || !booking) return;
+
+    const useInstallments = booking.tags && booking.tags.includes("use_installments");
+    
+    if (useInstallments && (request.plan_duration_months || 1) > 1) {
+      const serviceSettings = await tx.services.findUnique({
+        where: { name: request.category || "CC" },
+      });
+      
+      const { monthlyCost } = PricingUtils.calculateTotal(
+        Number(serviceSettings?.hourly_rate || 500),
+        Number(request.duration_hours || 0),
+        Number(request.discount_percentage || 0),
+        Number(request.plan_duration_months || 1),
+        request.plan_type || "ONE_TIME",
+        Number(request.sessions_per_month),
+      );
+
+      const planMonths = Number(request.plan_duration_months);
+
+      // Check if plan already exists (idempotency)
+      const existingPlan = await tx.subscription_plans.findUnique({
+        where: { request_id: request.id }
+      });
+      if (existingPlan) return;
+
+      const plan = await tx.subscription_plans.create({
+        data: {
+          request_id: request.id,
+          booking_id: booking.id,
+          parent_id: parentId,
+          status: "active",
+          total_months: planMonths,
+          monthly_amount: monthlyCost,
+          start_date: new Date(request.date),
+          next_due_date: new Date(request.date), // First installment is due now
+        },
+      });
+
+      const installments = Array.from({ length: planMonths }).map((_, index) => {
+        const dueDate = TimeUtils.addMonths(new Date(request.date), index);
+        return {
+          booking_id: booking.id,
+          subscription_plan_id: plan.id,
+          installment_no: index + 1,
+          amount_due: monthlyCost,
+          due_date: dueDate,
+          status: "pending",
+        };
+      });
+
+      await tx.payment_installments.createMany({ data: installments });
+    }
   }
 
   async findAllByParent(parentId: string) {
