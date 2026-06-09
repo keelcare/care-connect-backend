@@ -170,7 +170,7 @@ describe("Concurrency (e2e)", () => {
     if (app) {
       await app.close();
     }
-  });
+  }, 60000);
 
   it("should ensure only ONE booking is confirmed for the same nanny/time slot", async () => {
     const requestData = {

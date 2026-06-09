@@ -137,9 +137,6 @@ export class RequestsService {
 
           // Payment Installments and Plan are now initialized when a nanny is successfully assigned
 
-          // 3. Trigger auto-matching (Inside transaction)
-          await this.triggerMatching(request.id, tx);
-
           return { request, booking, totalAmount, hourlyRate };
         });
 
@@ -157,6 +154,14 @@ export class RequestsService {
         data: request,
         timestamp: new Date().toISOString(),
       });
+
+      // 3. Trigger auto-matching AFTER the transaction has committed.
+      // Running it inside the transaction caused it to exceed Prisma's 5 s interactive
+      // transaction timeout (matching does multiple queries + its own Serializable tx).
+      // Fire-and-forget — same pattern used in assignments.service.ts on rejection.
+      this.triggerMatching(request.id).catch((err) =>
+        this.logger.error(`Error triggering matching for request ${request.id}`, err),
+      );
 
       return {
         ...request,
@@ -351,10 +356,12 @@ export class RequestsService {
     // 2b. Batch-load all availability blocks for non-busy nannies in a SINGLE query,
     // then evaluate overlaps in-memory. Previously this issued isNannyAvailable() per
     // block inside a loop — 2 DB queries * N blocks = N+1 total. Now it's 1 query total.
+    // NOTE: When busyNannyIds is empty, omit the notIn filter entirely — passing ["none"]
+    // as a fallback caused Postgres to reject it as an invalid UUID.
     const nanniesWithBlocks = await prisma.availability_blocks.findMany({
-      where: {
-        nanny_id: { notIn: busyNannyIds.length > 0 ? busyNannyIds : ["none"] },
-      },
+      where: busyNannyIds.length > 0
+        ? { nanny_id: { notIn: busyNannyIds } }
+        : undefined,
     });
 
     // Group blocks by nanny_id for efficient per-nanny evaluation
@@ -533,20 +540,52 @@ export class RequestsService {
               },
             });
 
-            // 5. Create recurring records if applicable
-            await this.createRecurringRecord(transaction, requestId, bestMatch.id);
-            
-            // 6. Create payment plan if applicable
-            await this.createPaymentPlan(transaction, requestId, updatedBooking.id, request.parent_id);
+            // 5. REMOVED: createRecurringRecord and createPaymentPlan moved OUTSIDE
+            // the transaction to prevent cross-transaction deadlocks under Serializable isolation.
 
             return { assignment, booking: updatedBooking };
           };
 
-          const { assignment, booking } = tx
-            ? await runAssignment(tx)
-            : await this.prisma.$transaction((t) => runAssignment(t), {
-                isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-              });
+          let assignmentResult: { assignment: any; booking: any } | null = null;
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              assignmentResult = tx
+                ? await runAssignment(tx)
+                : await this.prisma.$transaction((t) => runAssignment(t), {
+                    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+                  });
+              break; // Success
+            } catch (err) {
+              // Known business errors should immediately bubble to the outer catch
+              if (err.message === "NANNY_BUSY" || err.code === "P2002") {
+                throw err;
+              }
+              // Catch Prisma deadlock or write conflict errors
+              if (err.code === "P2034" || (err.message && err.message.includes("write conflict or a deadlock"))) {
+                retries--;
+                if (retries === 0) throw err;
+                this.logger.warn(`[Matching] Write conflict/deadlock for request ${requestId}, retrying assignment... (${retries} left)`);
+                // Short random backoff to avoid repeated collisions
+                await new Promise((res) => setTimeout(res, 50 + Math.random() * 50));
+                continue;
+              }
+              throw err;
+            }
+          }
+
+          const { assignment, booking } = assignmentResult!;
+
+          // Run post-commit side-effects using the main prisma client (NOT inside the
+          // Serializable tx). These were the source of cross-transaction deadlocks.
+          if (assignment) {
+            this.createRecurringRecord(this.prisma, requestId, bestMatch.id).catch((err) =>
+              this.logger.error(`[Matching] Failed to create recurring record for ${requestId}`, err),
+            );
+            this.createPaymentPlan(this.prisma, requestId, booking.id, request.parent_id).catch((err) =>
+              this.logger.error(`[Matching] Failed to create payment plan for ${requestId}`, err),
+            );
+          }
 
           if (assignment) {
             this.logger.log(`[Matching] Successfully assigned request ${requestId} to nanny ${bestMatch.id}`);
@@ -723,7 +762,7 @@ export class RequestsService {
    * Helper to create a recurring_bookings record for subscription plans.
    * This should be called when a nanny is assigned (auto or manual).
    */
-  async createRecurringRecord(tx: Prisma.TransactionClient, requestId: string, nannyId: string) {
+  async createRecurringRecord(tx: Prisma.TransactionClient | typeof this.prisma, requestId: string, nannyId: string) {
     const request = await tx.service_requests.findUnique({
       where: { id: requestId },
     });
@@ -774,7 +813,7 @@ export class RequestsService {
   /**
    * Helper to initialize payment plan (subscription and installments) when a nanny is successfully assigned.
    */
-  async createPaymentPlan(tx: Prisma.TransactionClient, requestId: string, bookingId: string, parentId: string) {
+  async createPaymentPlan(tx: Prisma.TransactionClient | typeof this.prisma, requestId: string, bookingId: string, parentId: string) {
     const request = await tx.service_requests.findUnique({ where: { id: requestId } });
     const booking = await tx.bookings.findUnique({ where: { id: bookingId } });
     
