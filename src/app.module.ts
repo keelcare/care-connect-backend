@@ -38,6 +38,7 @@ import { SseModule } from "./sse/sse.module";
 import { MailModule } from "./mail/mail.module";
 import { DisputesModule } from "./disputes/disputes.module";
 import { ProgressReportsModule } from "./progress-reports/progress-reports.module";
+import { RecurringRequestsModule } from './recurring-requests/recurring-requests.module';
 
 @Module({
   imports: [
@@ -105,6 +106,7 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
     MailModule,
     DisputesModule,
     ProgressReportsModule,
+    RecurringRequestsModule,
   ],
   controllers: [AppController],
   providers: [

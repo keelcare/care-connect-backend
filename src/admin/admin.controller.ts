@@ -39,14 +39,14 @@ export class AdminController {
     return this.adminService.getManualAssignmentRequests();
   }
 
-  @Get("manual-assignment/nannies/:requestId")
-  async getAvailableNanniesForRequest(@Param("requestId") requestId: string) {
-    return this.adminService.getAvailableNanniesForRequest(requestId);
+  @Get("manual-assignment/nannies/:id")
+  async getAvailableNanniesForRequest(@Param("id") id: string) {
+    return this.adminService.getAvailableNanniesForRequest(id);
   }
 
   @Post("manual-assignment/assign")
   async manuallyAssignNanny(@Body() dto: AdminManualAssignmentDto) {
-    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId);
+    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId, dto.bookingId);
   }
 
   // User Management

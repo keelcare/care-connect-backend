@@ -1,9 +1,13 @@
-import { IsUUID, IsNotEmpty } from "class-validator";
+import { IsUUID, IsNotEmpty, IsOptional } from "class-validator";
 
 export class AdminManualAssignmentDto {
   @IsUUID()
-  @IsNotEmpty()
-  requestId: string;
+  @IsOptional()
+  requestId?: string;
+
+  @IsUUID()
+  @IsOptional()
+  bookingId?: string;
 
   @IsUUID()
   @IsNotEmpty()

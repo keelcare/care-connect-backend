@@ -143,29 +143,50 @@ export class AdminService {
     });
   }
 
-  async getAvailableNanniesForRequest(requestId: string) {
+  async getAvailableNanniesForRequest(id: string) {
     try {
-      const request = await this.prisma.service_requests.findUnique({
-        where: { id: requestId },
+      let request: any = await this.prisma.service_requests.findUnique({
+        where: { id },
       });
 
-      if (!request) throw new NotFoundException("Request not found");
+      let actualStartTime: Date;
+      let requestEndTime: Date;
+
+      if (!request) {
+        // Fallback: Check if it's a booking ID
+        const booking = await this.prisma.bookings.findUnique({
+          where: { id },
+          include: { recurring_service_requests: true }
+        });
+
+        if (booking) {
+          request = {
+            category: booking.recurring_service_requests?.category || "Recurring",
+            location_lat: booking.recurring_service_requests?.location_lat || 0,
+            location_lng: booking.recurring_service_requests?.location_lng || 0,
+            parent_id: booking.parent_id,
+          };
+          actualStartTime = booking.start_time!;
+          requestEndTime = booking.end_time!;
+        } else {
+          throw new NotFoundException("Request or Booking not found");
+        }
+      } else {
+        actualStartTime = TimeUtils.combineDateAndTime(
+          request.date,
+          request.start_time,
+        );
+        requestEndTime = TimeUtils.getEndTime(
+          actualStartTime,
+          Number(request.duration_hours),
+        );
+      }
 
       // Logic adapted from RequestsService.triggerMatching
       const radiusKm = MATCHING_RADIUS_KM;
       const category = request.category;
       const mappedSkills = CATEGORY_SKILL_MAP[category] || [];
       const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
-
-      // Calculate Request Times for overlap check
-      const actualStartTime = TimeUtils.combineDateAndTime(
-        request.date,
-        request.start_time,
-      );
-      const requestEndTime = TimeUtils.getEndTime(
-        actualStartTime,
-        Number(request.duration_hours),
-      );
 
       // Find Busy Nannies
       const busyNannies = await this.prisma.bookings.findMany({
@@ -297,15 +318,52 @@ export class AdminService {
     }
   }
 
-  async manuallyAssignNanny(requestId: string, nannyId: string) {
-    const request = await this.prisma.service_requests.findUnique({
-      where: { id: requestId },
-      include: { users: { include: { profiles: true } } },
-    });
+  async manuallyAssignNanny(requestId: string | undefined, nannyId: string, bookingId?: string) {
+    let request: any;
+    let actualStartTime: Date;
+    let requestEndTime: Date;
 
-    if (!request) throw new NotFoundException("Request not found");
-    if (request.status !== "pending")
-      throw new BadRequestException(`Request is already ${request.status}`);
+    if (bookingId) {
+      const booking = await this.prisma.bookings.findUnique({
+        where: { id: bookingId },
+        include: { users_bookings_parent_idTousers: { include: { profiles: true } } },
+      });
+      if (!booking) throw new NotFoundException("Booking not found");
+      if (booking.status !== "requested" && booking.status !== "pending_assignment")
+        throw new BadRequestException(`Booking is already ${booking.status}`);
+        
+      request = {
+        category: "Recurring", // Fallback or fetch from recurring_service_requests
+        date: booking.start_time,
+        start_time: booking.start_time,
+        duration_hours: (booking.end_time!.getTime() - booking.start_time!.getTime()) / 3600000,
+        parent_id: booking.parent_id,
+        users: booking.users_bookings_parent_idTousers,
+      };
+      actualStartTime = booking.start_time!;
+      requestEndTime = booking.end_time!;
+    } else if (requestId) {
+      request = await this.prisma.service_requests.findUnique({
+        where: { id: requestId },
+        include: { users: { include: { profiles: true } } },
+      });
+
+      if (!request) throw new NotFoundException("Request not found");
+      if (request.status !== "pending")
+        throw new BadRequestException(`Request is already ${request.status}`);
+      
+      // Calculate times for overlap check
+      actualStartTime = TimeUtils.combineDateAndTime(
+        request.date,
+        request.start_time,
+      );
+      requestEndTime = TimeUtils.getEndTime(
+        actualStartTime,
+        Number(request.duration_hours),
+      );
+    } else {
+      throw new BadRequestException("Either requestId or bookingId must be provided");
+    }
 
     const nanny = await this.prisma.users.findUnique({
       where: { id: nannyId },
@@ -316,16 +374,6 @@ export class AdminService {
     });
     if (!nanny || nanny.role !== "nanny")
       throw new NotFoundException("Nanny not found");
-
-    // Calculate times for overlap check
-    const actualStartTime = TimeUtils.combineDateAndTime(
-      request.date,
-      request.start_time,
-    );
-    const requestEndTime = TimeUtils.getEndTime(
-      actualStartTime,
-      Number(request.duration_hours),
-    );
 
     const result = await this.prisma.$transaction(
       async (tx) => {
@@ -358,55 +406,66 @@ export class AdminService {
           );
 
         // 2. Create Assignment (directly accepted)
-        // Use upsert to handle cases where the nanny was previously assigned and rejected/cancelled
-        const assignment = await tx.assignments.upsert({
-          where: {
-            request_id_nanny_id: {
-              request_id: requestId,
-              nanny_id: nannyId,
+        const assignmentData = {
+          response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
+          status: "accepted",
+          responded_at: new Date(),
+          rank_position: 1,
+          nanny_id: nannyId,
+          ...(bookingId ? { booking_id: bookingId } : { request_id: requestId }),
+        };
+
+        const existingAssignment = await tx.assignments.findFirst({
+          where: bookingId ? { booking_id: bookingId, nanny_id: nannyId } : { request_id: requestId, nanny_id: nannyId }
+        });
+
+        let assignment;
+        if (existingAssignment) {
+          assignment = await tx.assignments.update({
+            where: { id: existingAssignment.id },
+            data: { ...assignmentData, rejection_reason: null },
+          });
+        } else {
+          assignment = await tx.assignments.create({
+            data: assignmentData,
+          });
+        }
+
+        // 3. Update Request or Booking Status
+        if (requestId) {
+          await tx.service_requests.update({
+            where: { id: requestId },
+            data: {
+              status: "accepted",
+              current_assignment_id: assignment.id,
             },
-          },
-          update: {
-            status: "accepted",
-            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
-            responded_at: new Date(),
-            rank_position: 1,
-            rejection_reason: null, // Clear any previous rejection
-          },
-          create: {
-            request_id: requestId,
-            nanny_id: nannyId,
-            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS), // Standard deadline even if pre-accepted
-            status: "accepted",
-            responded_at: new Date(),
-            rank_position: 1, // Manual assignment is always top rank
-          },
-        });
+          });
 
-        // 3. Update Request Status
-        await tx.service_requests.update({
-          where: { id: requestId },
-          data: {
-            status: "accepted",
-            current_assignment_id: assignment.id,
-          },
-        });
-
-        // 4. Update Booking to CONFIRMED
-        await tx.bookings.updateMany({
-          where: { request_id: requestId, status: { not: BookingStatus.CANCELLED } },
-          data: {
-            nanny_id: nannyId,
-            status: BookingStatus.CONFIRMED,
-          },
-        });
+          await tx.bookings.updateMany({
+            where: { request_id: requestId, status: { not: BookingStatus.CANCELLED } },
+            data: {
+              nanny_id: nannyId,
+              status: BookingStatus.CONFIRMED,
+            },
+          });
+        } else if (bookingId) {
+          await tx.bookings.update({
+            where: { id: bookingId },
+            data: {
+              nanny_id: nannyId,
+              status: BookingStatus.CONFIRMED,
+            },
+          });
+        }
 
         // 4.5 Create Recurring Booking Record if subscription
-        await this.requestsService.createRecurringRecord(
-          tx,
-          requestId,
-          nannyId,
-        );
+        if (requestId) {
+          await this.requestsService.createRecurringRecord(
+            tx,
+            requestId,
+            nannyId,
+          );
+        }
 
         return { success: true, assignmentId: assignment.id };
       },
