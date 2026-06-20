@@ -1,4 +1,4 @@
-import { IsUUID, IsNotEmpty, IsOptional } from "class-validator";
+import { IsUUID, IsNotEmpty, IsOptional, IsBoolean } from "class-validator";
 
 export class AdminManualAssignmentDto {
   @IsUUID()
@@ -12,4 +12,8 @@ export class AdminManualAssignmentDto {
   @IsUUID()
   @IsNotEmpty()
   nannyId: string;
+
+  @IsBoolean()
+  @IsOptional()
+  force?: boolean;
 }

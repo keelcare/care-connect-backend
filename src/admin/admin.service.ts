@@ -80,7 +80,7 @@ export class AdminService {
       allServices.map((s) => [s.name, Number(s.hourly_rate)]),
     );
 
-    return requests.map((req) => {
+    const standardMapped = requests.map((req) => {
       const parent = req.users;
       const profile = parent?.profiles;
       const booking = req.bookings?.[0];
@@ -96,7 +96,7 @@ export class AdminService {
         status: req.status,
         location_lat: req.location_lat,
         location_lng: req.location_lng,
-        address: profile?.address || "Location not specified", // Added for direct UI mapping
+        address: profile?.address || "Location not specified",
         parent_name: profile
           ? `${profile.first_name} ${profile.last_name}`
           : "Unknown Parent",
@@ -139,8 +139,110 @@ export class AdminService {
         })),
         special_requirements: req.special_requirements,
         required_skills: req.required_skills,
+        is_recurring: false,
       };
     });
+
+    const recurringRequests = await this.prisma.recurring_service_requests.findMany({
+      where: { status: "active" },
+      include: {
+        users: {
+          select: {
+            email: true,
+            profiles: {
+              select: {
+                first_name: true,
+                last_name: true,
+                address: true,
+                phone: true,
+              },
+            },
+          },
+        },
+        bookings: {
+          where: { status: { not: BookingStatus.CANCELLED } },
+          include: {
+            booking_children: {
+              include: {
+                children: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    const unassignedRecurring = recurringRequests.filter(req =>
+      req.bookings.some(b => !b.nanny_id && b.status === "requested")
+    );
+
+    const recurringMapped = unassignedRecurring.map((req) => {
+      const parent = req.users;
+      const profile = parent?.profiles;
+      const booking = req.bookings?.[0];
+      const children = booking?.booking_children?.map((bc) => bc.children) || [];
+
+      return {
+        id: req.id,
+        category: req.category || "Recurring",
+        date: req.start_date,
+        start_time: req.start_time,
+        duration_hours: req.duration_hours,
+        status: req.status,
+        location_lat: req.location_lat,
+        location_lng: req.location_lng,
+        address: profile?.address || "Location not specified",
+        parent_name: profile
+          ? `${profile.first_name} ${profile.last_name}`
+          : "Unknown Parent",
+        hourly_rate: req.max_hourly_rate || serviceMap[req.category as string] || 500,
+        total_amount: PricingUtils.calculateTotal(
+          Number(req.max_hourly_rate || serviceMap[req.category as string] || 500),
+          Number(req.duration_hours),
+          0,
+          Number(req.plan_duration_months || 1),
+          req.plan_type || "ONE_TIME",
+          req.sessions_per_month || req.bookings.length,
+        ).totalAmount,
+        created_at: req.created_at,
+        children_count: req.num_children || children.length,
+        children_names:
+          children.length > 0
+            ? children.map((c) => c.first_name).join(", ")
+            : "Details not specified",
+        parent: {
+          id: req.parent_id,
+          email: parent?.email,
+          first_name: profile?.first_name,
+          last_name: profile?.last_name,
+          phone: profile?.phone,
+          address: profile?.address,
+        },
+        children: children.map((c) => ({
+          id: c.id,
+          first_name: c.first_name,
+          last_name: c.last_name,
+          age: c.dob
+            ? Math.floor(
+                (new Date().getTime() - new Date(c.dob).getTime()) /
+                  (1000 * 60 * 60 * 24 * 365.25),
+              )
+            : null,
+          profile_type: c.profile_type,
+          diagnosis: c.diagnosis,
+          care_instructions: c.care_instructions,
+        })),
+        special_requirements: req.special_requirements,
+        required_skills: req.required_skills,
+        is_recurring: true,
+        total_sessions: req.bookings.length,
+      };
+    });
+
+    return [...standardMapped, ...recurringMapped].sort(
+      (a, b) => new Date(b.created_at as any).getTime() - new Date(a.created_at as any).getTime()
+    );
   }
 
   async getAvailableNanniesForRequest(id: string) {
@@ -153,23 +255,44 @@ export class AdminService {
       let requestEndTime: Date;
 
       if (!request) {
-        // Fallback: Check if it's a booking ID
-        const booking = await this.prisma.bookings.findUnique({
-          where: { id },
-          include: { recurring_service_requests: true }
+        // Fallback: Check if it's a recurring request ID or a booking ID
+        const recurringReq = await this.prisma.recurring_service_requests.findUnique({
+          where: { id }
         });
 
-        if (booking) {
+        if (recurringReq) {
           request = {
-            category: booking.recurring_service_requests?.category || "Recurring",
-            location_lat: booking.recurring_service_requests?.location_lat || 0,
-            location_lng: booking.recurring_service_requests?.location_lng || 0,
-            parent_id: booking.parent_id,
+            category: recurringReq.category || "Recurring",
+            location_lat: recurringReq.location_lat,
+            location_lng: recurringReq.location_lng,
+            parent_id: recurringReq.parent_id,
           };
-          actualStartTime = booking.start_time!;
-          requestEndTime = booking.end_time!;
+          actualStartTime = TimeUtils.combineDateAndTime(
+            recurringReq.start_date,
+            recurringReq.start_time,
+          );
+          requestEndTime = TimeUtils.getEndTime(
+            actualStartTime,
+            Number(recurringReq.duration_hours),
+          );
         } else {
-          throw new NotFoundException("Request or Booking not found");
+          const booking = await this.prisma.bookings.findUnique({
+            where: { id },
+            include: { recurring_service_requests: true }
+          });
+
+          if (booking) {
+            request = {
+              category: booking.recurring_service_requests?.category || "Recurring",
+              location_lat: booking.recurring_service_requests?.location_lat || 0,
+              location_lng: booking.recurring_service_requests?.location_lng || 0,
+              parent_id: booking.parent_id,
+            };
+            actualStartTime = booking.start_time!;
+            requestEndTime = booking.end_time!;
+          } else {
+            throw new NotFoundException("Request, Booking, or Recurring Request not found");
+          }
         }
       } else {
         actualStartTime = TimeUtils.combineDateAndTime(
@@ -318,10 +441,12 @@ export class AdminService {
     }
   }
 
-  async manuallyAssignNanny(requestId: string | undefined, nannyId: string, bookingId?: string) {
+  async manuallyAssignNanny(requestId: string | undefined, nannyId: string, bookingId?: string, force?: boolean) {
     let request: any;
-    let actualStartTime: Date;
-    let requestEndTime: Date;
+    let actualStartTime: Date | null = null;
+    let requestEndTime: Date | null = null;
+    let isRecurring = false;
+    let recurringBookings: any[] = [];
 
     if (bookingId) {
       const booking = await this.prisma.bookings.findUnique({
@@ -348,19 +473,35 @@ export class AdminService {
         include: { users: { include: { profiles: true } } },
       });
 
+      if (!request) {
+        request = await this.prisma.recurring_service_requests.findUnique({
+          where: { id: requestId },
+          include: { 
+            users: { include: { profiles: true } },
+            bookings: { where: { status: { not: BookingStatus.CANCELLED }, nanny_id: null } }
+          },
+        });
+        if (request) {
+          isRecurring = true;
+          recurringBookings = request.bookings || [];
+        }
+      }
+
       if (!request) throw new NotFoundException("Request not found");
-      if (request.status !== "pending")
+      if (request.status !== "pending" && request.status !== "active")
         throw new BadRequestException(`Request is already ${request.status}`);
       
-      // Calculate times for overlap check
-      actualStartTime = TimeUtils.combineDateAndTime(
-        request.date,
-        request.start_time,
-      );
-      requestEndTime = TimeUtils.getEndTime(
-        actualStartTime,
-        Number(request.duration_hours),
-      );
+      if (!isRecurring) {
+        // Calculate times for overlap check
+        actualStartTime = TimeUtils.combineDateAndTime(
+          request.date,
+          request.start_time,
+        );
+        requestEndTime = TimeUtils.getEndTime(
+          actualStartTime,
+          Number(request.duration_hours),
+        );
+      }
     } else {
       throw new BadRequestException("Either requestId or bookingId must be provided");
     }
@@ -377,67 +518,100 @@ export class AdminService {
 
     const result = await this.prisma.$transaction(
       async (tx) => {
-        // 1. Double check availability
-        const overlap = await tx.bookings.findFirst({
-          where: {
-            nanny_id: nannyId,
-            status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
-            AND: [
-              { start_time: { lt: requestEndTime } },
-              { end_time: { gt: actualStartTime } },
-            ],
-          },
-        });
+        let overlaps: string[] = [];
 
-        if (overlap)
-          throw new BadRequestException(
-            "Nanny is already booked for this slot",
-          );
-
-        // Check explicit blocks
-        const isAvailable = await this.availabilityService.isNannyAvailable(
-          nannyId,
-          actualStartTime,
-          requestEndTime,
-        );
-        if (!isAvailable)
-          throw new BadRequestException(
-            "Nanny has marked themselves as unavailable for this time slot",
-          );
-
-        // 2. Create Assignment (directly accepted)
-        const assignmentData = {
-          response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
-          status: "accepted",
-          responded_at: new Date(),
-          rank_position: 1,
-          nanny_id: nannyId,
-          ...(bookingId ? { booking_id: bookingId } : { request_id: requestId }),
-        };
-
-        const existingAssignment = await tx.assignments.findFirst({
-          where: bookingId ? { booking_id: bookingId, nanny_id: nannyId } : { request_id: requestId, nanny_id: nannyId }
-        });
-
-        let assignment;
-        if (existingAssignment) {
-          assignment = await tx.assignments.update({
-            where: { id: existingAssignment.id },
-            data: { ...assignmentData, rejection_reason: null },
-          });
+        if (isRecurring) {
+           for (const b of recurringBookings) {
+             const bStart = b.start_time;
+             const bEnd = b.end_time;
+             const overlap = await tx.bookings.findFirst({
+               where: {
+                 nanny_id: nannyId,
+                 status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
+                 AND: [
+                   { start_time: { lt: bEnd } },
+                   { end_time: { gt: bStart } },
+                 ],
+               },
+             });
+             const isAvail = await this.availabilityService.isNannyAvailable(nannyId, bStart, bEnd);
+             if (overlap || !isAvail) {
+                overlaps.push(bStart.toISOString().split('T')[0]);
+             }
+           }
         } else {
-          assignment = await tx.assignments.create({
-            data: assignmentData,
+           // 1. Double check availability
+           const overlap = await tx.bookings.findFirst({
+             where: {
+               nanny_id: nannyId,
+               status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
+               AND: [
+                 { start_time: { lt: requestEndTime! } },
+                 { end_time: { gt: actualStartTime! } },
+               ],
+             },
+           });
+
+           if (overlap) {
+             overlaps.push(actualStartTime!.toISOString().split('T')[0]);
+           } else {
+             const isAvailable = await this.availabilityService.isNannyAvailable(
+               nannyId,
+               actualStartTime!,
+               requestEndTime!,
+             );
+             if (!isAvailable) overlaps.push(actualStartTime!.toISOString().split('T')[0]);
+           }
+        }
+
+        if (overlaps.length > 0 && !force) {
+           throw new BadRequestException({
+             message: isRecurring 
+               ? "Nanny has overlapping bookings or is unavailable on some days in this recurring plan."
+               : "Nanny is already booked or unavailable for this time slot.",
+             overlaps,
+             warning: true
+           });
+        }
+
+        let assignmentId = "recurring-assignment";
+
+        if (!isRecurring) {
+          // 2. Create Assignment (directly accepted)
+          const assignmentData = {
+            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
+            status: "accepted",
+            responded_at: new Date(),
+            rank_position: 1,
+            nanny_id: nannyId,
+            ...(bookingId ? { booking_id: bookingId } : { request_id: requestId }),
+          };
+
+          const existingAssignment = await tx.assignments.findFirst({
+            where: bookingId ? { booking_id: bookingId, nanny_id: nannyId } : { request_id: requestId, nanny_id: nannyId }
           });
+
+          let assignment;
+          if (existingAssignment) {
+            assignment = await tx.assignments.update({
+              where: { id: existingAssignment.id },
+              data: { ...assignmentData, rejection_reason: null },
+            });
+          } else {
+            assignment = await tx.assignments.create({
+              data: assignmentData,
+            });
+          }
+          assignmentId = assignment.id;
         }
 
         // 3. Update Request or Booking Status
-        if (requestId) {
+        if (requestId && !isRecurring) {
           await tx.service_requests.update({
             where: { id: requestId },
             data: {
               status: "accepted",
-              current_assignment_id: assignment.id,
+              current_assignment_id: assignmentId,
             },
           });
 
@@ -447,6 +621,11 @@ export class AdminService {
               nanny_id: nannyId,
               status: BookingStatus.CONFIRMED,
             },
+          });
+        } else if (isRecurring) {
+          await tx.bookings.updateMany({
+            where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },
+            data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED }
           });
         } else if (bookingId) {
           await tx.bookings.update({
@@ -459,7 +638,7 @@ export class AdminService {
         }
 
         // 4.5 Create Recurring Booking Record if subscription
-        if (requestId) {
+        if (requestId && !isRecurring) {
           await this.requestsService.createRecurringRecord(
             tx,
             requestId,
@@ -467,7 +646,7 @@ export class AdminService {
           );
         }
 
-        return { success: true, assignmentId: assignment.id };
+        return { success: true, assignmentId };
       },
       { isolationLevel: "ReadCommitted" },
     );
@@ -482,7 +661,7 @@ export class AdminService {
       "Nanny";
 
     const bookingDetails = {
-      date: request.date.toISOString().split("T")[0],
+      date: isRecurring ? request.start_date.toISOString().split("T")[0] + " (Starts)" : request.date.toISOString().split("T")[0],
       time: request.start_time.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
@@ -515,7 +694,9 @@ export class AdminService {
 
     // Fetch the updated booking for chat creation
     const updatedBooking = await this.prisma.bookings.findFirst({
-      where: { request_id: requestId, status: BookingStatus.CONFIRMED },
+      where: isRecurring 
+        ? { recurring_request_id: requestId, status: BookingStatus.CONFIRMED }
+        : { request_id: requestId, status: BookingStatus.CONFIRMED },
     });
 
     if (updatedBooking) {
@@ -803,6 +984,62 @@ export class AdminService {
 
     return {
       items,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages: Math.ceil(total / pageSize),
+      }
+    };
+  }
+
+  async getAllRecurringRequests(query?: PaginationDto) {
+    const page = query?.page || 1;
+    const pageSize = query?.pageSize || 10;
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.recurring_service_requests.findMany({
+        skip,
+        take,
+        orderBy: { created_at: "desc" },
+        include: {
+          users: {
+            select: {
+              email: true,
+              profiles: {
+                select: {
+                  first_name: true,
+                  last_name: true,
+                },
+              },
+            },
+          },
+          _count: {
+            select: { bookings: { where: { status: { not: "CANCELLED" } } } }
+          },
+          bookings: {
+            where: { start_time: { gte: new Date() }, status: { not: "CANCELLED" } },
+            orderBy: { start_time: 'asc' },
+            take: 1,
+            select: { start_time: true }
+          }
+        },
+      }),
+      this.prisma.recurring_service_requests.count()
+    ]);
+
+    return {
+      items: items.map(req => {
+        const { bookings, _count, ...rest } = req;
+        return {
+          ...rest,
+          start_time_formatted: TimeUtils.formatShortTime(req.start_time),
+          total_bookings: _count.bookings,
+          next_upcoming_date: bookings.length > 0 ? bookings[0].start_time : null
+        };
+      }),
       pagination: {
         total,
         page,

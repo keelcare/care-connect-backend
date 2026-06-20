@@ -195,6 +195,7 @@ export class RecurringRequestsService {
       const { bookings, _count, ...rest } = req;
       return {
         ...rest,
+        start_time_formatted: TimeUtils.formatShortTime(req.start_time),
         total_bookings: _count.bookings,
         next_upcoming_date: bookings.length > 0 ? bookings[0].start_time : null
       };
@@ -212,7 +213,10 @@ export class RecurringRequestsService {
     });
 
     if (!req) throw new NotFoundException("Recurring request not found");
-    return req;
+    return {
+      ...req,
+      start_time_formatted: TimeUtils.formatShortTime(req.start_time)
+    };
   }
 
   async findBookingsForRequest(id: string, page: number = 1, limit: number = 10) {

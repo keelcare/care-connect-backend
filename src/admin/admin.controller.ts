@@ -46,7 +46,7 @@ export class AdminController {
 
   @Post("manual-assignment/assign")
   async manuallyAssignNanny(@Body() dto: AdminManualAssignmentDto) {
-    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId, dto.bookingId);
+    return this.adminService.manuallyAssignNanny(dto.requestId, dto.nannyId, dto.bookingId, dto.force);
   }
 
   // User Management
@@ -114,6 +114,11 @@ export class AdminController {
   @Get("bookings")
   async getAllBookings(@Query() query: PaginationDto) {
     return this.adminService.getAllBookings(query);
+  }
+
+  @Get("recurring-requests")
+  async getAllRecurringRequests(@Query() query: PaginationDto) {
+    return this.adminService.getAllRecurringRequests(query);
   }
 
   // Dispute Resolution
