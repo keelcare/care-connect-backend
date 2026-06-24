@@ -33,7 +33,6 @@ export class PaymentsController {
   async createOrder(@Req() req: any, @Body() createOrderDto: CreateOrderDto) {
     return this.paymentsService.createOrder(
       createOrderDto.bookingId,
-      createOrderDto.installmentId,
       req.user.id,
     );
   }
@@ -162,8 +161,8 @@ export class PaymentsController {
     status: 200,
     description: "Subscription plans fetched successfully",
   })
-  async getSubscriptionPlans(@Req() req: any) {
-    return this.paymentsService.getSubscriptionPlans(req.user.id);
+  async getPaymentPlans(@Req() req: any) {
+    return this.paymentsService.getPaymentPlans(req.user.id);
   }
 
   @Post("refund/:paymentId")

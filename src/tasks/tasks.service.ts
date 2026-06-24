@@ -3,7 +3,9 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { BookingsService } from "../bookings/bookings.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { SseService } from "../sse/sse.service";
 import { MailService } from "../mail/mail.service";
+import { PricingEngineService } from "../common/pricing.service";
 
 @Injectable()
 export class TasksService {
@@ -11,9 +13,11 @@ export class TasksService {
 
   constructor(
     private readonly bookingsService: BookingsService,
-    private readonly prisma: PrismaService,
-    private readonly notificationsService: NotificationsService,
-    private readonly mailService: MailService,
+    private prisma: PrismaService,
+    private notificationsService: NotificationsService,
+    private sseService: SseService,
+    private mailService: MailService,
+    private pricingService: PricingEngineService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_MINUTES)
@@ -29,33 +33,6 @@ export class TasksService {
       }
     } catch (error) {
       this.logger.error("Error in handleExpiredBookings cron job", error);
-    }
-  }
-
-  // 1. Overdue installment reminders — runs daily at 9am IST
-  @Cron("0 30 3 * * *") // 03:30 UTC = 09:00 IST
-  async handleOverdueInstallments() {
-    const overdue = await this.prisma.payment_installments.findMany({
-      where: { status: "pending", due_date: { lt: new Date() } },
-      include: { bookings: { select: { parent_id: true } } },
-    });
-
-    for (const inst of overdue) {
-      await this.prisma.payment_installments.update({
-        where: { id: inst.id },
-        data: { status: "overdue" },
-      });
-      if (inst.bookings?.parent_id) {
-        await this.notificationsService.createNotification(
-          inst.bookings.parent_id,
-          "Payment Overdue",
-          `Installment #${inst.installment_no} of ₹${inst.amount_due} is overdue.`,
-          "warning",
-        );
-      }
-    }
-    if (overdue.length > 0) {
-      this.logger.log(`Marked ${overdue.length} installments as overdue`);
     }
   }
 
@@ -82,39 +59,10 @@ export class TasksService {
     }
   }
 
-  // 4. Subscription renewal reminder — runs daily at 8am IST (02:30 UTC)
-  @Cron("0 30 2 * * *")
-  async handleSubscriptionRenewalReminders() {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dayAfter = new Date(tomorrow);
-    dayAfter.setDate(dayAfter.getDate() + 1);
-
-    const dueSoon = await this.prisma.subscription_plans.findMany({
-      where: {
-        status: "active",
-        next_due_date: { gte: tomorrow, lt: dayAfter },
-      },
-      select: { parent_id: true, monthly_amount: true, next_due_date: true },
-    });
-
-    for (const plan of dueSoon) {
-      await this.notificationsService.createNotification(
-        plan.parent_id,
-        "Subscription Payment Due Tomorrow",
-        `Your subscription payment of ₹${plan.monthly_amount} is due tomorrow.`,
-        "info",
-      );
-    }
-    if (dueSoon.length > 0) {
-      this.logger.log(`Sent ${dueSoon.length} subscription renewal reminders`);
-    }
-  }
-
-  // 5. Upcoming installment reminders (due in 3 days) — runs daily at 9am IST (03:30 UTC)
+  // 4. Payment Plan reminders (due in 3 days) — runs daily at 9am IST (03:30 UTC)
   @Cron("0 30 3 * * *")
-  async checkUpcomingInstallments() {
-    this.logger.debug("Running Cron Job: Checking for upcoming installments due in 3 days...");
+  async checkUpcomingBillingCycles() {
+    this.logger.debug("Running Cron Job: Checking for upcoming billing cycles due in 3 days...");
     try {
       const now = new Date();
       // Target date: exactly 3 days from now
@@ -125,10 +73,10 @@ export class TasksService {
       const targetDateMax = new Date(targetDateMin);
       targetDateMax.setHours(23, 59, 59, 999);
 
-      const upcomingInstallments = await this.prisma.payment_installments.findMany({
+      const dueSoon = await this.prisma.payment_plans.findMany({
         where: {
-          status: "pending",
-          due_date: {
+          status: "active",
+          next_due_date: {
             gte: targetDateMin,
             lte: targetDateMax,
           },
@@ -146,15 +94,17 @@ export class TasksService {
         },
       });
 
-      for (const inst of upcomingInstallments) {
-        const parent = inst.bookings?.users_bookings_parent_idTousers;
+      for (const plan of dueSoon) {
+        const parent = plan.bookings?.users_bookings_parent_idTousers;
         if (!parent) continue;
+
+        const cycleNo = plan.cycles_completed + 1;
 
         // 1. Send in-app notification
         await this.notificationsService.createNotification(
           parent.id,
           "Upcoming Payment Reminder",
-          `Installment #${inst.installment_no} of ₹${inst.amount_due} is due in 3 days.`,
+          `Payment for billing cycle #${cycleNo} of your booking is due in 3 days.`,
           "info",
         );
 
@@ -164,28 +114,28 @@ export class TasksService {
             ? `${parent.profiles.first_name} ${parent.profiles.last_name || ''}`.trim() 
             : "Parent";
             
-          const bookingDetails = `Booking #${inst.booking_id.substring(0, 8)}`;
+          const bookingDetails = `Booking #${plan.booking_id.substring(0, 8)}`;
           
           this.mailService.sendInstallmentReminderEmail(
             parent.email,
             parentName,
             {
-              amount: Number(inst.amount_due),
-              dueDate: inst.due_date.toLocaleDateString(),
-              installmentNo: inst.installment_no,
+              amount: 0, // In reality, we'd snapshot here or preview. 0 means we just tell them to check the app.
+              dueDate: plan.next_due_date.toLocaleDateString(),
+              installmentNo: cycleNo,
               bookingDetails,
             }
           ).catch((err) => 
-            this.logger.error(`Failed to send upcoming installment email to ${parent.email}`, err)
+            this.logger.error(`Failed to send upcoming cycle email to ${parent.email}`, err)
           );
         }
       }
 
-      if (upcomingInstallments.length > 0) {
-        this.logger.log(`Sent ${upcomingInstallments.length} upcoming installment reminders.`);
+      if (dueSoon.length > 0) {
+        this.logger.log(`Sent ${dueSoon.length} upcoming billing cycle reminders.`);
       }
     } catch (error) {
-      this.logger.error("Error in checkUpcomingInstallments cron job", error);
+      this.logger.error("Error in checkUpcomingBillingCycles cron job", error);
     }
   }
 

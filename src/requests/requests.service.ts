@@ -12,12 +12,12 @@ import { UsersService } from "../users/users.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { SseService } from "../sse/sse.service";
-import { PricingUtils } from "../common/utils/pricing.utils";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { PricingEngineService } from "../common/pricing.service";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 
 import { CATEGORY_SKILL_MAP } from "../constants";
@@ -33,6 +33,7 @@ export class RequestsService {
     private sseService: SseService,
     private mailService: MailService,
     private availabilityService: AvailabilityService,
+    private pricingService: PricingEngineService,
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -100,8 +101,8 @@ export class RequestsService {
             } as any,
           });
 
-          const { totalAmount, hourlyRate } = PricingUtils.calculateTotal(
-            Number(serviceSettings.hourly_rate),
+          const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
+            createRequestDto.category,
             Number(createRequestDto.duration_hours),
             Number(createRequestDto.discount_percentage || 0),
             Number(createRequestDto.plan_duration_months || 1),
@@ -738,12 +739,8 @@ export class RequestsService {
       throw new NotFoundException(`Service request with ID ${id} not found`);
     }
 
-    const service = await this.prisma.services.findUnique({
-      where: { name: request.category || "CC" },
-    });
-    const hourlyRate = Number(service?.hourly_rate || 500);
-    const { totalAmount } = PricingUtils.calculateTotal(
-      hourlyRate,
+    const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
+      request.category || "CC",
       Number(request.duration_hours || 0),
       Number(request["discount_percentage"] || 0),
       Number(request["plan_duration_months"] || 1),
@@ -822,93 +819,56 @@ export class RequestsService {
     const useInstallments = booking.tags && booking.tags.includes("use_installments");
     
     if (useInstallments && (request.plan_duration_months || 1) > 1) {
-      const serviceSettings = await tx.services.findUnique({
-        where: { name: request.category || "CC" },
-      });
-      
-      const { monthlyCost } = PricingUtils.calculateTotal(
-        Number(serviceSettings?.hourly_rate || 500),
-        Number(request.duration_hours || 0),
-        Number(request.discount_percentage || 0),
-        Number(request.plan_duration_months || 1),
-        request.plan_type || "ONE_TIME",
-        Number(request.sessions_per_month),
-      );
-
       const planMonths = Number(request.plan_duration_months);
 
       // Check if plan already exists (idempotency)
-      const existingPlan = await tx.subscription_plans.findUnique({
-        where: { request_id: request.id }
+      const existingPlan = await tx.payment_plans.findUnique({
+        where: { booking_id: booking.id }
       });
       if (existingPlan) return;
 
-      const plan = await tx.subscription_plans.create({
+      const plan = await tx.payment_plans.create({
         data: {
-          request_id: request.id,
           booking_id: booking.id,
-          parent_id: parentId,
-          status: "active",
-          total_months: planMonths,
-          monthly_amount: monthlyCost,
+          total_cycles: planMonths,
+          cycles_completed: 0,
           start_date: new Date(request.date),
           next_due_date: new Date(request.date), // First installment is due now
+          status: "active",
         },
       });
-
-      const installments = Array.from({ length: planMonths }).map((_, index) => {
-        const dueDate = TimeUtils.addMonths(new Date(request.date), index);
-        return {
-          booking_id: booking.id,
-          subscription_plan_id: plan.id,
-          installment_no: index + 1,
-          amount_due: monthlyCost,
-          due_date: dueDate,
-          status: "pending",
-        };
-      });
-
-      await tx.payment_installments.createMany({ data: installments });
     }
   }
 
   async findAllByParent(parentId: string) {
-    const [requests, allServices] = await Promise.all([
-      this.prisma.service_requests.findMany({
-        where: {
-          parent_id: parentId,
-          // Only return requests that do NOT have an active (non-cancelled) booking.
-          // Prevents dashboard duplication between "Requests" and "Bookings" views.
-          // bookings is a one-to-one nullable relation — use top-level OR with `is`:
-          //   - `is: null`  → request has no booking at all yet
-          //   - `is: { status: CANCELLED }` → booking was cancelled, treat as inactive
-          OR: [
-            { bookings: { is: null } },
-            { bookings: { is: { status: BookingStatus.CANCELLED } } },
-          ],
-        },
-        orderBy: { created_at: "desc" },
-        include: {
-          assignments: {
-            where: { status: "pending" },
-            include: {
-              users: { include: { profiles: true, nanny_details: true } },
-            },
+    const requests = await this.prisma.service_requests.findMany({
+      where: {
+        parent_id: parentId,
+        // Only return requests that do NOT have an active (non-cancelled) booking.
+        // Prevents dashboard duplication between "Requests" and "Bookings" views.
+        // bookings is a one-to-one nullable relation — use top-level OR with `is`:
+        //   - `is: null`  → request has no booking at all yet
+        //   - `is: { status: CANCELLED }` → booking was cancelled, treat as inactive
+        OR: [
+          { bookings: { is: null } },
+          { bookings: { is: { status: BookingStatus.CANCELLED } } },
+        ],
+      },
+      orderBy: { created_at: "desc" },
+      include: {
+        assignments: {
+          where: { status: "pending" },
+          include: {
+            users: { include: { profiles: true, nanny_details: true } },
           },
         },
-      }),
-      this.prisma.services.findMany(),
-    ]);
+      },
+    });
 
-    const serviceMap = Object.fromEntries(
-      allServices.map((s) => [s.name, Number(s.hourly_rate)]),
-    );
-
-    return requests.map((req) => {
-      const rate = serviceMap[req.category as string] || 500;
-      const { totalAmount } = PricingUtils.calculateTotal(
-        rate,
-        Number(req.duration_hours || 0),
+    const enrichedRequests = await Promise.all(requests.map(async (req) => {
+      const { totalAmount } = await this.pricingService.calculateCost(
+        req.category || "CC",
+        Number(req.duration_hours),
         Number(req["discount_percentage"] || 0),
         Number(req["plan_duration_months"] || 1),
         req["plan_type"] || "ONE_TIME",
@@ -920,10 +880,12 @@ export class RequestsService {
 
       return {
         ...req,
-        hourly_rate: rate,
         total_amount: totalAmount,
         nanny,
+        title: req.category ? `${req.category} Request` : "Service Request",
       };
-    });
+    }));
+
+    return enrichedRequests;
   }
 }

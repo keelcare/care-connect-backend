@@ -10,11 +10,10 @@ import Razorpay from "razorpay";
 import * as crypto from "node:crypto";
 import { ConfigService } from "@nestjs/config";
 import { NotificationsService } from "../notifications/notifications.service";
-import { PricingUtils } from "../common/utils/pricing.utils";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
-import { PricingService } from "../common/pricing.service";
+import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
 import { PaymentStatus } from "../constants";
 import { BookingStatus } from "../common/constants/booking-status.enum";
@@ -35,14 +34,13 @@ export class PaymentsService {
     private notificationsService: NotificationsService,
     private gateway: PaymentGatewayService,
     private audit: PaymentAuditService,
-    private pricingService: PricingService,
+    private pricingService: PricingEngineService,
     private mailService: MailService,
   ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
   async createOrder(
     bookingId: string,
-    installmentId?: string,
     requestingUserId?: string,
   ) {
     if (!this.configService.get("RAZORPAY_KEY_ID")) {
@@ -53,10 +51,7 @@ export class PaymentsService {
     const booking = await this.prisma.bookings.findUnique({
       where: { id: bookingId },
       include: {
-        users_bookings_nanny_idTousers: {
-          include: { nanny_details: true },
-        },
-        service_requests: true,
+        payment_plans: true,
       },
     });
 
@@ -74,71 +69,32 @@ export class PaymentsService {
       );
     }
 
-    // Calculate Amount
-    const service = await this.prisma.services.findUnique({
-      where: { name: booking.service_requests?.category || "CC" },
+    const paymentPlan = booking.payment_plans;
+    const cycleNumber = paymentPlan ? paymentPlan.cycles_completed + 1 : 1;
+    
+    // Check if we already took a snapshot for this cycle that is pending
+    let snapshot = await this.prisma.price_snapshots.findFirst({
+        where: { booking_id: bookingId, cycle_number: cycleNumber, status: 'pending' }
     });
-    const hourlyRate = Number(service?.hourly_rate || 500);
-
-    if (!booking.start_time || !booking.end_time) {
-      throw new BadRequestException("Booking start or end time is missing");
-    }
-    let durationHours =
-      (new Date(booking.end_time).getTime() -
-        new Date(booking.start_time).getTime()) /
-      (1000 * 60 * 60);
-
-    // Robustness: if duration is negative, it's likely an overnight booking that wasn't correctly handled
-    if (durationHours < 0) {
-      durationHours += 24;
-    }
-
-    const { totalAmount, monthlyCost, planDurationMonths } =
-      await this.pricingService.calculateCost(
-        booking.service_requests?.category || "CC",
-        durationHours,
-        Number(booking.service_requests?.["discount_percentage"] || 0),
-        Number(booking.service_requests?.["plan_duration_months"] || 1),
-        booking.service_requests?.["plan_type"] || "ONE_TIME",
-        booking.service_requests?.["sessions_per_month"],
-      );
-
-    let amountInRupees = totalAmount;
-
-    // Default to first pending installment if planDurationMonths > 1
-    let activeInstallmentId = installmentId;
-    if (planDurationMonths > 1) {
-      amountInRupees = monthlyCost;
-
-      let installment;
-      if (installmentId) {
-        installment = await this.prisma.payment_installments.findUnique({
-          where: { id: installmentId },
+    
+    if (!snapshot) {
+        // Calculate and snapshot
+        const res = await this.pricingService.calculateAndSnapshot({
+           bookingId,
+           cycleNumber,
+           paymentPlanId: paymentPlan?.id
         });
-        if (!installment || installment.booking_id !== bookingId) {
-          throw new BadRequestException("Invalid installment specified");
-        }
-      } else {
-        installment = await this.prisma.payment_installments.findFirst({
-          where: { booking_id: bookingId, status: "pending" },
-          orderBy: { installment_no: "asc" },
-        });
-        if (!installment) {
-          throw new BadRequestException(
-            "No pending installments found for this booking.",
-          );
-        }
-      }
-
-      amountInRupees = Number(installment.amount_due);
-      activeInstallmentId = installment.id;
+        snapshot = await this.prisma.price_snapshots.findUnique({where: {id: res.snapshotId}});
     }
 
+    if (!snapshot) throw new BadRequestException("Failed to generate price snapshot");
+
+    const amountInRupees = Number(snapshot.final_amount);
     const amountInPaise = Math.round(amountInRupees * RAZORPAY_PAISE_MULTIPLIER); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
     this.logger.log(
-      `Hourly Rate: ${hourlyRate}, Duration: ${durationHours}, Amount(Paise): ${amountInPaise}`,
+      `Cycle: ${cycleNumber}, Amount(Paise): ${amountInPaise}`,
     );
 
     if (amountInPaise < RAZORPAY_MIN_AMOUNT_PAISE) {
@@ -147,16 +103,14 @@ export class PaymentsService {
       );
     }
 
-    // Idempotency: Check if order already exists for this booking/installment
+    // Idempotency: Check if order already exists for this booking/cycle
     const existingPayment = await this.prisma.payments.findFirst({
       where: {
         booking_id: bookingId,
         status: "created",
-        payment_installments: activeInstallmentId
-          ? {
-            some: { id: activeInstallmentId },
-          }
-          : undefined,
+        price_snapshots: {
+           some: { id: snapshot.id }
+        }
       },
     });
 
@@ -167,18 +121,6 @@ export class PaymentsService {
         currency: existingPayment.currency,
         key: this.configService.get("RAZORPAY_KEY_ID"),
       };
-    }
-
-    // Protection: Ensure we don't pay for an already paid installment
-    if (activeInstallmentId) {
-      const inst = await this.prisma.payment_installments.findUnique({
-        where: { id: activeInstallmentId },
-      });
-      if (inst?.status === "paid") {
-        throw new BadRequestException(
-          "This installment has already been paid.",
-        );
-      }
     }
 
     try {
@@ -200,12 +142,11 @@ export class PaymentsService {
         },
       });
 
-      if (activeInstallmentId) {
-        await this.prisma.payment_installments.update({
-          where: { id: activeInstallmentId },
-          data: { payment_id: createdPayment.id },
-        });
-      }
+      // Link payment to snapshot
+      await this.prisma.price_snapshots.update({
+          where: { id: snapshot.id },
+          data: { payment_id: createdPayment.id }
+      });
 
       await this.audit.writeLog(
         this.prisma,
@@ -439,15 +380,6 @@ export class PaymentsService {
         },
       });
 
-      // Update Installment status if exists
-      await tx.payment_installments.updateMany({
-        where: { payment_id: payment.id },
-        data: {
-          status: "paid",
-          updated_at: new Date(),
-        },
-      });
-
       await this.audit.writeLog(
         tx,
         payment.id,
@@ -462,33 +394,26 @@ export class PaymentsService {
         },
       );
 
-      // Update Booking status:
-      // - For subscription bookings (has a subscription_plan), set to "confirmed"
-      //   so the booking remains active across all installment months.
-      // - For one-time bookings, set to "COMPLETED" as the service is now fully paid.
-      const subscriptionPlan = await tx.subscription_plans.findUnique({
+      // Advance payment plan if it exists
+      const paymentPlan = await tx.payment_plans.findUnique({
         where: { booking_id: payment.booking_id },
       });
 
-      // Update next_due_date to the next pending installment if available
-      if (subscriptionPlan) {
-        const nextInstallment = await tx.payment_installments.findFirst({
-          where: {
-            booking_id: payment.booking_id,
-            status: "pending",
-          },
-          orderBy: { installment_no: "asc" },
-        });
-
-        if (nextInstallment) {
-          await tx.subscription_plans.update({
-            where: { id: subscriptionPlan.id },
-            data: { next_due_date: nextInstallment.due_date },
-          });
-        }
+      if (paymentPlan) {
+        await this.pricingService.advancePaymentPlan(paymentPlan.id);
+      }
+      
+      // Update snapshot
+      const snapshot = await tx.price_snapshots.findFirst({
+        where: { payment_id: payment.id }
+      });
+      if (snapshot) {
+         await this.pricingService.markSnapshotCharged(snapshot.id, paymentId, payment.id);
       }
 
-      const newBookingStatus = subscriptionPlan ? BookingStatus.CONFIRMED : BookingStatus.COMPLETED;
+      const newBookingStatus = paymentPlan && (paymentPlan.cycles_completed + 1) < paymentPlan.total_cycles 
+         ? BookingStatus.CONFIRMED 
+         : BookingStatus.COMPLETED;
 
       const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
@@ -680,45 +605,12 @@ export class PaymentsService {
     };
   }
 
-  async generateInstallmentsForBooking(
-    bookingId: string,
-    totalAmount: number,
-    months: number,
-    startDate: Date,
-  ) {
-    if (months <= 1) return;
-
-    // Check if installments already exist
-    const existing = await this.prisma.payment_installments.count({
-      where: { booking_id: bookingId },
-    });
-    if (existing > 0) return;
-
-    this.logger.log(
-      `Generating ${months} installments for booking ${bookingId}`,
-    );
-    const amountPerInstallment = totalAmount / months;
-
-    const installments = Array.from({ length: months }).map((_, index) => {
-      const dueDate = TimeUtils.addMonths(new Date(startDate), index);
-      return {
-        booking_id: bookingId,
-        installment_no: index + 1,
-        amount_due: amountPerInstallment,
-        due_date: dueDate,
-        status: "pending",
-      };
-    });
-
-    await this.prisma.payment_installments.createMany({
-      data: installments,
-    });
-  }
-
-  async getSubscriptionPlans(userId: string) {
-    const plans = await this.prisma.subscription_plans.findMany({
+  async getPaymentPlans(userId: string) {
+    const plans = await this.prisma.payment_plans.findMany({
       where: {
-        parent_id: userId,
+        bookings: {
+           parent_id: userId
+        }
       },
       orderBy: {
         created_at: "desc",
@@ -740,9 +632,9 @@ export class PaymentsService {
             },
           },
         },
-        payment_installments: {
+        price_snapshots: {
           orderBy: {
-            installment_no: "asc",
+            cycle_number: "asc",
           },
           include: {
             payments: {

@@ -5,7 +5,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { ConfigService } from "@nestjs/config";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
-import { PricingService } from "../common/pricing.service";
+import { PricingEngineService } from "../common/pricing.service";
 
 describe("PaymentsService", () => {
   let service: PaymentsService;
@@ -25,10 +25,10 @@ describe("PaymentsService", () => {
     payment_audit_log: {
       create: jest.fn(),
     },
-    payment_installments: {
+    price_snapshots: {
       updateMany: jest.fn(),
     },
-    subscription_plans: {
+    payment_plans: {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
@@ -53,6 +53,7 @@ describe("PaymentsService", () => {
 
   const mockPricingService = {
     calculateCost: jest.fn(),
+    calculateAndSnapshot: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -63,7 +64,7 @@ describe("PaymentsService", () => {
         { provide: NotificationsService, useValue: mockNotificationsService },
         { provide: PaymentGatewayService, useValue: mockPaymentGatewayService },
         { provide: PaymentAuditService, useValue: mockPaymentAuditService },
-        { provide: PricingService, useValue: mockPricingService },
+        { provide: PricingEngineService, useValue: mockPricingService },
         {
           provide: ConfigService,
           useValue: {

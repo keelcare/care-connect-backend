@@ -4,12 +4,12 @@ import { ConfigModule } from "@nestjs/config";
 
 import { DataCleanupService } from "./services/cleanup/data-cleanup.service";
 import { AuditService } from "./services/audit/audit.service";
-import { PricingService } from "./pricing.service";
+import { PricingEngineService } from "./pricing.service";
 
 @Global()
 @Module({
   imports: [ConfigModule],
-  providers: [EncryptionService, DataCleanupService, AuditService, PricingService],
-  exports: [EncryptionService, DataCleanupService, AuditService, PricingService],
+  providers: [EncryptionService, DataCleanupService, AuditService, PricingEngineService],
+  exports: [EncryptionService, DataCleanupService, AuditService, PricingEngineService],
 })
 export class CommonModule {}

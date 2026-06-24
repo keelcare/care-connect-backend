@@ -17,7 +17,7 @@ import { SSE_EVENTS } from "../events/sse-event.types";
 import { DisputesService } from "../disputes/disputes.service";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
-import { PricingUtils } from "../common/utils/pricing.utils";
+import { PricingEngineService } from "../common/pricing.service";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
@@ -38,6 +38,7 @@ export class AdminService {
     private mailService: MailService,
     private availabilityService: AvailabilityService,
     private auditService: AdminAuditService,
+    private pricingService: PricingEngineService,
   ) {}
 
   // Manual Assignment Management
@@ -75,17 +76,23 @@ export class AdminService {
       orderBy: { created_at: "desc" },
     });
 
-    const allServices = await this.prisma.services.findMany();
-    const serviceMap = Object.fromEntries(
-      allServices.map((s) => [s.name, Number(s.hourly_rate)]),
-    );
 
-    const standardMapped = requests.map((req) => {
+
+    const standardMapped = await Promise.all(requests.map(async (req) => {
       const parent = req.users;
       const profile = parent?.profiles;
       const booking = req.bookings?.[0];
       const children =
         booking?.booking_children?.map((bc) => bc.children) || [];
+
+      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
+        req.category || "CC",
+        Number(req.duration_hours),
+        Number((req as any).discount_percentage || 0),
+        Number((req as any).plan_duration_months || 1),
+        (req as any).plan_type || "ONE_TIME",
+        (req as any).sessions_per_month,
+      );
 
       return {
         id: req.id,
@@ -100,15 +107,8 @@ export class AdminService {
         parent_name: profile
           ? `${profile.first_name} ${profile.last_name}`
           : "Unknown Parent",
-        hourly_rate: serviceMap[req.category as string] || 500,
-        total_amount: PricingUtils.calculateTotal(
-          serviceMap[req.category as string] || 500,
-          Number(req.duration_hours),
-          Number((req as any).discount_percentage || 0),
-          Number((req as any).plan_duration_months || 1),
-          (req as any).plan_type || "ONE_TIME",
-          (req as any).sessions_per_month,
-        ).totalAmount,
+        hourly_rate: appliedRate,
+        total_amount: totalAmount,
         created_at: req.created_at,
         children_count: req.num_children || children.length,
         children_names:
@@ -141,7 +141,7 @@ export class AdminService {
         required_skills: req.required_skills,
         is_recurring: false,
       };
-    });
+    }));
 
     const recurringRequests = await this.prisma.recurring_service_requests.findMany({
       where: { status: "active" },
@@ -177,11 +177,20 @@ export class AdminService {
       req.bookings.some(b => !b.nanny_id && b.status === "requested")
     );
 
-    const recurringMapped = unassignedRecurring.map((req) => {
+    const recurringMapped = await Promise.all(unassignedRecurring.map(async (req) => {
       const parent = req.users;
       const profile = parent?.profiles;
       const booking = req.bookings?.[0];
       const children = booking?.booking_children?.map((bc) => bc.children) || [];
+
+      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
+        req.category || "CC",
+        Number(req.duration_hours),
+        0,
+        Number(req.plan_duration_months || 1),
+        req.plan_type || "ONE_TIME",
+        req.sessions_per_month || req.bookings.length,
+      );
 
       return {
         id: req.id,
@@ -196,15 +205,8 @@ export class AdminService {
         parent_name: profile
           ? `${profile.first_name} ${profile.last_name}`
           : "Unknown Parent",
-        hourly_rate: req.max_hourly_rate || serviceMap[req.category as string] || 500,
-        total_amount: PricingUtils.calculateTotal(
-          Number(req.max_hourly_rate || serviceMap[req.category as string] || 500),
-          Number(req.duration_hours),
-          0,
-          Number(req.plan_duration_months || 1),
-          req.plan_type || "ONE_TIME",
-          req.sessions_per_month || req.bookings.length,
-        ).totalAmount,
+        hourly_rate: appliedRate,
+        total_amount: totalAmount,
         created_at: req.created_at,
         children_count: req.num_children || children.length,
         children_names:
@@ -238,7 +240,7 @@ export class AdminService {
         is_recurring: true,
         total_sessions: req.bookings.length,
       };
-    });
+    }));
 
     return [...standardMapped, ...recurringMapped].sort(
       (a, b) => new Date(b.created_at as any).getTime() - new Date(a.created_at as any).getTime()
@@ -1131,27 +1133,22 @@ export class AdminService {
   }
 
   async getAllPaymentPlans() {
-    return this.prisma.subscription_plans.findMany({
+    return this.prisma.payment_plans.findMany({
       orderBy: { created_at: "desc" },
       include: {
-        users: {
-          select: {
-            email: true,
-            profiles: {
+        bookings: {
+          include: {
+            users_bookings_parent_idTousers: {
               select: {
-                first_name: true,
-                last_name: true,
+                email: true,
+                profiles: { select: { first_name: true, last_name: true } },
               },
             },
+            service_requests: { select: { category: true } },
           },
         },
-        service_requests: {
-          select: {
-            category: true,
-          },
-        },
-        payment_installments: {
-          orderBy: { installment_no: "asc" },
+        price_snapshots: {
+          orderBy: { cycle_number: "asc" },
         },
       },
     });
@@ -1159,12 +1156,12 @@ export class AdminService {
 
   async getPaymentPlanStats() {
     const [totalPlans, activePlans, completedPlans, installmentsAmount] = await Promise.all([
-      this.prisma.subscription_plans.count(),
-      this.prisma.subscription_plans.count({ where: { status: "active" } }),
-      this.prisma.subscription_plans.count({ where: { status: "completed" } }),
-      this.prisma.payment_installments.aggregate({
-        _sum: { amount_due: true },
-        where: { status: "paid" },
+      this.prisma.payment_plans.count(),
+      this.prisma.payment_plans.count({ where: { status: "active" } }),
+      this.prisma.payment_plans.count({ where: { status: "completed" } }),
+      this.prisma.price_snapshots.aggregate({
+        _sum: { final_amount: true },
+        where: { status: "charged" },
       }),
     ]);
 
@@ -1172,7 +1169,7 @@ export class AdminService {
       totalPlans,
       activePlans,
       completedPlans,
-      totalCollected: installmentsAmount._sum.amount_due || 0,
+      totalCollected: installmentsAmount._sum.final_amount || 0,
     };
   }
 

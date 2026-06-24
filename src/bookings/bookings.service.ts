@@ -8,7 +8,6 @@ import {
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { PricingUtils } from "../common/utils/pricing.utils";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { GeoUtils } from "../common/utils/geo.utils";
@@ -22,7 +21,7 @@ import {
   BookingRescheduledEvent,
 } from "./events/booking.events";
 import { BookingStatus } from "../constants";
-import { PricingService } from "../common/pricing.service";
+import { PricingEngineService } from "../common/pricing.service";
 import { RequestsService } from "../requests/requests.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { ProgressReportsService } from "../progress-reports/progress-reports.service";
@@ -41,7 +40,7 @@ export class BookingsService {
     private prisma: PrismaService,
     private requestsService: RequestsService,
     private eventEmitter: EventEmitter2,
-    private pricingService: PricingService,
+    private pricingService: PricingEngineService,
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
     @Inject(forwardRef(() => ProgressReportsService))
@@ -158,7 +157,7 @@ export class BookingsService {
         (1000 * 60 * 60)
         : 0;
 
-    const { totalAmount } = await this.pricingService.calculateCost(
+    const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
       booking.service_requests?.category || "CC",
       durationHours > 0
         ? durationHours
@@ -166,14 +165,12 @@ export class BookingsService {
       Number(booking.service_requests?.["discount_percentage"] || 0),
       Number(booking.service_requests?.["plan_duration_months"] || 1),
       booking.service_requests?.["plan_type"] || "ONE_TIME",
-      booking.service_requests?.["sessions_per_month"],
+      booking.service_requests?.["sessions_per_month"] || 1,
     );
-
-    const hourlyRate = await this.pricingService.getHourlyRate(booking.service_requests?.category || "CC");
 
     return {
       ...booking,
-      hourly_rate: hourlyRate,
+      hourly_rate: appliedRate,
       total_amount: totalAmount,
       title:
         (booking.jobs?.title ||
@@ -218,16 +215,10 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
-    const allServices = await this.prisma.services.findMany();
-    const serviceMap = Object.fromEntries(
-      allServices.map((s) => [s.name, Number(s.hourly_rate)]),
-    );
-
-    return bookings.map((booking) => {
+    const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
       const nannyProfile = nanny?.profiles;
-      const rate =
-        serviceMap[booking.service_requests?.category as string] || 500;
+
       const hours =
         booking.start_time && booking.end_time
           ? (new Date(booking.end_time).getTime() -
@@ -235,8 +226,8 @@ export class BookingsService {
           (1000 * 60 * 60)
           : Number(booking.service_requests?.duration_hours || 0);
 
-      const { totalAmount } = PricingUtils.calculateTotal(
-        rate,
+      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
+        booking.service_requests?.category || "CC",
         hours,
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
@@ -246,7 +237,7 @@ export class BookingsService {
 
       return {
         ...booking,
-        hourly_rate: rate,
+        hourly_rate: appliedRate,
         total_amount: totalAmount,
         title:
           (booking.jobs?.title ||
@@ -265,7 +256,9 @@ export class BookingsService {
           profiles: nannyProfile,
         } : null,
       };
-    });
+    }));
+
+    return enrichedBookings;
   }
 
   async getBookingsByNanny(nannyId: string) {
@@ -284,14 +277,7 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
-    const allServices = await this.prisma.services.findMany();
-    const serviceMap = Object.fromEntries(
-      allServices.map((s) => [s.name, Number(s.hourly_rate)]),
-    );
-
-    return bookings.map((booking) => {
-      const rate =
-        serviceMap[booking.service_requests?.category as string] || 500;
+    const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const hours =
         booking.start_time && booking.end_time
           ? (new Date(booking.end_time).getTime() -
@@ -299,8 +285,8 @@ export class BookingsService {
           (1000 * 60 * 60)
           : Number(booking.service_requests?.duration_hours || 0);
 
-      const { totalAmount } = PricingUtils.calculateTotal(
-        rate,
+      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
+        booking.service_requests?.category || "CC",
         hours,
         Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
@@ -312,7 +298,7 @@ export class BookingsService {
 
       return {
         ...booking,
-        hourly_rate: rate,
+        hourly_rate: appliedRate,
         total_amount: totalAmount,
         title:
           (booking.jobs?.title ||
@@ -321,7 +307,9 @@ export class BookingsService {
               : "Care Service")) +
           (parentProfile ? ` for ${parentProfile.first_name}` : ""),
       };
-    });
+    }));
+
+    return enrichedBookings;
   }
 
   async startBooking(id: string, nannyLat?: number, nannyLng?: number) {
@@ -571,10 +559,10 @@ export class BookingsService {
         (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
       if (hoursUntilStart < 24 && booking.service_requests) {
-        const service = await this.prisma.services.findUnique({
-          where: { name: booking.service_requests.category || "CC" },
-        });
-        const hourlyRate = Number(service?.hourly_rate || 500);
+        const { appliedRate: hourlyRate } = await this.pricingService.calculateCost(
+          booking.service_requests.category || "CC",
+          1
+        );
 
         cancellationFee = hourlyRate;
         feeStatus = "pending";
