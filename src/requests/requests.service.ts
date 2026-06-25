@@ -121,6 +121,11 @@ export class RequestsService {
               start_time: bookingStartTime,
               end_time: bookingEndTime,
               tags: createRequestDto.use_installments ? ["use_installments"] : [],
+              hours_per_day: createRequestDto.duration_hours,
+              days_per_week: createRequestDto.sessions_per_month 
+                ? Math.max(1, Math.round(createRequestDto.sessions_per_month / 4)) 
+                : 1,
+              plan_duration_months: createRequestDto.plan_duration_months || 1,
             },
           });
 

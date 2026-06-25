@@ -41,20 +41,34 @@ async function main() {
 
   // 2. Seed Service Categories (Required for matching and pricing)
   const services = [
-    { name: "ST", hourly_rate: 350.0 }, // Shadow Teacher
-    { name: "CN", hourly_rate: 250.0 }, // Child Care
-    { name: "SN", hourly_rate: 450.0 }, // Special Needs
+    { name: "ST", slug: "shadow-teacher", hourly_rate: 350.0 },
+    { name: "CN", slug: "child-care", hourly_rate: 250.0 },
+    { name: "SN", slug: "special-needs", hourly_rate: 450.0 },
   ];
 
-  for (const service of services) {
-    await prisma.services.upsert({
-      where: { name: service.name },
-      update: { hourly_rate: service.hourly_rate },
+  for (const s of services) {
+    const service = await prisma.services.upsert({
+      where: { name: s.name },
+      update: { slug: s.slug },
       create: { 
-        name: service.name, 
-        hourly_rate: service.hourly_rate 
+        name: s.name, 
+        slug: s.slug,
       },
     });
+
+    const existingRateCard = await prisma.rate_cards.findFirst({
+        where: { service_id: service.id, effective_to: null },
+    });
+    if (!existingRateCard) {
+        await prisma.rate_cards.create({
+            data: {
+                service_id: service.id,
+                hourly_rate: s.hourly_rate,
+                effective_from: new Date('2025-01-01T00:00:00Z'),
+                effective_to: null,
+            },
+        });
+    }
   }
   console.log(`✅ Seeded ${services.length} service categories.`);
 

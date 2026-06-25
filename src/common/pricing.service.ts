@@ -18,6 +18,7 @@ export interface QuoteInput {
   customFinalPrice?: number;
   /** If provided, resolves rate card as-of this date. Defaults to now() */
   asOf?: Date;
+  planType?: string;
 }
 
 export interface CycleChargeInput {
@@ -105,7 +106,7 @@ export class PricingEngineService {
       baseHourlyRate: Number(rateCard.hourly_rate),
       hoursPerDay,
       daysPerWeek,
-      weeksInCycle: 4, // 4 weeks per monthly billing cycle
+      weeksInCycle: input.planType === 'ONE_TIME' ? 1 : 4,
       discountPercent,
       customHourlyRate: input.customHourlyRate,
       customFinalPrice: input.customFinalPrice,
@@ -140,8 +141,9 @@ export class PricingEngineService {
     const preview = await this.getQuotePreview({
       serviceId: service.id,
       hoursPerDay: durationHours,
-      daysPerWeek: sessionsPerMonth, // Assuming sessions per month translates roughly for backward compatibility or the old calculation
+      daysPerWeek: planType === 'ONE_TIME' ? 1 : (sessionsPerMonth ? Math.max(1, Math.round(sessionsPerMonth / 4)) : 1),
       planDurationMonths,
+      planType,
     });
 
     // In old code, totalAmount meant total over the duration.
@@ -178,17 +180,25 @@ export class PricingEngineService {
 
     if (!booking) throw new NotFoundException(`Booking ${bookingId} not found`);
 
-    // Validate required pricing fields exist on booking
-    if (!booking.hours_per_day || !booking.days_per_week) {
+    // Validate required pricing fields exist on booking or fallback to service_requests
+    const hoursPerDay = booking.hours_per_day ? Number(booking.hours_per_day) : Number(booking.service_requests?.duration_hours || 0);
+    const daysPerWeek = booking.days_per_week ? booking.days_per_week : (booking.service_requests?.sessions_per_month ? Math.max(1, Math.round(booking.service_requests.sessions_per_month / 4)) : 1);
+
+    if (!hoursPerDay || !daysPerWeek) {
       throw new BadRequestException(
-        `Booking ${bookingId} is missing hours_per_day or days_per_week`,
+        `Booking ${bookingId} is missing hours_per_day or days_per_week, and no fallback service request data is available.`,
       );
     }
 
     // Resolve service — look up via service_requests.category or fallback
     const serviceCategory = booking.service_requests?.category ?? 'CC';
     const service = await this.prisma.services.findFirst({
-      where: { name: serviceCategory },
+      where: {
+        OR: [
+          { name: serviceCategory },
+          { slug: serviceCategory.toLowerCase() },
+        ],
+      },
     });
     if (!service) {
       throw new NotFoundException(`Service for category "${serviceCategory}" not found`);
@@ -202,12 +212,14 @@ export class PricingEngineService {
       ? Number(booking.discount_tiers.discount_percent)
       : 0;
 
+    const planType = booking.service_requests?.plan_type || 'ONE_TIME';
+
     const priceInput: PriceInput = {
       pricingMode: (booking.pricing_mode as PricingMode) ?? 'standard',
       baseHourlyRate: Number(rateCard.hourly_rate),
-      hoursPerDay: Number(booking.hours_per_day),
-      daysPerWeek: booking.days_per_week,
-      weeksInCycle: 4,
+      hoursPerDay: hoursPerDay,
+      daysPerWeek: daysPerWeek,
+      weeksInCycle: planType === 'ONE_TIME' ? 1 : 4,
       discountPercent,
       customHourlyRate: booking.custom_hourly_rate
         ? Number(booking.custom_hourly_rate)

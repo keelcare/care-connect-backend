@@ -142,6 +142,11 @@ export class RecurringRequestsService {
           start_time: startTimestamp,
           end_time: endTimestamp,
           tags: ["recurring", `category:${dto.category}`],
+          hours_per_day: dto.duration_hours,
+          days_per_week: dto.sessions_per_month 
+            ? Math.max(1, Math.round(dto.sessions_per_month / 4)) 
+            : (dto.recurrence_type === 'weekly' ? (dto.recurrence_pattern.days?.length || 1) : 1),
+          plan_duration_months: dto.plan_duration_months || 1,
         };
       });
 
