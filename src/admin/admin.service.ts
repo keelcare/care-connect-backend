@@ -331,11 +331,11 @@ export class AdminService {
       const blockedNannies = await this.prisma.availability_blocks.findMany();
       const blockedNannyIds: string[] = [];
       for (const block of blockedNannies) {
-        const isUnavailable = !(await this.availabilityService.isNannyAvailable(
-          block.nanny_id,
+        const isUnavailable = this.availabilityService.doesBlockOverlap(
+          block,
           actualStartTime,
           requestEndTime,
-        ));
+        );
         if (isUnavailable) {
           blockedNannyIds.push(block.nanny_id);
         }
@@ -370,7 +370,7 @@ export class AdminService {
         JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
         AND nd.is_available_now = true
-        ${allExcludedIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(allExcludedIds)})` : Prisma.empty}
+        ${allExcludedIds.length > 0 ? Prisma.sql`AND u.id != ALL(ARRAY[${Prisma.join(allExcludedIds)}]::uuid[])` : Prisma.empty}
         ${
           skillSearchTerms.length > 0
             ? Prisma.sql`AND (
