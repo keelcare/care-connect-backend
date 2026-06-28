@@ -62,4 +62,20 @@ export class NanniesController {
   async cancelCategoryRequest(@Request() req, @Param("id") id: string) {
     return this.nanniesService.cancelCategoryRequest(req.user.id, id);
   }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("me/dashboard")
+  @ApiOperation({ summary: "Get nanny dashboard summary (today's earnings, schedule, weekly trend)" })
+  @ApiResponse({ status: 200, description: "Dashboard summary returned" })
+  async getDashboardSummary(@Request() req) {
+    return this.nanniesService.getDashboardSummary(req.user.id);
+  }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("me/performance")
+  @ApiOperation({ summary: "Get nanny performance overview (ratings, completion rate, sentiment)" })
+  @ApiResponse({ status: 200, description: "Performance data returned" })
+  async getPerformance(@Request() req) {
+    return this.nanniesService.getPerformance(req.user.id);
+  }
 }

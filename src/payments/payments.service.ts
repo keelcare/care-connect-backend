@@ -753,6 +753,102 @@ export class PaymentsService {
     };
   }
 
+  async getNannyEarningsAnalytics(nannyId: string, period: "week" | "month" = "week") {
+    const now = new Date();
+    const days = period === "week" ? 7 : 30;
+
+    const startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - (days - 1));
+    startDate.setHours(0, 0, 0, 0);
+
+    const lastPeriodStart = new Date(startDate);
+    lastPeriodStart.setDate(lastPeriodStart.getDate() - days);
+
+    // Total available (all time captured)
+    const totalAgg = await this.prisma.payments.aggregate({
+      where: { nanny_id: nannyId, status: PaymentStatus.CAPTURED },
+      _sum: { amount: true },
+    });
+
+    // Pending processing
+    const pendingAgg = await this.prisma.payments.aggregate({
+      where: { nanny_id: nannyId, status: PaymentStatus.CREATED },
+      _sum: { amount: true },
+    });
+
+    // Jobs completed in period
+    const jobsCompleted = await this.prisma.bookings.count({
+      where: { nanny_id: nannyId, status: "COMPLETED" },
+    });
+    const jobsThisPeriod = await this.prisma.bookings.count({
+      where: {
+        nanny_id: nannyId,
+        status: "COMPLETED",
+        end_time: { gte: startDate },
+      },
+    });
+
+    // Period earnings & last period for comparison
+    const periodPayments = await this.prisma.payments.findMany({
+      where: {
+        nanny_id: nannyId,
+        status: PaymentStatus.CAPTURED,
+        updated_at: { gte: startDate },
+      },
+      select: { amount: true, updated_at: true },
+    });
+    const periodTotal = periodPayments.reduce((s, p) => s + Number(p.amount), 0);
+
+    const lastPeriodPayments = await this.prisma.payments.aggregate({
+      where: {
+        nanny_id: nannyId,
+        status: PaymentStatus.CAPTURED,
+        updated_at: { gte: lastPeriodStart, lt: startDate },
+      },
+      _sum: { amount: true },
+    });
+    const lastPeriodTotal = Number(lastPeriodPayments._sum.amount || 0);
+    const periodChange =
+      lastPeriodTotal > 0
+        ? Math.round(((periodTotal - lastPeriodTotal) / lastPeriodTotal) * 100)
+        : null;
+
+    // Revenue trend: group by day
+    const trend: { date: string; amount: number; projection?: number }[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const day = new Date(now);
+      day.setDate(day.getDate() - i);
+      const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
+
+      const dayPayments = periodPayments.filter((p) => {
+        const d = new Date(p.updated_at!);
+        return d >= dayStart && d <= dayEnd;
+      });
+      const dayAmount = dayPayments.reduce((s, p) => s + Number(p.amount), 0);
+
+      trend.push({
+        date: day.toISOString().slice(0, 10),
+        amount: dayAmount,
+      });
+    }
+
+    // Average daily projection
+    const activeDays = trend.filter((t) => t.amount > 0).length;
+    const avgDaily = activeDays > 0 ? periodTotal / activeDays : 0;
+    trend.forEach((t) => { if (t.amount === 0 && new Date(t.date) > now) t.projection = avgDaily; });
+
+    return {
+      totalAvailable: Number(totalAgg._sum.amount || 0),
+      pendingProcessing: Number(pendingAgg._sum.amount || 0),
+      jobsCompleted,
+      jobsThisPeriod,
+      periodTotal,
+      periodChange,
+      trend,
+    };
+  }
+
   async refundPayment(paymentDbId: string, amount?: number) {
     const payment = await this.prisma.payments.findUnique({
       where: { id: paymentDbId },

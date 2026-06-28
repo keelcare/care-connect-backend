@@ -753,10 +753,38 @@ export class RequestsService {
       request["sessions_per_month"],
     );
 
+    // Resolve the assigned nanny: prefer accepted assignment, fall back to pending
+    const acceptedAssignment = request.assignments?.find((a) => a.status === "accepted");
+    const pendingAssignment = request.assignments?.find((a) => a.status === "pending");
+    const assignedNanny = (acceptedAssignment ?? pendingAssignment)?.users ?? null;
+
+    // Check if a confirmed booking exists for this request and pull nanny from it
+    let bookingNanny: typeof assignedNanny = null;
+    let bookingId: string | null = null;
+    const associatedBooking = await this.prisma.bookings.findFirst({
+      where: { request_id: request.id, status: { not: "CANCELLED" } },
+      include: {
+        users_bookings_nanny_idTousers: {
+          include: { profiles: true, nanny_details: true },
+        },
+      },
+    });
+    if (associatedBooking) {
+      bookingId = associatedBooking.id;
+      bookingNanny = associatedBooking.users_bookings_nanny_idTousers ?? null;
+    }
+
+    const resolvedNanny = bookingNanny ?? assignedNanny;
+
     return {
       ...request,
       hourly_rate: hourlyRate,
       total_amount: totalAmount,
+      nanny: resolvedNanny,
+      booking_id: bookingId,
+      title: request.category
+        ? `Care for ${request.num_children} ${Number(request.num_children) === 1 ? "Child" : "Children"}`
+        : "Service Request",
     };
   }
 

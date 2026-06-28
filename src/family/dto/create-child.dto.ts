@@ -11,10 +11,6 @@ import {
 import { Type } from "class-transformer";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
 
-/**
- * SECURITY: Child profile DTO with sanitization and validation
- */
-
 export enum ChildProfileType {
   STANDARD = "STANDARD",
   SPECIAL_NEEDS = "SPECIAL_NEEDS",
@@ -60,16 +56,13 @@ export class SchoolDetailsDto {
 }
 
 export class CreateChildDto {
-  /**
-   * SECURITY: Sanitize names to prevent XSS
-   */
   @IsString()
-  @MaxLength(100, { message: "First name must not exceed 100 characters" })
+  @MaxLength(100)
   @Sanitize()
   first_name: string;
 
   @IsString()
-  @MaxLength(100, { message: "Last name must not exceed 100 characters" })
+  @MaxLength(100)
   @Sanitize()
   last_name: string;
 
@@ -83,50 +76,91 @@ export class CreateChildDto {
   @IsEnum(ChildProfileType)
   profile_type?: ChildProfileType;
 
-  /**
-   * SECURITY: Limit array item lengths to prevent abuse
-   */
+  // ── Health & dietary ──────────────────────────────────────────────
+
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: "Maximum 20 allergies allowed" })
+  @ArrayMaxSize(20)
   @IsString({ each: true })
-  @MaxLength(50, {
-    each: true,
-    message: "Each allergy must not exceed 50 characters",
-  })
+  @MaxLength(50, { each: true })
   allergies?: string[];
 
   @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  allergy_severity?: "mild" | "moderate" | "severe";
+
+  @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: "Maximum 20 dietary restrictions allowed" })
+  @ArrayMaxSize(20)
   @IsString({ each: true })
-  @MaxLength(50, {
-    each: true,
-    message: "Each dietary restriction must not exceed 50 characters",
-  })
+  @MaxLength(50, { each: true })
   dietary_restrictions?: string[];
 
-  /**
-   * SECURITY: Sanitize medical and care information
-   */
   @IsOptional()
   @IsString()
-  @MaxLength(500, { message: "Diagnosis must not exceed 500 characters" })
+  @MaxLength(1000)
+  @Sanitize()
+  medical_notes?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  report_url?: string;
+
+  // ── Personality & routine ─────────────────────────────────────────
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  @Sanitize()
+  personality_notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(50, { each: true })
+  hobbies?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  bedtime?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  nap_schedule?: string;
+
+  // ── Special needs ─────────────────────────────────────────────────
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   @Sanitize()
   diagnosis?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000, {
-    message: "Care instructions must not exceed 2000 characters",
-  })
+  @MaxLength(2000)
   @Sanitize()
   care_instructions?: string;
+
+  // ── Emergency contact ─────────────────────────────────────────────
 
   @IsOptional()
   @ValidateNested()
   @Type(() => EmergencyContactDto)
   emergency_contact?: EmergencyContactDto;
+
+  // Support legacy alias from frontend
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => EmergencyContactDto)
+  emergency_contact_override?: EmergencyContactDto;
+
+  // ── Shadow teacher ────────────────────────────────────────────────
 
   @IsOptional()
   @ValidateNested()
@@ -135,11 +169,8 @@ export class CreateChildDto {
 
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(20, { message: "Maximum 20 learning goals allowed" })
+  @ArrayMaxSize(20)
   @IsString({ each: true })
-  @MaxLength(50, {
-    each: true,
-    message: "Each learning goal must not exceed 50 characters",
-  })
+  @MaxLength(100, { each: true })
   learning_goals?: string[];
 }

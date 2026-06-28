@@ -586,6 +586,7 @@ model children {
   emergency_contact Json?
   school_details    Json?
   learning_goals    String[]           @default([])
+  metadata          Json?              // extended profile: hobbies, bedtime, personality_notes, medical_notes, allergy_severity, nap_schedule, report_url
   created_at        DateTime?          @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
   booking_children  booking_children[]

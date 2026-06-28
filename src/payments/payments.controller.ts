@@ -185,4 +185,13 @@ export class PaymentsController {
   async getNannyEarnings(@Req() req: any) {
     return this.paymentsService.getNannyEarnings(req.user.id);
   }
+
+  @Get("nanny/earnings/analytics")
+  @Roles(UserRole.NANNY)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @ApiOperation({ summary: "Get earnings analytics with trend data for the nanny dashboard" })
+  @ApiResponse({ status: 200, description: "Earnings analytics returned" })
+  async getNannyEarningsAnalytics(@Req() req: any, @Query("period") period: "week" | "month" = "week") {
+    return this.paymentsService.getNannyEarningsAnalytics(req.user.id, period);
+  }
 }
