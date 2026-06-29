@@ -22,14 +22,24 @@ export class AppController {
 
   @Get("health")
   getHealth() {
-    return { status: "ok" };
+    return {
+      status: "ok",
+      version: process.env.npm_package_version ?? "unknown",
+      env: process.env.NODE_ENV ?? "unknown",
+      uptime: Math.floor(process.uptime()),
+    };
   }
 
   @Get("ready")
   async getReady() {
     try {
       await this.prisma.$queryRaw`SELECT 1`;
-      return { status: "ready", db: "connected" };
+      return {
+        status: "ready",
+        db: "connected",
+        version: process.env.npm_package_version ?? "unknown",
+        uptime: Math.floor(process.uptime()),
+      };
     } catch (error: any) {
       throw new ServiceUnavailableException({
         status: "down",
