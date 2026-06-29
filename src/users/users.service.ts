@@ -444,4 +444,73 @@ export class UsersService {
 
     return { message: "Account deleted and data anonymised successfully" };
   }
+
+  /**
+   * DPDPA 2023 — Right of Access (Article 11).
+   * Returns a complete snapshot of all personal data held for the user.
+   * Intentionally omits security-sensitive fields (password_hash, token hashes).
+   */
+  async exportMyData(userId: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      include: {
+        profiles: true,
+        children: true,
+        bookings_bookings_parent_idTousers: {
+          select: {
+            id: true, status: true, start_time: true, end_time: true,
+            created_at: true, cancellation_reason: true,
+          },
+          orderBy: { created_at: 'desc' },
+        },
+        bookings_bookings_nanny_idTousers: {
+          select: {
+            id: true, status: true, start_time: true, end_time: true,
+            created_at: true,
+          },
+          orderBy: { created_at: 'desc' },
+        },
+        reviews_reviews_reviewer_idTousers: {
+          select: { id: true, rating: true, comment: true, created_at: true },
+        },
+        reviews_reviews_reviewee_idTousers: {
+          select: { id: true, rating: true, comment: true, created_at: true },
+        },
+      },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    const payments = await this.prisma.payments.findMany({
+      where: {
+        OR: [
+          { bookings: { parent_id: userId } },
+          { bookings: { nanny_id: userId } },
+        ],
+      },
+      select: {
+        id: true, order_id: true, amount: true, currency: true,
+        status: true, payment_method: true, created_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    return {
+      exported_at: new Date().toISOString(),
+      account: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        is_active: user.is_active,
+        created_at: user.created_at,
+      },
+      profile: user.profiles,
+      children: user.children,
+      bookings_as_parent: user.bookings_bookings_parent_idTousers,
+      bookings_as_nanny: user.bookings_bookings_nanny_idTousers,
+      payments,
+      reviews_given: user.reviews_reviews_reviewer_idTousers,
+      reviews_received: user.reviews_reviews_reviewee_idTousers,
+    };
+  }
 }

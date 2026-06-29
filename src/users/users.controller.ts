@@ -128,4 +128,13 @@ export class UsersController {
   async deleteAccount(@Request() req) {
     return this.usersService.deleteMe(req.user.id);
   }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("me/export")
+  @ApiOperation({ summary: "Export all personal data for the authenticated user (DPDPA right of access)" })
+  @ApiResponse({ status: 200, description: "JSON snapshot of all personal data" })
+  async exportMyData(@Request() req) {
+    return this.usersService.exportMyData(req.user.id);
+  }
 }
