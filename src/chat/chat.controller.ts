@@ -12,6 +12,7 @@ import {
 import { ChatService } from "./chat.service";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
+import { SendMessageDto } from "./dto/send-message.dto";
 
 @Controller("chat")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -64,10 +65,9 @@ export class ChatController {
   @Post(":chatId/message")
   async sendMessage(
     @Param("chatId") chatId: string,
-    @Body() body: { content: string; attachmentUrl?: string },
+    @Body() body: SendMessageDto,
     @Request() req,
   ) {
-    // req.user is populated by JwtStrategy
     const userId = req.user.id;
     return this.chatService.sendMessage(
       chatId,

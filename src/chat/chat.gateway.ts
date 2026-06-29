@@ -7,7 +7,7 @@ import {
   MessageBody,
   ConnectedSocket,
 } from "@nestjs/websockets";
-import { Logger } from "@nestjs/common";
+import { Logger, BadRequestException } from "@nestjs/common";
 import { Server, Socket } from "socket.io";
 import { ChatService } from "./chat.service";
 import { JwtService } from "@nestjs/jwt";
@@ -115,7 +115,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     payload: { chatId: string; content: string; attachmentUrl?: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const userId = client.data.user.sub; // Assuming 'sub' is the user ID in JWT payload
+    const userId = client.data.user.sub;
+
+    // Validate attachmentUrl if provided — must be an absolute HTTPS URL to prevent
+    // open redirect and SSRF via crafted attachment payloads.
+    if (payload.attachmentUrl) {
+      try {
+        const url = new URL(payload.attachmentUrl);
+        if (url.protocol !== 'https:') {
+          throw new BadRequestException('attachmentUrl must use HTTPS');
+        }
+      } catch {
+        throw new BadRequestException('attachmentUrl must be a valid HTTPS URL');
+      }
+    }
+
     const message = await this.chatService.sendMessage(
       payload.chatId,
       userId,

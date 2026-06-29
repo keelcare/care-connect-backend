@@ -17,6 +17,10 @@ async function bootstrap() {
 
   app.useGlobalFilters(new ThrottleExceptionFilter());
 
+  // API versioning — all routes now live under /v1/*
+  // Exemptions: health check at /health (no version prefix needed for uptime monitors)
+  app.setGlobalPrefix('v1', { exclude: ['health', 'ready', ''] });
+
   app.use(cookieParser());
 
   // Dev-only request logger — safe, redacted, never logs body or cookie values.

@@ -52,6 +52,10 @@ export interface NearbyJob {
 export class LocationService {
   private readonly logger = new Logger(LocationService.name);
   private readonly googleMapsClient: Client;
+  // Simple TTL cache for geocoding results — avoids repeated API calls for the same coords.
+  // Keyed by "lat,lng" (1 decimal place precision ≈ 11km grid), TTL: 24 hours.
+  private readonly geocodeCache = new Map<string, { address: string; expiresAt: number }>();
+  private readonly GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
   constructor(
     private readonly configService: ConfigService,
@@ -99,6 +103,13 @@ export class LocationService {
    * Convert coordinates to human-readable address using Google Reverse Geocoding API
    */
   async reverseGeocode(lat: number, lng: number): Promise<string | null> {
+    // Cache key rounded to 1 decimal place (~11km resolution) — sufficient for address display
+    const cacheKey = `${lat.toFixed(1)},${lng.toFixed(1)}`;
+    const cached = this.geocodeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.address;
+    }
+
     try {
       const apiKey = this.configService.get<string>("GOOGLE_MAPS_API_KEY");
 
@@ -121,8 +132,9 @@ export class LocationService {
         return null;
       }
 
-      // Return the formatted address from the first result
-      return response.data.results[0].formatted_address;
+      const address = response.data.results[0].formatted_address;
+      this.geocodeCache.set(cacheKey, { address, expiresAt: Date.now() + this.GEOCODE_CACHE_TTL_MS });
+      return address;
     } catch (error) {
       this.logger.error(
         `Reverse geocoding error: ${error.message}`,

@@ -141,7 +141,7 @@ export class AuthService {
       await this.prisma.revoked_tokens.create({
         data: { token: refreshToken, expires_at: expiresAt },
       }).catch(err => {
-        console.warn(`[Auth] Failed to revoke refresh token: ${err.message}`);
+        this.logger.warn(`Failed to revoke refresh token: ${err.message}`);
       });
 
       // Generate new tokens
@@ -391,8 +391,7 @@ export class AuthService {
           data: { token, expires_at: expiresAt },
         })
         .catch((err) => {
-          // If already revoked, that's fine, we just log it
-          console.warn(`[Auth] Token already revoked or DB error: ${err.message}`);
+          this.logger.warn(`Session token already revoked or DB error: ${err.message}`);
         });
 
       return this.login(user);
