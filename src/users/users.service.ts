@@ -490,7 +490,7 @@ export class UsersService {
       },
       select: {
         id: true, order_id: true, amount: true, currency: true,
-        status: true, payment_method: true, created_at: true,
+        status: true, provider: true, created_at: true,
       },
       orderBy: { created_at: 'desc' },
     });
