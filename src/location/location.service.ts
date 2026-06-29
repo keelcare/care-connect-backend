@@ -52,10 +52,14 @@ export interface NearbyJob {
 export class LocationService {
   private readonly logger = new Logger(LocationService.name);
   private readonly googleMapsClient: Client;
-  // Simple TTL cache for geocoding results — avoids repeated API calls for the same coords.
-  // Keyed by "lat,lng" (1 decimal place precision ≈ 11km grid), TTL: 24 hours.
+  // Geocode cache: keyed by "lat,lng" (1dp ≈ 11km grid), TTL 24h.
   private readonly geocodeCache = new Map<string, { address: string; expiresAt: number }>();
   private readonly GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  // Nearby search cache: keyed by "lat,lng,radius" (2dp ≈ 1km grid), TTL 5min.
+  // Nanny positions update infrequently; 5 min staleness is acceptable for browse.
+  private readonly nearbyCache = new Map<string, { results: NearbyNanny[] | NearbyJob[]; expiresAt: number }>();
+  private readonly NEARBY_CACHE_TTL_MS = 5 * 60 * 1000;
 
   constructor(
     private readonly configService: ConfigService,
@@ -189,14 +193,18 @@ export class LocationService {
     lng: number,
     radiusKm: number = 10,
   ): Promise<NearbyNanny[]> {
-    // 1. Explicit Conversion
     const latNum = parseFloat(lat.toString());
     const lngNum = parseFloat(lng.toString());
     const radiusNum = parseFloat(radiusKm.toString());
 
-    // 2. Validation
     if (isNaN(latNum) || isNaN(lngNum)) {
       throw new BadRequestException("Invalid coordinates provided");
+    }
+
+    const cacheKey = `nannies:${latNum.toFixed(2)},${lngNum.toFixed(2)},${radiusNum}`;
+    const cached = this.nearbyCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.results as NearbyNanny[];
     }
 
     try {
@@ -230,8 +238,7 @@ export class LocationService {
         ORDER BY distance ASC
       `;
 
-      // Map raw results to NearbyNanny interface
-      return nannies.map((nanny) => ({
+      const results: NearbyNanny[] = nannies.map((nanny) => ({
         id: nanny.id,
         email: nanny.email,
         profile: {
@@ -255,6 +262,9 @@ export class LocationService {
           : null,
         distance: Math.round(nanny.distance * 100) / 100,
       }));
+
+      this.nearbyCache.set(cacheKey, { results, expiresAt: Date.now() + this.NEARBY_CACHE_TTL_MS });
+      return results;
     } catch (error) {
       this.logger.error(
         `Error finding nearby nannies: ${error.message}`,
@@ -280,8 +290,13 @@ export class LocationService {
       throw new BadRequestException("Invalid coordinates provided");
     }
 
+    const cacheKey = `jobs:${latNum.toFixed(2)},${lngNum.toFixed(2)},${radiusNum}`;
+    const cached = this.nearbyCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.results as NearbyJob[];
+    }
+
     try {
-      // Use raw SQL for spatial query to avoid fetching all jobs into memory
       const jobs = await this.prisma.$queryRaw<any[]>`
         SELECT 
           j.id, 
@@ -307,7 +322,7 @@ export class LocationService {
         ORDER BY distance ASC
       `;
 
-      return jobs.map((job) => ({
+      const results: NearbyJob[] = jobs.map((job) => ({
         id: job.id,
         title: job.title,
         description: job.description,
@@ -326,6 +341,9 @@ export class LocationService {
         },
         distance: Math.round(job.distance * 100) / 100,
       }));
+
+      this.nearbyCache.set(cacheKey, { results, expiresAt: Date.now() + this.NEARBY_CACHE_TTL_MS });
+      return results;
     } catch (error) {
       this.logger.error(
         `Error finding nearby jobs: ${error.message}`,
