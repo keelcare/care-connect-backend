@@ -2,6 +2,7 @@ import { Module, NestModule, MiddlewareConsumer } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_FILTER } from "@nestjs/core";
 import { CorrelationIdMiddleware } from "./common/middleware/correlation-id.middleware";
+import { CsrfMiddleware } from "./common/middleware/csrf.middleware";
 import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
 import { EventEmitterModule } from "@nestjs/event-emitter";
@@ -124,5 +125,6 @@ import { RecurringRequestsModule } from './recurring-requests/recurring-requests
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer.apply(CorrelationIdMiddleware).forRoutes("*");
+    consumer.apply(CsrfMiddleware).forRoutes("*");
   }
 }

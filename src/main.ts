@@ -117,7 +117,7 @@ async function bootstrap() {
     allowedHeaders: [
       "Content-Type",
       "Authorization",
-      "X-Requested-With",
+      "X-Requested-With", // Required for CSRF protection — presence forces CORS preflight
       "X-Platform",
       "X-Device-Id",
     ],
