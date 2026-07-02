@@ -359,7 +359,7 @@ export class AdminService {
           nd.bio,
           p.first_name,
           p.last_name,
-          p.address,
+          COALESCE(p.location_address, p.address) AS address,
           p.profile_image_url,
           (6371 * acos(
             LEAST(1.0, GREATEST( -1.0, 

@@ -283,6 +283,7 @@ model profiles {
   last_name            String?   @db.VarChar(100)
   phone                String?   @db.VarChar(20)
   address              String?
+  location_address     String?
   lat                  Decimal?  @db.Decimal(10, 8)
   lng                  Decimal?  @db.Decimal(11, 8)
   profile_image_url    String?

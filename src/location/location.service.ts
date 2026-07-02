@@ -218,7 +218,7 @@ export class LocationService {
           p.first_name,
           p.last_name,
           p.phone,
-          p.address,
+          COALESCE(p.location_address, p.address) AS address,
           p.lat,
           p.lng,
           p.profile_image_url,

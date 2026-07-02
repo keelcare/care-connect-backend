@@ -265,6 +265,7 @@ export class UsersService {
         "lastName" in updateUserDto ||
         "phone" in updateUserDto ||
         "address" in updateUserDto ||
+        "locationAddress" in updateUserDto ||
         "lat" in updateUserDto ||
         "lng" in updateUserDto ||
         "profileImageUrl" in updateUserDto ||
@@ -282,6 +283,7 @@ export class UsersService {
         lastName,
         phone,
         address,
+        locationAddress,
         lat,
         lng,
         profileImageUrl,
@@ -297,6 +299,7 @@ export class UsersService {
         lastName ||
         phone ||
         address ||
+        locationAddress ||
         lat ||
         lng ||
         profileImageUrl
@@ -308,6 +311,7 @@ export class UsersService {
             last_name: lastName,
             phone,
             address: address,
+            location_address: locationAddress,
             lat,
             lng,
             profile_image_url: profileImageUrl,
@@ -319,6 +323,7 @@ export class UsersService {
             last_name: lastName,
             phone,
             address: address,
+            location_address: locationAddress,
             lat,
             lng,
             profile_image_url: profileImageUrl,

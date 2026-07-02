@@ -27,6 +27,13 @@ export class UpdateUserDto {
   @Sanitize()
   address?: string;
 
+  // Human-readable label for the matching location (lat/lng). Kept separate
+  // from `address`, which is the user's typed residential address.
+  @IsOptional()
+  @IsString()
+  @Sanitize()
+  locationAddress?: string;
+
   @IsOptional()
   @IsNumber()
   lat?: number;
