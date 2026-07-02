@@ -7,9 +7,10 @@ import { ConsentsService } from "./consents.service";
 import { ConsentsController } from "./consents.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { SupabaseStorageModule } from "../supabase-storage/supabase-storage.module";
 
 @Module({
-  imports: [PrismaModule, PassportModule, JwtModule.register({}), NotificationsModule],
+  imports: [PrismaModule, PassportModule, JwtModule.register({}), NotificationsModule, SupabaseStorageModule],
   providers: [UsersService, ConsentsService],
   controllers: [UsersController, ConsentsController],
   exports: [UsersService, ConsentsService],

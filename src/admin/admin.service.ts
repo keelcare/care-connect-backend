@@ -23,6 +23,7 @@ import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { PaginationDto } from "./dto/pagination.dto";
 import { AdminAuditService } from "./admin-audit.service";
+import { EncryptionService } from "../common/services/encryption.service";
 
 @Injectable()
 export class AdminService {
@@ -39,6 +40,7 @@ export class AdminService {
     private availabilityService: AvailabilityService,
     private auditService: AdminAuditService,
     private pricingService: PricingEngineService,
+    private encryptionService: EncryptionService,
   ) {}
 
   // Manual Assignment Management
@@ -882,6 +884,82 @@ export class AdminService {
         totalPages: Math.ceil(total / pageSize),
       }
     };
+  }
+
+  async getUserFullProfile(userId: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        is_verified: true,
+        is_active: true,
+        ban_reason: true,
+        identity_verification_status: true,
+        verification_rejection_reason: true,
+        created_at: true,
+        profiles: true,
+        nanny_details: true,
+        nanny_onboarding_details: true,
+        identity_documents: {
+          select: {
+            id: true,
+            type: true,
+            file_path: true,
+            uploaded_at: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (user.nanny_onboarding_details?.previous_salary) {
+      (user.nanny_onboarding_details as any).previous_salary =
+        this.encryptionService.decrypt(
+          user.nanny_onboarding_details.previous_salary,
+        );
+    }
+
+    if (user.role !== "nanny") {
+      return user;
+    }
+
+    const [reviews, bookingStats] = await Promise.all([
+      this.prisma.reviews.findMany({
+        where: { reviewee_id: userId, is_approved: true },
+        select: { rating: true },
+      }),
+      this.prisma.bookings.groupBy({
+        by: ["status"],
+        where: { nanny_id: userId },
+        _count: { status: true },
+      }),
+    ]);
+
+    const totalReviews = reviews.length;
+    const averageRating =
+      totalReviews > 0
+        ? Math.round(
+            (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) /
+              totalReviews) *
+              10,
+          ) / 10
+        : null;
+
+    const bookings = bookingStats.reduce(
+      (acc, row) => {
+        acc.total += row._count.status;
+        acc[row.status ?? "unknown"] = row._count.status;
+        return acc;
+      },
+      { total: 0 } as Record<string, number>,
+    );
+
+    return { ...user, averageRating, totalReviews, bookings };
   }
 
   async verifyUser(userId: string, adminId?: string, ipAddress?: string) {

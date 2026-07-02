@@ -33,6 +33,7 @@ import * as Joi from "joi";
 import { LoggerModule } from "nestjs-pino";
 import { ServicesModule } from "./services/services.module";
 import { NanniesModule } from "./nannies/nannies.module";
+import { NannyOnboardingModule } from "./nanny-onboarding/nanny-onboarding.module";
 import { WhatsAppModule } from "./whatsapp/whatsapp.module";
 import { SupportModule } from "./support/support.module";
 import { SseModule } from "./sse/sse.module";
@@ -102,6 +103,7 @@ import { RecurringRequestsModule } from './recurring-requests/recurring-requests
     FamilyModule,
     ServicesModule,
     NanniesModule,
+    NannyOnboardingModule,
     WhatsAppModule,
     SupportModule,
     MailModule,

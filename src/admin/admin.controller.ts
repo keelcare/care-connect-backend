@@ -55,6 +55,11 @@ export class AdminController {
     return this.adminService.getAllUsers(query);
   }
 
+  @Get("users/:id/full-profile")
+  async getUserFullProfile(@Param("id") id: string) {
+    return this.adminService.getUserFullProfile(id);
+  }
+
   @Put("users/:id/verify")
   async verifyUser(@Param("id") userId: string, @Req() req: any) {
     return this.adminService.verifyUser(userId, req.user.id, getClientIp(req));

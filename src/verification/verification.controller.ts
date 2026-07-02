@@ -34,10 +34,12 @@ export class VerificationController {
     FileInterceptor("file", {
       storage: memoryStorage(),
       fileFilter: (req, file, cb) => {
-        if (!file.mimetype.match(/\/(jpg|jpeg|png|pdf)$/)) {
+        const allowedMime =
+          /\/(jpg|jpeg|png|pdf|msword|vnd\.openxmlformats-officedocument\.wordprocessingml\.document)$/;
+        if (!file.mimetype.match(allowedMime)) {
           return cb(
             new BadRequestException(
-              "Only image files (jpg, jpeg, png) and PDFs are allowed!",
+              "Only image files (jpg, jpeg, png), PDFs, and Word documents (doc, docx) are allowed!",
             ),
             false,
           );

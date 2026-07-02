@@ -8,6 +8,8 @@ import { SupabaseStorageService } from "../supabase-storage/supabase-storage.ser
 import { UploadDocumentDto } from "./dto/upload-document.dto";
 import { RejectVerificationDto } from "./dto/reject-verification.dto";
 
+const IDENTITY_DOC_TYPES = ["AADHAR", "PAN", "VOTER_ID"];
+
 @Injectable()
 export class VerificationService {
   constructor(
@@ -63,17 +65,20 @@ export class VerificationService {
       data: {
         user_id: userId,
         type: dto.idType,
-        id_number: dto.idNumber,
+        id_number: dto.idNumber || "N/A",
         file_path: file.originalname,
         supabase_storage_path: storagePath,
       },
     });
 
+    const isIdentityDoc = IDENTITY_DOC_TYPES.includes(dto.idType);
+
     // 4. Update user status and profile
     return this.prisma.users.update({
       where: { id: userId },
       data: {
-        identity_verification_status: "pending",
+        // Only identity documents (not resumes etc.) drive identity verification status
+        ...(isIdentityDoc && { identity_verification_status: "pending" }),
         profiles: {
           upsert: {
             create: {

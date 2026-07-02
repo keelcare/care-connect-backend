@@ -5,19 +5,22 @@ import {
   MaxLength,
   Matches,
   MinLength,
+  ValidateIf,
 } from "class-validator";
+
+// Non-identity document types don't have an associated ID number
+const NON_IDENTITY_DOC_TYPES = ["RESUME"];
 
 export class UploadDocumentDto {
   @IsNotEmpty()
   @IsString()
   idType: string;
 
-  @IsNotEmpty()
-  @IsString()
+  @ValidateIf((o) => !NON_IDENTITY_DOC_TYPES.includes(o.idType))
   @IsNotEmpty()
   @IsString()
   @MaxLength(50)
-  idNumber: string;
+  idNumber?: string;
 
   @IsOptional()
   @IsString()

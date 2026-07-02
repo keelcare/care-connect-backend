@@ -8,8 +8,13 @@ import {
   UseGuards,
   Request,
   ForbiddenException,
+  BadRequestException,
+  UseInterceptors,
+  UploadedFile,
   Delete
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import {
   ApiTags,
   ApiOperation,
@@ -96,6 +101,33 @@ export class UsersController {
       throw new ForbiddenException("Cannot upload image for another user");
     }
     return this.usersService.uploadImage(body.userId, body.imageUrl);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Post("me/avatar")
+  @ApiOperation({ summary: "Upload the current user's profile picture" })
+  @ApiResponse({ status: 201, description: "Avatar uploaded successfully" })
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      fileFilter: (req, file, cb) => {
+        if (!file.mimetype.match(/\/(jpg|jpeg|png|webp|gif)$/)) {
+          return cb(
+            new BadRequestException("Only image files (jpg, jpeg, png, webp, gif) are allowed!"),
+            false,
+          );
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    }),
+  )
+  async uploadAvatar(@Request() req, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException("File is required");
+    }
+    return this.usersService.uploadAvatarFile(req.user.id, file);
   }
 
   @ApiBearerAuth()

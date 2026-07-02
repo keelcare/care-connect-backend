@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { EncryptionService } from "../common/services/encryption.service";
+import { SupabaseStorageService } from "../supabase-storage/supabase-storage.service";
 import { Prisma } from "@prisma/client";
 import { users, profiles } from "@prisma/client";
 import { UpdateUserDto } from "./dto/update-user.dto";
@@ -12,7 +14,23 @@ export class UsersService {
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
+    private encryptionService: EncryptionService,
+    private storageService: SupabaseStorageService,
   ) { }
+
+  private decryptOnboardingDetails<T extends { nanny_onboarding_details?: any }>(
+    user: T,
+  ): T {
+    if (user?.nanny_onboarding_details?.previous_salary) {
+      user.nanny_onboarding_details = {
+        ...user.nanny_onboarding_details,
+        previous_salary: this.encryptionService.decrypt(
+          user.nanny_onboarding_details.previous_salary,
+        ),
+      };
+    }
+    return user;
+  }
 
   // Auth-related methods
   async create(
@@ -142,6 +160,7 @@ export class UsersService {
       include: {
         profiles: true,
         nanny_details: true,
+        nanny_onboarding_details: true,
         children: {
           orderBy: { created_at: "desc" },
         },
@@ -151,6 +170,8 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
+
+    this.decryptOnboardingDetails(user);
 
     // Exclude sensitive fields
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -174,12 +195,15 @@ export class UsersService {
       include: {
         profiles: true,
         nanny_details: true,
+        nanny_onboarding_details: true,
       },
     });
 
     if (!user) {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
+
+    this.decryptOnboardingDetails(user);
 
     // If user is a nanny, include average rating
     if (user.role === "nanny") {
@@ -348,6 +372,16 @@ export class UsersService {
         profile_image_url: fileUrl,
       },
     });
+  }
+
+  async uploadAvatarFile(id: string, file: Express.Multer.File) {
+    const url = await this.storageService.uploadPublicImage(id, file);
+    await this.prisma.profiles.upsert({
+      where: { user_id: id },
+      update: { profile_image_url: url, updated_at: new Date() },
+      create: { user_id: id, profile_image_url: url },
+    });
+    return { profileImageUrl: url };
   }
 
   async updatePushToken(id: string, token: string) {
