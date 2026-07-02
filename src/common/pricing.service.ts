@@ -33,6 +33,33 @@ export class PricingEngineService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── Reference-data cache ─────────────────────────────────────────────────────
+  // services / rate_cards are near-static reference data but are looked up once
+  // per booking when enriching list endpoints (getBookingsByParent, admin queues,
+  // etc.). Caching them turns an N+1 into a handful of queries per request cycle.
+  private readonly cache = new Map<string, { value: any; expires: number }>();
+  private static readonly REF_TTL_MS = 60_000;
+
+  private async cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    const hit = this.cache.get(key);
+    if (hit && hit.expires > Date.now()) return hit.value as T;
+    const value = await loader();
+    this.cache.set(key, { value, expires: Date.now() + PricingEngineService.REF_TTL_MS });
+    return value;
+  }
+
+  private serviceByName(name: string) {
+    return this.cached(`svc:name:${name}`, () =>
+      this.prisma.services.findFirst({ where: { name } }),
+    );
+  }
+
+  private serviceById(id: string) {
+    return this.cached(`svc:id:${id}`, () =>
+      this.prisma.services.findUnique({ where: { id } }),
+    );
+  }
+
   // ─── Rate Card Resolution ────────────────────────────────────────────────────
 
   /**
@@ -43,14 +70,21 @@ export class PricingEngineService {
   async getEffectiveRateCard(serviceId: string, asOf?: Date) {
     const at = asOf ?? new Date();
 
-    const card = await this.prisma.rate_cards.findFirst({
-      where: {
-        service_id: serviceId,
-        effective_from: { lte: at },
-        OR: [{ effective_to: null }, { effective_to: { gt: at } }],
-      },
-      orderBy: { effective_from: 'desc' },
-    });
+    // Cache only the "current" lookup (no explicit asOf). Historical/as-of
+    // resolutions bypass the cache since their effective window is date-specific.
+    const loadCard = () =>
+      this.prisma.rate_cards.findFirst({
+        where: {
+          service_id: serviceId,
+          effective_from: { lte: at },
+          OR: [{ effective_to: null }, { effective_to: { gt: at } }],
+        },
+        orderBy: { effective_from: 'desc' },
+      });
+
+    const card = asOf
+      ? await loadCard()
+      : await this.cached(`ratecard:current:${serviceId}`, loadCard);
 
     if (!card) {
       throw new NotFoundException(
@@ -86,9 +120,7 @@ export class PricingEngineService {
   async getQuotePreview(input: QuoteInput): Promise<PriceBreakdown & { monthlyCost: number; totalCost: number }> {
     const { serviceId, hoursPerDay, daysPerWeek, planDurationMonths } = input;
 
-    const service = await this.prisma.services.findUnique({
-      where: { id: serviceId },
-    });
+    const service = await this.serviceById(serviceId);
     if (!service) throw new NotFoundException(`Service ${serviceId} not found`);
 
     const rateCard = await this.getEffectiveRateCard(serviceId, input.asOf);
@@ -130,10 +162,8 @@ export class PricingEngineService {
     planType: string = 'ONE_TIME',
     sessionsPerMonth: number = 1,
   ) {
-    const service = await this.prisma.services.findFirst({
-      where: { name: serviceCategory },
-    });
-    
+    const service = await this.serviceByName(serviceCategory);
+
     if (!service) {
       return { totalAmount: 0, monthlyCost: 0, planDurationMonths: 1, originalAmount: 0, discountAmount: 0, appliedRate: 0 };
     }

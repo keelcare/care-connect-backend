@@ -20,10 +20,14 @@ import { MailModule } from "../mail/mail.module";
     MailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>("JWT_SECRET") || "secretKey",
-        signOptions: { expiresIn: "1h" }, // Extended to 1h
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const secret = configService.get<string>("JWT_SECRET");
+        if (!secret) throw new Error("JWT_SECRET must be configured");
+        return {
+          secret,
+          signOptions: { expiresIn: "1h" }, // Extended to 1h
+        };
+      },
       inject: [ConfigService],
     }),
   ],

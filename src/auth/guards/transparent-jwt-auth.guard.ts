@@ -54,8 +54,8 @@ export class TransparentJwtAuthGuard extends AuthGuard("jwt") {
       const accessToken = this.extractToken(request, "access_token");
       if (accessToken) {
         try {
-          const secret =
-            this.configService.get<string>("JWT_SECRET") || "secretKey";
+          const secret = this.configService.get<string>("JWT_SECRET");
+          if (!secret) throw new Error("JWT_SECRET must be configured");
           this.jwtService.verify(accessToken, { secret });
           return true; // Valid and not expired
         } catch (err) {

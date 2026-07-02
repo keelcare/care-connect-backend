@@ -8,6 +8,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { Pagination, paginate } from "../common/utils/pagination.util";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { GeoUtils } from "../common/utils/geo.utils";
@@ -189,9 +190,10 @@ export class BookingsService {
     };
   }
 
-  async getBookingsByParent(parentId: string) {
+  async getBookingsByParent(parentId: string, pagination?: Pagination) {
     const bookings = await this.prisma.bookings.findMany({
       where: { parent_id: parentId },
+      ...paginate(pagination),
       include: {
         users_bookings_nanny_idTousers: {
           select: {
@@ -261,9 +263,10 @@ export class BookingsService {
     return enrichedBookings;
   }
 
-  async getBookingsByNanny(nannyId: string) {
+  async getBookingsByNanny(nannyId: string, pagination?: Pagination) {
     const bookings = await this.prisma.bookings.findMany({
       where: { nanny_id: nannyId },
+      ...paginate(pagination),
       include: {
         users_bookings_parent_idTousers: {
           select: {

@@ -6,7 +6,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Origins that are exempt from the X-Requested-With check (native Capacitor apps
 // and server-to-server calls don't send it — they also can't receive cookies from
 // cross-site attackers, so CSRF is not applicable in those contexts).
-const EXEMPT_ORIGINS = ['capacitor://localhost', 'ionic://localhost', 'http://localhost', 'https://localhost'];
+// Only native app URL schemes are exempt. Browser origins such as http(s)://localhost
+// are NOT exempt — a malicious page served from localhost could otherwise bypass CSRF.
+const EXEMPT_ORIGINS = ['capacitor://localhost', 'ionic://localhost', 'keel://', 'careconnect://'];
 
 @Injectable()
 export class CsrfMiddleware implements NestMiddleware {

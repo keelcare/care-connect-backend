@@ -15,6 +15,8 @@ import { AuthGuard } from "@nestjs/passport";
 import { Response } from "express";
 import { GoogleOauthGuard } from "./guards/google-oauth.guard";
 import { ConfigService } from "@nestjs/config";
+import { JwtService } from "@nestjs/jwt";
+import { TokenBlacklistService } from "./token-blacklist.service";
 import { StrictThrottle } from "../common/decorators/throttle.decorator";
 import { Throttle } from "@nestjs/throttler";
 import { SignupDto } from "./dto/signup.dto";
@@ -31,6 +33,8 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private configService: ConfigService,
+    private tokenBlacklist: TokenBlacklistService,
+    private jwtService: JwtService,
   ) {}
 
   /**
@@ -118,7 +122,31 @@ export class AuthController {
   @Post("logout")
   @ApiOperation({ summary: "Logout and clear session cookies" })
   @ApiResponse({ status: 200, description: "Successfully logged out" })
-  async logout(@Res({ passthrough: true }) res: Response) {
+  async logout(
+    @Req() req,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // Revoke the access token so it cannot be reused before its natural expiry.
+    // (Refresh-token rotation/revocation is handled in AuthService.refresh.)
+    const accessToken =
+      req.cookies?.access_token ||
+      (req.headers?.authorization?.startsWith("Bearer ")
+        ? req.headers.authorization.slice(7)
+        : null);
+    if (accessToken) {
+      try {
+        const decoded: any = this.jwtService.decode(accessToken);
+        const expiresInSeconds = decoded?.exp
+          ? Math.max(0, decoded.exp - Math.floor(Date.now() / 1000))
+          : 15 * 60;
+        if (expiresInSeconds > 0) {
+          await this.tokenBlacklist.revokeToken(accessToken, expiresInSeconds);
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to revoke access token on logout: ${err.message}`);
+      }
+    }
+
     const optionsSecure = this.getCookieOptions(res);
 
     ["access_token", "refresh_token"].forEach((cookie) => {

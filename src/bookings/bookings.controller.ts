@@ -5,6 +5,7 @@ import {
   Put,
   Body,
   Param,
+  Query,
   UseGuards,
   Request,
   ForbiddenException,
@@ -41,15 +42,29 @@ export class BookingsController {
   @Get("parent/me")
   @ApiOperation({ summary: "Get all bookings for the current parent" })
   @ApiResponse({ status: 200, description: "Return list of parent bookings" })
-  async getMyParentBookings(@Request() req) {
-    return this.bookingsService.getBookingsByParent(req.user.id);
+  async getMyParentBookings(
+    @Request() req,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.bookingsService.getBookingsByParent(req.user.id, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @Get("nanny/me")
   @ApiOperation({ summary: "Get all bookings for the current nanny" })
   @ApiResponse({ status: 200, description: "Return list of nanny bookings" })
-  async getMyNannyBookings(@Request() req) {
-    return this.bookingsService.getBookingsByNanny(req.user.id);
+  async getMyNannyBookings(
+    @Request() req,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.bookingsService.getBookingsByNanny(req.user.id, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   @Get(":id")
