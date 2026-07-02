@@ -415,6 +415,7 @@ export class RequestsService {
         nd.skills,
         nd.experience_years,
         nd.acceptance_rate,
+        nd.auto_accept_bookings,
         (6371 * acos(cos(radians(${request.location_lat})) * cos(radians(p.lat)) * cos(radians(p.lng) - radians(${request.location_lng})) + sin(radians(${request.location_lat})) * sin(radians(p.lat)))) AS distance
       FROM users u
       JOIN profiles p ON u.id = p.user_id
@@ -516,17 +517,27 @@ export class RequestsService {
               throw new Error("NANNY_BUSY");
             }
 
-            // 2. Create assignment (Directly as accepted)
+            // Nannies who disabled "Auto-Accept Bookings" must manually confirm via
+            // the existing assignments accept/reject flow instead of being instantly booked.
+            const autoAccept = bestMatch.auto_accept_bookings !== false;
+
+            // 2. Create assignment (instantly accepted, unless the nanny requires manual confirmation)
             const assignment = await transaction.assignments.create({
               data: {
                 request_id: requestId,
                 nanny_id: bestMatch.id,
                 response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
-                status: "accepted",
-                responded_at: new Date(),
+                status: autoAccept ? "accepted" : "pending",
+                responded_at: autoAccept ? new Date() : null,
                 rank_position: (request.assignments?.length || 0) + 1,
               },
             });
+
+            if (!autoAccept) {
+              // Awaiting manual nanny confirmation — the existing accept/reject/timeout
+              // machinery (AssignmentsService, AssignmentsTaskService) takes over from here.
+              return { assignment, booking: null };
+            }
 
             // 3. Update request status to accepted
             await transaction.service_requests.update({
@@ -581,6 +592,33 @@ export class RequestsService {
           }
 
           const { assignment, booking } = assignmentResult!;
+
+          if (assignment && assignment.status === "pending") {
+            // Nanny has "Auto-Accept Bookings" disabled — awaiting their manual response.
+            this.logger.log(`[Matching] Sent pending assignment for request ${requestId} to nanny ${bestMatch.id} (auto-accept disabled)`);
+
+            await this.notificationsService.createNotification(
+              bestMatch.id,
+              "New Booking Request",
+              `You have a new booking request awaiting your response. Please accept or decline.`,
+              "info",
+            );
+
+            await this.notificationsService.createNotification(
+              request.parent_id,
+              "Matching In Progress",
+              `We found a nanny for your request. Awaiting their confirmation.`,
+              "info",
+            );
+
+            this.sseService.emitToUsers([request.parent_id, bestMatch.id], {
+              type: SSE_EVENTS.REQUEST_MATCHED,
+              data: { requestId, nannyId: bestMatch.id, assignment, pending: true },
+              timestamp: new Date().toISOString(),
+            });
+
+            return assignment;
+          }
 
           // Run post-commit side-effects using the main prisma client (NOT inside the
           // Serializable tx). These were the source of cross-transaction deadlocks.

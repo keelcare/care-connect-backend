@@ -313,4 +313,63 @@ export class NanniesService {
       recentReviews,
     };
   }
+
+  async getSettings(nannyId: string) {
+    const details = await this.prisma.nanny_details.findUnique({
+      where: { user_id: nannyId },
+      select: {
+        auto_accept_bookings: true,
+        default_start_time: true,
+        default_end_time: true,
+      },
+    });
+
+    if (!details) throw new NotFoundException("Nanny profile not found");
+
+    return details;
+  }
+
+  async updateSettings(
+    nannyId: string,
+    dto: {
+      auto_accept_bookings?: boolean;
+      default_start_time?: string | null;
+      default_end_time?: string | null;
+    },
+  ) {
+    const timePattern = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    if (dto.default_start_time && !timePattern.test(dto.default_start_time)) {
+      throw new BadRequestException("default_start_time must be in HH:MM format");
+    }
+    if (dto.default_end_time && !timePattern.test(dto.default_end_time)) {
+      throw new BadRequestException("default_end_time must be in HH:MM format");
+    }
+    if (
+      dto.default_start_time &&
+      dto.default_end_time &&
+      dto.default_end_time <= dto.default_start_time
+    ) {
+      throw new BadRequestException("default_end_time must be after default_start_time");
+    }
+
+    return this.prisma.nanny_details.update({
+      where: { user_id: nannyId },
+      data: {
+        ...(dto.auto_accept_bookings !== undefined && {
+          auto_accept_bookings: dto.auto_accept_bookings,
+        }),
+        ...(dto.default_start_time !== undefined && {
+          default_start_time: dto.default_start_time,
+        }),
+        ...(dto.default_end_time !== undefined && {
+          default_end_time: dto.default_end_time,
+        }),
+      },
+      select: {
+        auto_accept_bookings: true,
+        default_start_time: true,
+        default_end_time: true,
+      },
+    });
+  }
 }

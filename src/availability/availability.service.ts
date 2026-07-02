@@ -35,6 +35,77 @@ export class AvailabilityService {
     });
   }
 
+  private static readonly DAY_NAMES = [
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+  ];
+
+  /**
+   * Bucket recent service requests by weekday + time-of-day to surface which
+   * slots see the most demand. Normalized against the busiest bucket so the
+   * top slot is always ~100%.
+   */
+  async getDemandForecast(nannyId: string) {
+    const nannyDetails = await this.prisma.nanny_details.findUnique({
+      where: { user_id: nannyId },
+      select: { categories: true },
+    });
+
+    const since = new Date();
+    since.setDate(since.getDate() - 90);
+
+    const requests = await this.prisma.service_requests.findMany({
+      where: {
+        created_at: { gte: since },
+        ...(nannyDetails?.categories?.length
+          ? { category: { in: nannyDetails.categories } }
+          : {}),
+      },
+      select: { date: true, start_time: true },
+    });
+
+    const periods: { label: string; startHour: number; endHour: number }[] = [
+      { label: "Mornings", startHour: 6, endHour: 12 },
+      { label: "Afternoons", startHour: 12, endHour: 17 },
+      { label: "Evenings", startHour: 17, endHour: 21 },
+      { label: "Nights", startHour: 21, endHour: 6 },
+    ];
+
+    const bucketCounts = new Map<string, number>();
+
+    for (const req of requests) {
+      const day = new Date(req.date).getDay();
+      const hour = new Date(req.start_time).getUTCHours();
+      const period = periods.find((p) =>
+        p.startHour < p.endHour
+          ? hour >= p.startHour && hour < p.endHour
+          : hour >= p.startHour || hour < p.endHour,
+      );
+      if (!period) continue;
+      const key = `${day}:${period.label}`;
+      bucketCounts.set(key, (bucketCounts.get(key) || 0) + 1);
+    }
+
+    if (bucketCounts.size === 0) {
+      return { slots: [], sampleSize: 0, windowDays: 90 };
+    }
+
+    const maxCount = Math.max(...bucketCounts.values());
+
+    const slots = Array.from(bucketCounts.entries())
+      .map(([key, count]) => {
+        const [dayStr, periodLabel] = key.split(":");
+        const dayName = AvailabilityService.DAY_NAMES[Number(dayStr)];
+        return {
+          label: `${dayName} ${periodLabel}`,
+          count,
+          pct: Math.round((count / maxCount) * 100),
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    return { slots, sampleSize: requests.length, windowDays: 90 };
+  }
+
   /**
    * Unified check: Is the nanny free for a specific time slot?
    * Checks both explicit 'availability_blocks' and existing 'bookings'.

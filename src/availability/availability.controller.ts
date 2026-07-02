@@ -22,6 +22,11 @@ export class AvailabilityController {
     return this.availabilityService.findAll(req.user.id);
   }
 
+  @Get("demand-forecast")
+  async getDemandForecast(@Request() req) {
+    return this.availabilityService.getDemandForecast(req.user.id);
+  }
+
   @Post("block")
   async createBlock(@Request() req, @Body() data: any) {
     return this.availabilityService.createBlock(req.user.id, data);

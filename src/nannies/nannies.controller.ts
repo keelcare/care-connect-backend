@@ -78,4 +78,28 @@ export class NanniesController {
   async getPerformance(@Request() req) {
     return this.nanniesService.getPerformance(req.user.id);
   }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("me/settings")
+  @ApiOperation({ summary: "Get nanny quick settings (auto-accept, default hours)" })
+  @ApiResponse({ status: 200, description: "Settings returned" })
+  async getSettings(@Request() req) {
+    return this.nanniesService.getSettings(req.user.id);
+  }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Post("me/settings")
+  @ApiOperation({ summary: "Update nanny quick settings (auto-accept, default hours)" })
+  @ApiResponse({ status: 200, description: "Settings updated" })
+  async updateSettings(
+    @Request() req,
+    @Body()
+    dto: {
+      auto_accept_bookings?: boolean;
+      default_start_time?: string | null;
+      default_end_time?: string | null;
+    },
+  ) {
+    return this.nanniesService.updateSettings(req.user.id, dto);
+  }
 }
