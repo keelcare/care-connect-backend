@@ -1,4 +1,10 @@
-import { IsNotEmpty, IsString, IsOptional, IsEnum } from "class-validator";
+import {
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsUUID,
+} from "class-validator";
 import { ApiProperty } from "@nestjs/swagger";
 
 export class CreateTicketDto {
@@ -29,4 +35,12 @@ export class CreateTicketDto {
   @IsOptional()
   @IsEnum(["low", "medium", "high", "critical"])
   priority?: string;
+
+  @ApiProperty({
+    description: "Optional booking this ticket relates to",
+    required: false,
+  })
+  @IsOptional()
+  @IsUUID()
+  bookingId?: string;
 }

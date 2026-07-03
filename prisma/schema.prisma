@@ -83,6 +83,7 @@ model bookings {
   reviews                         reviews[]
   payment_plans                   payment_plans?
   price_snapshots                 price_snapshots[]
+  support_tickets                 support_tickets[]
 
   @@index([parent_id, status])
   @@index([nanny_id, status])
@@ -363,6 +364,7 @@ model users {
   recurring_service_requests                             recurring_service_requests[]
 
   support_tickets       support_tickets[]
+  support_ticket_messages support_ticket_messages[]
   verification_attempts verification_attempts[]
   whatsapp_enquiries    whatsapp_enquiries[]    @relation("EnquiryAssignedAgent")
   payments              payments[]              @relation("payments_nanny_idTousers")
@@ -377,6 +379,7 @@ model support_tickets {
   id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   ticket_number String    @unique @db.VarChar(50)
   user_id       String    @db.Uuid
+  booking_id    String?   @db.Uuid
   role          String    @db.VarChar(50)
   subject       String    @db.VarChar(255)
   description   String
@@ -388,6 +391,24 @@ model support_tickets {
   created_at    DateTime? @default(now()) @db.Timestamptz(6)
   updated_at    DateTime? @default(now()) @db.Timestamptz(6)
   users         users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  bookings      bookings? @relation(fields: [booking_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  support_ticket_messages support_ticket_messages[]
+
+  @@index([booking_id])
+}
+
+model support_ticket_messages {
+  id         String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ticket_id  String          @db.Uuid
+  sender_id  String?         @db.Uuid
+  is_admin   Boolean         @default(false)
+  content    String
+  created_at DateTime?       @default(now()) @db.Timestamptz(6)
+  ticket     support_tickets @relation(fields: [ticket_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender     users?          @relation(fields: [sender_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([ticket_id])
 }
 
 model notifications {

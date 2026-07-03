@@ -350,8 +350,12 @@ export class PaymentsService {
     signature: string,
     triggeredBy: string,
   ): Promise<{ alreadyCaptured: boolean }> {
-    // START TRANSACTION to prevent double-confirming
-    return await this.prisma.$transaction(async (tx) => {
+    // START TRANSACTION to prevent double-confirming.
+    // IMPORTANT: keep ONLY fast, atomic DB writes inside the transaction. Anything
+    // that hits an external service (FCM push, email) or touches `this.prisma`
+    // instead of `tx` must run AFTER commit — otherwise it holds the interactive
+    // transaction open and trips the 5s timeout ("transaction already closed").
+    const result = await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payments.findUnique({
         where: { order_id: orderId },
       });
@@ -367,7 +371,7 @@ export class PaymentsService {
           `${triggeredBy}:duplicate`,
           paymentId,
         );
-        return { alreadyCaptured: true };
+        return { alreadyCaptured: true as const };
       }
 
       // Update Payment
@@ -394,75 +398,115 @@ export class PaymentsService {
         },
       );
 
-      // Advance payment plan if it exists
       const paymentPlan = await tx.payment_plans.findUnique({
         where: { booking_id: payment.booking_id },
       });
 
-      if (paymentPlan) {
-        await this.pricingService.advancePaymentPlan(paymentPlan.id);
-      }
-      
-      // Update snapshot
       const snapshot = await tx.price_snapshots.findFirst({
-        where: { payment_id: payment.id }
+        where: { payment_id: payment.id },
       });
-      if (snapshot) {
-         await this.pricingService.markSnapshotCharged(snapshot.id, paymentId, payment.id);
-      }
 
-      const newBookingStatus = paymentPlan && (paymentPlan.cycles_completed + 1) < paymentPlan.total_cycles 
-         ? BookingStatus.CONFIRMED 
-         : BookingStatus.COMPLETED;
+      const newBookingStatus =
+        paymentPlan && paymentPlan.cycles_completed + 1 < paymentPlan.total_cycles
+          ? BookingStatus.CONFIRMED
+          : BookingStatus.COMPLETED;
 
       const updatedBooking = await tx.bookings.update({
         where: { id: payment.booking_id },
         data: { status: newBookingStatus },
       });
 
-      // Notify Parent
-      await this.notificationsService.createNotification(
+      return {
+        alreadyCaptured: false as const,
+        payment,
+        paymentPlan,
+        snapshot,
+        updatedBooking,
+      };
+    });
+
+    if (result.alreadyCaptured) {
+      return { alreadyCaptured: true };
+    }
+
+    // ── Post-commit side effects (outside the transaction) ──────────────────────
+    // The payment is already durably CAPTURED; these are follow-up bookkeeping and
+    // notifications. A failure here must not fail payment verification, so each is
+    // best-effort and logged.
+    const { payment, paymentPlan, snapshot, updatedBooking } = result;
+
+    try {
+      if (paymentPlan) {
+        await this.pricingService.advancePaymentPlan(paymentPlan.id);
+      }
+      if (snapshot) {
+        await this.pricingService.markSnapshotCharged(
+          snapshot.id,
+          paymentId,
+          payment.id,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Post-capture plan/snapshot update failed for order ${orderId}`,
+        err as Error,
+      );
+    }
+
+    // Notify Parent
+    await this.notificationsService
+      .createNotification(
         updatedBooking.parent_id,
         "Payment Successful",
         `Your payment of ₹${payment.amount} has been processed successfully.`,
         "success",
+      )
+      .catch((err) =>
+        this.logger.error("Failed to notify parent of payment", err),
       );
 
-      // Notify Nanny
-      if (updatedBooking.nanny_id) {
-        await this.notificationsService.createNotification(
+    // Notify Nanny
+    if (updatedBooking.nanny_id) {
+      await this.notificationsService
+        .createNotification(
           updatedBooking.nanny_id,
           "Payment Received",
           `A payment of ₹${payment.amount} has been received for your booking.`,
           "success",
+        )
+        .catch((err) =>
+          this.logger.error("Failed to notify nanny of payment", err),
         );
-      }
+    }
 
-      // Send Payment Receipt Email (fire-and-forget)
-      const parentUser = await tx.users.findUnique({
+    // Send Payment Receipt Email (fire-and-forget)
+    try {
+      const parentUser = await this.prisma.users.findUnique({
         where: { id: updatedBooking.parent_id },
-        include: { profiles: true }
+        include: { profiles: true },
       });
       if (parentUser?.email) {
-        const parentName = parentUser.profiles?.first_name 
-          ? `${parentUser.profiles.first_name} ${parentUser.profiles.last_name || ''}`.trim() 
+        const parentName = parentUser.profiles?.first_name
+          ? `${parentUser.profiles.first_name} ${parentUser.profiles.last_name || ""}`.trim()
           : "Parent";
-        
-        this.mailService.sendPaymentReceiptEmail(
-          parentUser.email,
-          parentName,
-          {
+
+        this.mailService
+          .sendPaymentReceiptEmail(parentUser.email, parentName, {
             amount: Number(payment.amount),
             currency: payment.currency,
             date: new Date().toLocaleDateString(),
             receiptId: payment.order_id,
             bookingDetails: `Booking #${updatedBooking.id.substring(0, 8)}`,
-          }
-        ).catch(err => this.logger.error("Failed to send payment receipt email", err));
+          })
+          .catch((err) =>
+            this.logger.error("Failed to send payment receipt email", err),
+          );
       }
+    } catch (err) {
+      this.logger.error("Failed to load parent for receipt email", err as Error);
+    }
 
-      return { alreadyCaptured: false };
-    });
+    return { alreadyCaptured: false };
   }
 
   async getPaymentByOrderId(orderId: string) {

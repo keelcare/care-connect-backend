@@ -17,6 +17,7 @@ import {
 import { SupportService } from "./support.service";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
+import { CreateTicketMessageDto } from "./dto/create-ticket-message.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { UserRole } from "../auth/dto/signup.dto";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -63,7 +64,36 @@ export class SupportController {
     return this.supportService.getTicketById(id, req.user.id, isAdmin);
   }
 
+  // ── Per-ticket conversation (raiser ↔ admin) ──
+  @Get("tickets/:id/messages")
+  @SkipActiveCheck()
+  @ApiOperation({ summary: "Get the conversation for a ticket" })
+  async getTicketMessages(@Request() req, @Param("id") id: string) {
+    const isAdmin = req.user.role === "admin";
+    return this.supportService.getMessages(id, req.user.id, isAdmin);
+  }
+
+  @Post("tickets/:id/messages")
+  @SkipActiveCheck()
+  @ApiOperation({ summary: "Post a message to a ticket conversation" })
+  async addTicketMessage(
+    @Request() req,
+    @Param("id") id: string,
+    @Body() dto: CreateTicketMessageDto,
+  ) {
+    const isAdmin = req.user.role === "admin";
+    return this.supportService.addMessage(id, req.user.id, isAdmin, dto.content);
+  }
+
   // Admin Endpoints
+  @Get("admin/tickets/:id")
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @ApiOperation({ summary: "Get a single ticket with booking + thread (Admin)" })
+  async adminGetTicket(@Param("id") id: string) {
+    return this.supportService.adminGetTicketById(id);
+  }
+
   @Get("admin/tickets")
   @Roles(UserRole.ADMIN)
   @UseGuards(RolesGuard)
