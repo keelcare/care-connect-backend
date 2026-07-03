@@ -42,9 +42,18 @@ async function main() {
   // 2. Seed Service Categories (Required for matching and pricing)
   const services = [
     { name: "ST", slug: "shadow-teacher", hourly_rate: 350.0 },
-    { name: "CN", slug: "child-care", hourly_rate: 250.0 },
+    { name: "CC", slug: "child-care", hourly_rate: 250.0 },
     { name: "SN", slug: "special-needs", hourly_rate: 450.0 },
   ];
+
+  // One-time cleanup: remove the wrongly-named "CN" row that was inserted by an
+  // earlier version of this script. The slug "child-care" belongs to "CC".
+  const staleService = await prisma.services.findUnique({ where: { name: "CN" } });
+  if (staleService) {
+    await prisma.rate_cards.deleteMany({ where: { service_id: staleService.id } });
+    await prisma.services.delete({ where: { name: "CN" } });
+    console.log("🧹 Removed stale 'CN' service row.");
+  }
 
   for (const s of services) {
     const service = await prisma.services.upsert({
@@ -86,14 +95,14 @@ async function main() {
       where: { user_id: nanny.id },
       update: {
         categories: {
-            set: ["ST", "CN"], // Default both for dev nannies to ensure they show up in searches
+            set: ["ST", "CC"], // Default both for dev nannies to ensure they show up in searches
         }
       },
       create: {
         user_id: nanny.id,
         experience_years: 2,
         bio: "Experienced caregiver in dev environment.",
-        categories: ["ST", "CN"],
+        categories: ["ST", "CC"],
         acceptance_rate: 1.0,
         is_available_now: true,
       },
