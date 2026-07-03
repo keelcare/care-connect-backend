@@ -80,6 +80,12 @@ export class ChatService {
     });
   }
 
+  async getMessageById(messageId: string) {
+    return this.prisma.messages.findUnique({
+      where: { id: messageId },
+    });
+  }
+
   async markMessageAsRead(messageId: string) {
     return this.prisma.messages.update({
       where: {
@@ -89,6 +95,34 @@ export class ChatService {
         read_status: true,
       },
     });
+  }
+
+  /**
+   * Marks every message in a chat that was NOT sent by `readerId` as read.
+   * Returns the ids of the messages that were updated so the gateway can
+   * broadcast read receipts to the sender.
+   */
+  async markChatMessagesAsRead(
+    chatId: string,
+    readerId: string,
+  ): Promise<string[]> {
+    const unread = await this.prisma.messages.findMany({
+      where: {
+        chat_id: chatId,
+        read_status: false,
+        sender_id: { not: readerId },
+      },
+      select: { id: true },
+    });
+
+    if (unread.length === 0) return [];
+
+    await this.prisma.messages.updateMany({
+      where: { id: { in: unread.map((m) => m.id) } },
+      data: { read_status: true },
+    });
+
+    return unread.map((m) => m.id);
   }
 
   async deleteChatByBookingId(bookingId: string) {

@@ -100,6 +100,17 @@ export class NannyOnboardingService {
       data: { onboarding_completed_at: new Date() },
     });
 
+    // Ensure a nanny_details row exists. The admin assignment / search query
+    // INNER JOINs nanny_details, so a completed caregiver with no row here is
+    // silently invisible to families. Create it with availability on; skills
+    // and categories are assigned later via admin verification. Existing rows
+    // are left untouched.
+    await this.prisma.nanny_details.upsert({
+      where: { user_id: userId },
+      update: {},
+      create: { user_id: userId, is_available_now: true },
+    });
+
     const updated = await this.prisma.profiles.upsert({
       where: { user_id: userId },
       update: { onboarding_completed: true, updated_at: new Date() },
