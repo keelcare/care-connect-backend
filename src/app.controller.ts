@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  All,
   NotFoundException,
   InternalServerErrorException,
   ServiceUnavailableException,
@@ -20,7 +21,9 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Get("health")
+  // @All so uptime monitors can hit these with HEAD (or GET) — a plain @Get
+  // wasn't matching HEAD, returning 404.
+  @All("health")
   getHealth() {
     return {
       status: "ok",
@@ -30,7 +33,7 @@ export class AppController {
     };
   }
 
-  @Get("ready")
+  @All("ready")
   async getReady() {
     try {
       await this.prisma.$queryRaw`SELECT 1`;
