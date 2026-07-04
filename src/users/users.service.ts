@@ -98,6 +98,18 @@ export class UsersService {
   }
 
   // Profile management methods
+  async isPhoneAvailable(phone: string, currentUserId?: string) {
+    const decodedPhone = decodeURIComponent(phone);
+    const existing = await this.prisma.profiles.findFirst({
+      where: { phone: decodedPhone }
+    });
+    
+    if (existing && existing.user_id !== currentUserId) {
+      return false;
+    }
+    return true;
+  }
+
   async findAllNannies() {
     const nannies = await this.prisma.users.findMany({
       where: {

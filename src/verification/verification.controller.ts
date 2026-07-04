@@ -57,7 +57,12 @@ export class VerificationController {
     if (!file) {
       throw new BadRequestException("File is required");
     }
-    return this.verificationService.uploadDocuments(req.user.id, dto, file);
+    try {
+      return await this.verificationService.uploadDocuments(req.user.id, dto, file);
+    } catch (e) {
+      require('fs').writeFileSync('upload_error.txt', e.stack || e.toString());
+      throw e;
+    }
   }
 
   // Admin proxy endpoint to stream document from Drive
