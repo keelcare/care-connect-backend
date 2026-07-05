@@ -187,22 +187,62 @@ export class RecurringRequestsService {
           select: { bookings: { where: { status: { not: "CANCELLED" } } } }
         },
         bookings: {
-          where: { start_time: { gte: new Date() }, status: { not: "CANCELLED" } },
+          where: { status: { not: "CANCELLED" } },
           orderBy: { start_time: 'asc' },
-          take: 1,
-          select: { start_time: true }
+          select: {
+            start_time: true,
+            nanny_id: true,
+            users_bookings_nanny_idTousers: {
+              select: {
+                id: true,
+                profiles: {
+                  select: { first_name: true, last_name: true, profile_image_url: true },
+                },
+              },
+            },
+          },
         }
       },
       orderBy: { created_at: "desc" },
     });
 
+    // Current base hourly rate per category so each series can quote a price.
+    const rateByCategory = new Map<string, number>();
+    const categories = [...new Set(requests.map((r) => r.category ?? "CC"))];
+    for (const category of categories) {
+      const service = await this.prisma.services.findFirst({
+        where: { OR: [{ name: category }, { slug: category.toLowerCase() }] },
+        include: {
+          rate_cards: {
+            where: { effective_to: null },
+            orderBy: { effective_from: "desc" },
+            take: 1,
+          },
+        },
+      });
+      const rate = service?.rate_cards?.[0]?.hourly_rate;
+      if (rate != null) rateByCategory.set(category, Number(rate));
+    }
+
+    const now = new Date();
     return requests.map(req => {
       const { bookings, _count, ...rest } = req;
+      const upcoming = bookings.find((b) => b.start_time >= now) ?? null;
+      const withNanny = bookings.find((b) => b.nanny_id) ?? null;
+      const hourlyRate = rateByCategory.get(req.category ?? "CC") ?? null;
+      const estimatedTotal =
+        hourlyRate != null
+          ? Math.round(hourlyRate * Number(req.duration_hours) * _count.bookings * 100) / 100
+          : null;
+
       return {
         ...rest,
         start_time_formatted: TimeUtils.formatShortTime(req.start_time),
         total_bookings: _count.bookings,
-        next_upcoming_date: bookings.length > 0 ? bookings[0].start_time : null
+        next_upcoming_date: upcoming ? upcoming.start_time : null,
+        nanny: withNanny?.users_bookings_nanny_idTousers ?? null,
+        hourly_rate: hourlyRate,
+        estimated_total: estimatedTotal,
       };
     });
   }
