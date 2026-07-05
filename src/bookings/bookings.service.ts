@@ -316,10 +316,33 @@ export class BookingsService {
   }
 
   async startBooking(id: string, nannyLat?: number, nannyLng?: number) {
-    const booking = await this.prisma.bookings.findUnique({ where: { id } });
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id },
+      include: { service_requests: true },
+    });
     if (!booking) throw new NotFoundException("Booking not found");
     if (booking.status !== BookingStatus.CONFIRMED) {
       throw new BadRequestException("Booking must be CONFIRMED to start");
+    }
+
+    // Backfill the care location (geofence centre) from the service request the
+    // first time a session starts, so live tracking and geofencing have a centre.
+    if (
+      (booking.care_location_lat == null ||
+        booking.care_location_lng == null) &&
+      booking.service_requests?.location_lat != null &&
+      booking.service_requests?.location_lng != null
+    ) {
+      booking.care_location_lat = booking.service_requests.location_lat;
+      booking.care_location_lng = booking.service_requests.location_lng;
+      await this.prisma.bookings.update({
+        where: { id },
+        data: {
+          care_location_lat: booking.service_requests.location_lat,
+          care_location_lng: booking.service_requests.location_lng,
+          geofence_radius: booking.geofence_radius ?? 100,
+        },
+      });
     }
 
     // Geofence Validation

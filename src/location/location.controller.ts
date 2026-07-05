@@ -1,10 +1,30 @@
-import { Controller, Get, Post, Body, Query } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Query,
+  Param,
+  Request,
+  UseGuards,
+} from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
 import { LocationService } from "./location.service";
 import { GeocodeAddressDto, NearbySearchDto } from "./dto";
 
 @Controller("location")
 export class LocationController {
   constructor(private readonly locationService: LocationService) {}
+
+  /**
+   * GET /location/booking/:id/live
+   * Live-tracking snapshot for a booking (parent or assigned nanny only).
+   */
+  @UseGuards(AuthGuard("jwt"))
+  @Get("booking/:id/live")
+  async getLiveLocation(@Param("id") id: string, @Request() req) {
+    return this.locationService.getLiveLocation(id, req.user.id);
+  }
 
   /**
    * POST /location/geocode
