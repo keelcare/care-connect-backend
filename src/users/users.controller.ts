@@ -63,6 +63,16 @@ export class UsersController {
     return this.usersService.findAllNannies();
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Get("check-phone/:phone")
+  @ApiOperation({ summary: "Check if phone number is available" })
+  @ApiResponse({ status: 200, description: "Return availability boolean" })
+  async checkPhone(@Param("phone") phone: string, @Request() req) {
+    const isAvailable = await this.usersService.isPhoneAvailable(phone, req.user?.id);
+    return { isAvailable };
+  }
+
   @Get(":id")
   @ApiOperation({ summary: "Get user by ID" })
   @ApiResponse({ status: 200, description: "Return user data" })

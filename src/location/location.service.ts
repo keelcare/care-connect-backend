@@ -1,4 +1,10 @@
-import { Injectable, Logger, BadRequestException } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Client } from "@googlemaps/google-maps-services-js";
 import { PrismaService } from "../prisma/prisma.service";
@@ -351,5 +357,75 @@ export class LocationService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Live-tracking snapshot for a booking: the care location (geofence centre),
+   * radius, the latest known caregiver position and a short recent trail.
+   * Only the booking's parent or assigned nanny may read it.
+   */
+  async getLiveLocation(bookingId: string, userId: string) {
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id: bookingId },
+      select: {
+        parent_id: true,
+        nanny_id: true,
+        status: true,
+        care_location_lat: true,
+        care_location_lng: true,
+        geofence_radius: true,
+      },
+    });
+    if (!booking) throw new NotFoundException("Booking not found");
+    if (userId !== booking.parent_id && userId !== booking.nanny_id) {
+      throw new ForbiddenException("Not authorized for this booking");
+    }
+
+    const trail = await this.prisma.location_updates.findMany({
+      where: { booking_id: bookingId },
+      orderBy: { timestamp: "desc" },
+      take: 20,
+    });
+
+    const careLocation =
+      booking.care_location_lat != null && booking.care_location_lng != null
+        ? {
+            lat: Number(booking.care_location_lat),
+            lng: Number(booking.care_location_lng),
+          }
+        : null;
+    const radius = booking.geofence_radius || 100;
+
+    const latest = trail[0]
+      ? { lat: Number(trail[0].lat), lng: Number(trail[0].lng), timestamp: trail[0].timestamp }
+      : null;
+
+    let distance: number | null = null;
+    if (careLocation && latest) {
+      distance = Math.round(
+        this.calculateDistance(
+          latest.lat,
+          latest.lng,
+          careLocation.lat,
+          careLocation.lng,
+        ) * 1000,
+      );
+    }
+
+    return {
+      status: booking.status,
+      careLocation,
+      geofenceRadius: radius,
+      latest,
+      distance,
+      inside: distance == null ? null : distance <= radius,
+      trail: trail
+        .map((t) => ({
+          lat: Number(t.lat),
+          lng: Number(t.lng),
+          timestamp: t.timestamp,
+        }))
+        .reverse(),
+    };
   }
 }
