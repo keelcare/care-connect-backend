@@ -20,6 +20,21 @@ export class AddressesService {
     });
   }
 
+  /**
+   * Resolves the address a booking should happen at: the one the parent picked,
+   * else their default. Scoped by user_id so an id from another account 404s
+   * rather than silently falling back to the caller's default.
+   */
+  async resolveForUser(userId: string, addressId?: string) {
+    if (!addressId) return this.getDefault(userId);
+
+    const address = await this.prisma.addresses.findFirst({
+      where: { id: addressId, user_id: userId },
+    });
+    if (!address) throw new NotFoundException("Address not found");
+    return address;
+  }
+
   async create(userId: string, dto: CreateAddressDto) {
     const existingCount = await this.prisma.addresses.count({
       where: { user_id: userId },

@@ -41,12 +41,16 @@ export class RequestsService {
   async create(parentId: string, createRequestDto: CreateRequestDto) {
     this.logger.debug(`Creating Request for parent ${parentId}: category=${createRequestDto.category}, date=${createRequestDto.date}`);
 
-    // 1. Get the parent's saved location — prefer their default saved address,
-    // falling back to the legacy profiles.lat/lng for any not-yet-backfilled case.
-    const defaultAddress = await this.addressesService.getDefault(parentId);
+    // 1. Get the session's location — the address the parent picked for this
+    // booking, else their default saved address, falling back to the legacy
+    // profiles.lat/lng for any not-yet-backfilled case.
+    const selectedAddress = await this.addressesService.resolveForUser(
+      parentId,
+      createRequestDto.address_id,
+    );
     const parent = await this.usersService.findOne(parentId);
-    const lat = defaultAddress?.lat ?? parent?.profiles?.lat;
-    const lng = defaultAddress?.lng ?? parent?.profiles?.lng;
+    const lat = selectedAddress?.lat ?? parent?.profiles?.lat;
+    const lng = selectedAddress?.lng ?? parent?.profiles?.lng;
     if (!parent || !lat || !lng) {
       this.logger.warn(`Parent has no saved address for ${parentId}`);
       throw new BadRequestException(

@@ -7,12 +7,16 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
+import { AddressesService } from "../addresses/addresses.service";
 
 @Injectable()
 export class RecurringRequestsService {
   private readonly logger = new Logger(RecurringRequestsService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private addressesService: AddressesService,
+  ) {}
 
   /**
    * Helper to generate a list of dates based on recurrence pattern
@@ -71,7 +75,12 @@ export class RecurringRequestsService {
   async create(parentId: string, dto: CreateRecurringRequestDto) {
     this.logger.log(`Parent ${parentId} creating recurring request`);
 
-    // 1. Get parent profile for location
+    // 1. Get the sessions' location — the address the parent picked, else their
+    // default saved address, falling back to the legacy profiles.lat/lng.
+    const selectedAddress = await this.addressesService.resolveForUser(
+      parentId,
+      dto.address_id,
+    );
     const parent = await this.prisma.users.findUnique({
       where: { id: parentId },
       include: { profiles: true },
@@ -81,9 +90,11 @@ export class RecurringRequestsService {
       throw new NotFoundException("Parent profile not found");
     }
 
-    if (!parent.profiles.lat || !parent.profiles.lng) {
+    const lat = selectedAddress?.lat ?? parent.profiles.lat;
+    const lng = selectedAddress?.lng ?? parent.profiles.lng;
+    if (!lat || !lng) {
       throw new BadRequestException(
-        "Parent profile incomplete. Address and location required.",
+        "Add a saved address before requesting a caregiver.",
       );
     }
 
@@ -122,8 +133,8 @@ export class RecurringRequestsService {
           plan_type: dto.plan_type,
           sessions_per_month: dto.sessions_per_month,
           max_hourly_rate: dto.max_hourly_rate,
-          location_lat: parent.profiles.lat,
-          location_lng: parent.profiles.lng,
+          location_lat: lat,
+          location_lng: lng,
         },
       });
 

@@ -138,6 +138,18 @@ export class CreateRequestDto {
   @IsUUID("4", { each: true, message: "Each child ID must be a valid UUID" })
   child_ids?: string[];
 
+  /**
+   * SECURITY: UUID validation; ownership is enforced server-side when resolved.
+   */
+  @ApiPropertyOptional({
+    example: "550e8400-e29b-41d4-a716-446655440000",
+    description:
+      "Saved address the session takes place at. Defaults to the parent's default address.",
+  })
+  @IsOptional()
+  @IsUUID("4", { message: "address_id must be a valid UUID" })
+  address_id?: string;
+
   @ApiPropertyOptional({
     enum: SubscriptionPlanType,
     example: SubscriptionPlanType.ONE_TIME,

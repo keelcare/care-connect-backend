@@ -158,4 +158,16 @@ export class CreateRecurringRequestDto {
   @IsOptional()
   @IsNumber()
   max_hourly_rate?: number;
+
+  /**
+   * SECURITY: UUID validation; ownership is enforced server-side when resolved.
+   */
+  @ApiPropertyOptional({
+    example: "550e8400-e29b-41d4-a716-446655440000",
+    description:
+      "Saved address the sessions take place at. Defaults to the parent's default address.",
+  })
+  @IsOptional()
+  @IsUUID("4", { message: "address_id must be a valid UUID" })
+  address_id?: string;
 }
