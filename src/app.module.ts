@@ -41,6 +41,7 @@ import { MailModule } from "./mail/mail.module";
 import { DisputesModule } from "./disputes/disputes.module";
 import { ProgressReportsModule } from "./progress-reports/progress-reports.module";
 import { RecurringRequestsModule } from './recurring-requests/recurring-requests.module';
+import { AddressesModule } from "./addresses/addresses.module";
 
 @Module({
   imports: [
@@ -110,6 +111,7 @@ import { RecurringRequestsModule } from './recurring-requests/recurring-requests
     DisputesModule,
     ProgressReportsModule,
     RecurringRequestsModule,
+    AddressesModule,
   ],
   controllers: [AppController],
   providers: [

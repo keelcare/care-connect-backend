@@ -19,6 +19,7 @@ import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { PricingEngineService } from "../common/pricing.service";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
+import { AddressesService } from "../addresses/addresses.service";
 
 import { CATEGORY_SKILL_MAP } from "../constants";
 
@@ -34,22 +35,22 @@ export class RequestsService {
     private mailService: MailService,
     private availabilityService: AvailabilityService,
     private pricingService: PricingEngineService,
+    private addressesService: AddressesService,
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
     this.logger.debug(`Creating Request for parent ${parentId}: category=${createRequestDto.category}, date=${createRequestDto.date}`);
 
-    // 1. Get parent profile for location
+    // 1. Get the parent's saved location — prefer their default saved address,
+    // falling back to the legacy profiles.lat/lng for any not-yet-backfilled case.
+    const defaultAddress = await this.addressesService.getDefault(parentId);
     const parent = await this.usersService.findOne(parentId);
-    if (
-      !parent ||
-      !parent.profiles ||
-      !parent.profiles.lat ||
-      !parent.profiles.lng
-    ) {
-      this.logger.warn(`Parent profile incomplete for ${parentId}`);
+    const lat = defaultAddress?.lat ?? parent?.profiles?.lat;
+    const lng = defaultAddress?.lng ?? parent?.profiles?.lng;
+    if (!parent || !lat || !lng) {
+      this.logger.warn(`Parent has no saved address for ${parentId}`);
       throw new BadRequestException(
-        "Parent profile incomplete. Address and location required.",
+        "Add a saved address before requesting a caregiver.",
       );
     }
 
@@ -90,8 +91,8 @@ export class RequestsService {
               children_ages: createRequestDto.children_ages || [],
               special_requirements: createRequestDto.special_requirements,
               required_skills: createRequestDto.required_skills || [],
-              location_lat: parent.profiles.lat,
-              location_lng: parent.profiles.lng,
+              location_lat: lat,
+              location_lng: lng,
               category: createRequestDto.category,
               status: "pending",
               plan_type: createRequestDto.plan_type || "ONE_TIME",

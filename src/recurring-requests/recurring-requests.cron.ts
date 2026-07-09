@@ -2,8 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecurringRequestsService } from './recurring-requests.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { TimeUtils } from '../common/utils/time.utils';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
+
+// If generation has been stuck (latest booking further in the past than this)
+// for a plan, stop retrying it automatically and flag it for the parent.
+const STUCK_GENERATION_DAYS = 14;
 
 @Injectable()
 export class RecurringRequestsCron {
@@ -12,6 +17,7 @@ export class RecurringRequestsCron {
   constructor(
     private readonly prisma: PrismaService,
     private readonly recurringRequestsService: RecurringRequestsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
@@ -35,14 +41,34 @@ export class RecurringRequestsCron {
       let generatedCount = 0;
 
       for (const req of activeRequests) {
-        // If there is no latest booking, something went wrong during creation, 
+        try {
+        // If there is no latest booking, something went wrong during creation,
         // we can generate from start_date.
-        const latestBookingDate = req.bookings.length > 0 
-          ? new Date(req.bookings[0].start_time) 
+        const latestBookingDate = req.bookings.length > 0
+          ? new Date(req.bookings[0].start_time)
           : new Date(req.start_date);
 
         // Check if latest booking is within 7 days from now
         const daysUntilLatestBooking = (latestBookingDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+
+        // Generation has been stuck for two+ weeks — stop retrying and alert the parent
+        // instead of silently failing every night.
+        if (daysUntilLatestBooking < -STUCK_GENERATION_DAYS) {
+          await this.prisma.recurring_service_requests.update({
+            where: { id: req.id },
+            data: { status: 'error' },
+          });
+          await this.notificationsService.createNotification(
+            req.parent_id,
+            'Recurring booking issue',
+            "We couldn't generate your next sessions automatically — please check your recurring plan.",
+            'warning',
+            'recurring_request',
+            req.id,
+          );
+          this.logger.warn(`Recurring request ${req.id} flagged as errored after ${Math.round(-daysUntilLatestBooking)} days stuck.`);
+          continue;
+        }
 
         if (daysUntilLatestBooking <= 7) {
           // Generate for next 30 days starting after the latest booking
@@ -125,6 +151,11 @@ export class RecurringRequestsCron {
 
             generatedCount += dates.length;
           }
+        }
+        } catch (reqError) {
+          // Isolate this plan's failure so one broken recurring request doesn't
+          // block generation for every other active plan in the batch.
+          this.logger.error(`Failed to generate bookings for recurring request ${req.id}`, reqError);
         }
       }
 

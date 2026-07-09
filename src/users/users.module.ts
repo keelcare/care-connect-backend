@@ -8,9 +8,10 @@ import { ConsentsController } from "./consents.controller";
 import { PrismaModule } from "../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { SupabaseStorageModule } from "../supabase-storage/supabase-storage.module";
+import { AddressesModule } from "../addresses/addresses.module";
 
 @Module({
-  imports: [PrismaModule, PassportModule, JwtModule.register({}), NotificationsModule, SupabaseStorageModule],
+  imports: [PrismaModule, PassportModule, JwtModule.register({}), NotificationsModule, SupabaseStorageModule, AddressesModule],
   providers: [UsersService, ConsentsService],
   controllers: [UsersController, ConsentsController],
   exports: [UsersService, ConsentsService],

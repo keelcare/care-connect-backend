@@ -6,6 +6,7 @@ import { SupabaseStorageService } from "../supabase-storage/supabase-storage.ser
 import { Prisma } from "@prisma/client";
 import { users, profiles } from "@prisma/client";
 import { UpdateUserDto } from "./dto/update-user.dto";
+import { AddressesService } from "../addresses/addresses.service";
 
 @Injectable()
 export class UsersService {
@@ -16,6 +17,7 @@ export class UsersService {
     private notificationsService: NotificationsService,
     private encryptionService: EncryptionService,
     private storageService: SupabaseStorageService,
+    private addressesService: AddressesService,
   ) { }
 
   private decryptOnboardingDetails<T extends { nanny_onboarding_details?: any }>(
@@ -341,6 +343,29 @@ export class UsersService {
             profile_image_url: profileImageUrl,
           },
         });
+
+        // Keep the new multi-address table in sync with legacy single-address
+        // writes (e.g. from CareConnect web, which only knows about `profiles`).
+        // `label` is a short tag (Home/Work/…), never the free-text
+        // `locationAddress`, which would overflow the column.
+        if (address && lat != null && lng != null) {
+          const defaultAddress = await this.addressesService.getDefault(id);
+          if (defaultAddress) {
+            await this.addressesService.update(id, defaultAddress.id, {
+              address,
+              lat,
+              lng,
+            });
+          } else {
+            await this.addressesService.create(id, {
+              label: "Home",
+              address,
+              lat,
+              lng,
+              isDefault: true,
+            });
+          }
+        }
       }
 
       // Update nanny details if provided

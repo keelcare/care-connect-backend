@@ -294,6 +294,22 @@ model profiles {
   users                users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+/// Saved addresses for a user (multiple allowed; exactly one is_default per user).
+model addresses {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String    @db.Uuid
+  label      String    @default("Home") @db.VarChar(50)
+  address    String
+  lat        Decimal   @db.Decimal(10, 8)
+  lng        Decimal   @db.Decimal(11, 8)
+  is_default Boolean   @default(false)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model reviews {
   id                               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
@@ -336,6 +352,7 @@ model users {
   refresh_token_hash                                     String?                      @db.VarChar(255)
   verification_rejection_reason                          String?
   fcm_token                                              String?                      @db.VarChar(255)
+  addresses                                              addresses[]
   applications                                           applications[]
   assignments                                            assignments[]
   availability_blocks                                    availability_blocks[]
