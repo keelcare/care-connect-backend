@@ -497,6 +497,10 @@ export class PaymentsService {
             date: new Date().toLocaleDateString(),
             receiptId: payment.order_id,
             bookingDetails: `Booking #${updatedBooking.id.substring(0, 8)}`,
+            // Breakup from the immutable price snapshot for this charge.
+            subtotal: snapshot ? Number(snapshot.subtotal_amount) : undefined,
+            gstPercent: snapshot ? Number(snapshot.gst_percent_used) : undefined,
+            gstAmount: snapshot ? Number(snapshot.gst_amount) : undefined,
           })
           .catch((err) =>
             this.logger.error("Failed to send payment receipt email", err),

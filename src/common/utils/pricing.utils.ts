@@ -1,11 +1,8 @@
 // ─── Pricing Mode ────────────────────────────────────────────────────────────
-// 'standard'                  → use service rate card + optional discount tier
-// 'custom_rate_plus_discount' → use admin-set hourly rate + optional discount tier
-// 'custom_override'           → bypass all calculation, use a fixed final price
-export type PricingMode =
-  | 'standard'
-  | 'custom_rate_plus_discount'
-  | 'custom_override';
+// 'standard'        → use the service rate card
+// 'custom_rate'     → use an admin-set hourly rate
+// 'custom_override' → bypass rate resolution, use a fixed subtotal
+export type PricingMode = 'standard' | 'custom_rate' | 'custom_override';
 
 // ─── Price Lock Mode ──────────────────────────────────────────────────────────
 // 'locked'        → base rate pinned to rate card effective at booking.created_at
@@ -23,11 +20,15 @@ export interface PriceInput {
   daysPerWeek: number;
   /** Number of weeks in this billing cycle (typically 4 for monthly) */
   weeksInCycle: number;
-  /** Discount % from the discount tier (0 if none) */
-  discountPercent: number;
-  /** Only used when pricingMode = 'custom_rate_plus_discount' */
+  /**
+   * GST rate to add on top of the subtotal. Pass 0 to charge no tax — this
+   * function is deliberately unaware of the GST_ENABLED flag so it stays pure
+   * and the caller owns the policy decision.
+   */
+  gstPercent: number;
+  /** Only used when pricingMode = 'custom_rate' */
   customHourlyRate?: number;
-  /** Only used when pricingMode = 'custom_override' */
+  /** Only used when pricingMode = 'custom_override' — treated as the subtotal */
   customFinalPrice?: number;
 }
 
@@ -37,9 +38,11 @@ export interface PriceBreakdown {
   baseHourlyRate: number | null;
   hoursPerWeek: number | null;
   totalHours: number | null;
-  grossAmount: number | null;
-  discountPercent: number;
-  discountAmount: number | null;
+  /** Pre-tax amount. Null only when it carries no meaning (it never is today). */
+  subtotalAmount: number;
+  gstPercent: number;
+  gstAmount: number;
+  /** subtotalAmount + gstAmount — the amount actually charged. */
   finalAmount: number;
   customPriceApplied: boolean;
 }
@@ -49,7 +52,8 @@ export interface PriceBreakdown {
  * No DB calls. No side effects. Call at quote-time and at billing-time.
  *
  * Caller is responsible for resolving `baseHourlyRate` from the correct rate
- * card according to the booking's `price_lock_mode`.
+ * card according to the booking's `price_lock_mode`, and for deciding the
+ * effective `gstPercent`.
  */
 export function calculatePrice(input: PriceInput): PriceBreakdown {
   const {
@@ -58,12 +62,14 @@ export function calculatePrice(input: PriceInput): PriceBreakdown {
     hoursPerDay,
     daysPerWeek,
     weeksInCycle,
-    discountPercent,
+    gstPercent,
     customHourlyRate,
     customFinalPrice,
   } = input;
 
-  // ── custom_override: bypass everything ────────────────────────────────────
+  // ── custom_override: skip rate resolution, but GST still applies ──────────
+  // Tax is statutory. It does not depend on how the base price was arrived at,
+  // so an admin-set price is the subtotal, not the final amount.
   if (pricingMode === 'custom_override') {
     if (customFinalPrice == null) {
       throw new Error(
@@ -75,39 +81,44 @@ export function calculatePrice(input: PriceInput): PriceBreakdown {
       baseHourlyRate: null,
       hoursPerWeek: null,
       totalHours: null,
-      grossAmount: null,
-      discountPercent: 0,
-      discountAmount: null,
-      finalAmount: round2(customFinalPrice),
+      ...applyGst(customFinalPrice, gstPercent),
       customPriceApplied: true,
     };
   }
 
   // ── Resolve the effective hourly rate ─────────────────────────────────────
   const effectiveRate =
-    pricingMode === 'custom_rate_plus_discount'
+    pricingMode === 'custom_rate'
       ? (customHourlyRate ?? baseHourlyRate)
       : baseHourlyRate;
 
-  // ── Step 2: compute gross ─────────────────────────────────────────────────
+  // ── Compute the pre-tax subtotal ──────────────────────────────────────────
   const hoursPerWeek = hoursPerDay * daysPerWeek;
   const totalHours = hoursPerWeek * weeksInCycle;
-  const grossAmount = effectiveRate * totalHours;
-
-  // ── Step 3: apply discount (same in standard AND custom_rate_plus_discount)
-  const discountAmount = (grossAmount * discountPercent) / 100;
-  const finalAmount = grossAmount - discountAmount;
+  const subtotal = effectiveRate * totalHours;
 
   return {
     pricingMode,
     baseHourlyRate: effectiveRate,
     hoursPerWeek,
     totalHours,
-    grossAmount: round2(grossAmount),
-    discountPercent,
-    discountAmount: round2(discountAmount),
-    finalAmount: round2(finalAmount),
-    customPriceApplied: pricingMode === 'custom_rate_plus_discount',
+    ...applyGst(subtotal, gstPercent),
+    customPriceApplied: pricingMode === 'custom_rate',
+  };
+}
+
+/**
+ * Round the subtotal before taxing it, so the GST line the customer sees is
+ * exactly `subtotalAmount × gstPercent` and the three numbers always reconcile.
+ */
+function applyGst(rawSubtotal: number, gstPercent: number) {
+  const subtotalAmount = round2(rawSubtotal);
+  const gstAmount = round2((subtotalAmount * gstPercent) / 100);
+  return {
+    subtotalAmount,
+    gstPercent,
+    gstAmount,
+    finalAmount: round2(subtotalAmount + gstAmount),
   };
 }
 

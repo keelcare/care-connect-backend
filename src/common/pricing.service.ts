@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   calculatePrice,
@@ -13,13 +14,20 @@ export interface QuoteInput {
   daysPerWeek: number;
   planDurationMonths: number;
   pricingMode?: PricingMode;
-  discountTierId?: string;
   customHourlyRate?: number;
   customFinalPrice?: number;
   /** If provided, resolves rate card as-of this date. Defaults to now() */
   asOf?: Date;
   planType?: string;
 }
+
+export interface GstConfig {
+  enabled: boolean;
+  percent: number;
+}
+
+/** The statutory rate. Used when GST_PERCENT is unset or unparseable. */
+const DEFAULT_GST_PERCENT = 18;
 
 export interface CycleChargeInput {
   bookingId: string;
@@ -31,7 +39,35 @@ export interface CycleChargeInput {
 export class PricingEngineService {
   private readonly logger = new Logger(PricingEngineService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
+
+  // ─── GST ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * The GST policy currently in force. Read on every calculation rather than
+   * cached at construction so flipping the flag takes effect on the next
+   * process restart without any stale-cache surprises.
+   */
+  getGstConfig(): GstConfig {
+    const enabled = this.config.get<string>('GST_ENABLED') === 'true';
+
+    // A blank or malformed GST_PERCENT must not silently resolve to 0% while the
+    // flag says enabled — that would quietly stop collecting tax we owe.
+    const raw = this.config.get<string>('GST_PERCENT');
+    const parsed = raw == null || raw.trim() === '' ? NaN : Number(raw);
+    const percent = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_GST_PERCENT;
+
+    return { enabled, percent };
+  }
+
+  /** The rate to hand the pure calculator: the configured rate, or 0 when off. */
+  private effectiveGstPercent(): number {
+    const { enabled, percent } = this.getGstConfig();
+    return enabled ? percent : 0;
+  }
 
   // ─── Reference-data cache ─────────────────────────────────────────────────────
   // services / rate_cards are near-static reference data but are looked up once
@@ -125,21 +161,13 @@ export class PricingEngineService {
 
     const rateCard = await this.getEffectiveRateCard(serviceId, input.asOf);
 
-    let discountPercent = 0;
-    if (input.discountTierId) {
-      const tier = await this.prisma.discount_tiers.findUnique({
-        where: { id: input.discountTierId },
-      });
-      discountPercent = tier ? Number(tier.discount_percent) : 0;
-    }
-
     const priceInput: PriceInput = {
       pricingMode: input.pricingMode ?? 'standard',
       baseHourlyRate: Number(rateCard.hourly_rate),
       hoursPerDay,
       daysPerWeek,
       weeksInCycle: input.planType === 'ONE_TIME' ? 1 : 4,
-      discountPercent,
+      gstPercent: this.effectiveGstPercent(),
       customHourlyRate: input.customHourlyRate,
       customFinalPrice: input.customFinalPrice,
     };
@@ -157,7 +185,6 @@ export class PricingEngineService {
   async calculateCost(
     serviceCategory: string,
     durationHours: number,
-    discountPercentage: number = 0,
     planDurationMonths: number = 1,
     planType: string = 'ONE_TIME',
     sessionsPerMonth: number = 1,
@@ -165,7 +192,15 @@ export class PricingEngineService {
     const service = await this.serviceByName(serviceCategory);
 
     if (!service) {
-      return { totalAmount: 0, monthlyCost: 0, planDurationMonths: 1, originalAmount: 0, discountAmount: 0, appliedRate: 0 };
+      return {
+        totalAmount: 0,
+        monthlyCost: 0,
+        planDurationMonths: 1,
+        subtotalAmount: 0,
+        gstPercent: 0,
+        gstAmount: 0,
+        appliedRate: 0,
+      };
     }
 
     const preview = await this.getQuotePreview({
@@ -176,13 +211,17 @@ export class PricingEngineService {
       planType,
     });
 
-    // In old code, totalAmount meant total over the duration.
+    // `totalAmount` means the tax-inclusive total over the whole plan duration.
+    // The subtotal/GST split is scaled the same way so the three reconcile.
+    const scale = (n: number) => Math.round(n * planDurationMonths * 100) / 100;
+
     return {
       totalAmount: preview.totalCost,
       monthlyCost: preview.monthlyCost,
       planDurationMonths,
-      originalAmount: preview.grossAmount || preview.totalCost,
-      discountAmount: preview.discountAmount || 0,
+      subtotalAmount: scale(preview.subtotalAmount),
+      gstPercent: preview.gstPercent,
+      gstAmount: scale(preview.gstAmount),
       appliedRate: preview.baseHourlyRate || 0,
     };
   }
@@ -204,7 +243,6 @@ export class PricingEngineService {
       where: { id: bookingId },
       include: {
         service_requests: true,
-        discount_tiers: true,
       },
     });
 
@@ -238,10 +276,6 @@ export class PricingEngineService {
     const asOf = this.resolveRateCardAsOf(booking as any);
     const rateCard = await this.getEffectiveRateCard(service.id, asOf);
 
-    const discountPercent = booking.discount_tiers
-      ? Number(booking.discount_tiers.discount_percent)
-      : 0;
-
     const planType = booking.service_requests?.plan_type || 'ONE_TIME';
 
     const priceInput: PriceInput = {
@@ -250,7 +284,7 @@ export class PricingEngineService {
       hoursPerDay: hoursPerDay,
       daysPerWeek: daysPerWeek,
       weeksInCycle: planType === 'ONE_TIME' ? 1 : 4,
-      discountPercent,
+      gstPercent: this.effectiveGstPercent(),
       customHourlyRate: booking.custom_hourly_rate
         ? Number(booking.custom_hourly_rate)
         : undefined,
@@ -261,16 +295,20 @@ export class PricingEngineService {
 
     const breakdown = calculatePrice(priceInput);
 
-    // Write the immutable price snapshot
+    // Write the immutable price snapshot. `gst_percent_used` freezes the rate in
+    // force at charge time, so flipping GST_ENABLED later never rewrites what a
+    // customer was actually charged.
     const snapshot = await this.prisma.price_snapshots.create({
       data: {
         booking_id: bookingId,
         payment_plan_id: paymentPlanId ?? null,
         cycle_number: cycleNumber,
         base_hourly_rate_used: breakdown.baseHourlyRate ?? 0,
-        discount_percent_used: breakdown.discountPercent,
         hours_billed: breakdown.totalHours ?? 0,
         custom_price_applied: breakdown.customPriceApplied,
+        subtotal_amount: breakdown.subtotalAmount,
+        gst_percent_used: breakdown.gstPercent,
+        gst_amount: breakdown.gstAmount,
         final_amount: breakdown.finalAmount,
         calculation_breakdown: breakdown as any,
         status: 'pending',
@@ -326,7 +364,6 @@ export class PricingEngineService {
     bookingId: string,
     totalCycles: number,
     startDate: Date,
-    discountTierId?: string,
   ) {
     const existing = await this.prisma.payment_plans.findUnique({
       where: { booking_id: bookingId },
@@ -336,7 +373,6 @@ export class PricingEngineService {
     return this.prisma.payment_plans.create({
       data: {
         booking_id: bookingId,
-        discount_tier_id: discountTierId ?? null,
         total_cycles: totalCycles,
         cycles_completed: 0,
         start_date: startDate,
@@ -411,46 +447,6 @@ export class PricingEngineService {
     return this.prisma.rate_cards.findMany({
       where: { service_id: serviceId },
       orderBy: { effective_from: 'desc' },
-    });
-  }
-
-  // ─── Discount Tier Helpers ───────────────────────────────────────────────────
-
-  async getActiveTiers() {
-    return this.prisma.discount_tiers.findMany({
-      where: { active: true },
-      orderBy: { duration_months: 'asc' },
-    });
-  }
-
-  async getAllTiers() {
-    return this.prisma.discount_tiers.findMany({
-      orderBy: { duration_months: 'asc' },
-    });
-  }
-
-  async upsertDiscountTier(data: {
-    code: string;
-    label: string;
-    durationMonths: number;
-    discountPercent: number;
-    active?: boolean;
-  }) {
-    return this.prisma.discount_tiers.upsert({
-      where: { code: data.code },
-      update: {
-        label: data.label,
-        duration_months: data.durationMonths,
-        discount_percent: data.discountPercent,
-        active: data.active ?? true,
-      },
-      create: {
-        code: data.code,
-        label: data.label,
-        duration_months: data.durationMonths,
-        discount_percent: data.discountPercent,
-        active: data.active ?? true,
-      },
     });
   }
 

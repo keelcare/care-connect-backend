@@ -158,13 +158,6 @@ export class CreateRequestDto {
   @IsEnum(SubscriptionPlanType)
   plan_type?: SubscriptionPlanType;
 
-  @ApiPropertyOptional({ example: 15 })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Max(100)
-  discount_percentage?: number;
-
   @ApiPropertyOptional({
     example: 6,
     description: "Duration in months for subscriptions",

@@ -270,6 +270,8 @@ export class AuthController {
               "care-connect-dev.vercel.app",
               "keel-care.vercel.app",
               "keelcare.netlify.app",
+              // Universal/App Links domain for the mobile app.
+              "keelcare.in",
             ];
             const ALLOWED_SCHEMES = [
               "careconnect:",

@@ -10,6 +10,7 @@ export class CreateAddressDto {
 
   @IsNotEmpty()
   @IsString()
+  @MaxLength(500)
   @Sanitize()
   address: string;
 

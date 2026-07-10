@@ -101,7 +101,6 @@ export class RequestsService {
               status: "pending",
               plan_type: createRequestDto.plan_type || "ONE_TIME",
               plan_duration_months: createRequestDto.plan_duration_months || 1,
-              discount_percentage: createRequestDto.discount_percentage || 0,
               sessions_per_month: createRequestDto.sessions_per_month || null,
             } as any,
           });
@@ -109,7 +108,6 @@ export class RequestsService {
           const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
             createRequestDto.category,
             Number(createRequestDto.duration_hours),
-            Number(createRequestDto.discount_percentage || 0),
             Number(createRequestDto.plan_duration_months || 1),
             createRequestDto.plan_type || "ONE_TIME",
             createRequestDto.sessions_per_month,
@@ -790,7 +788,6 @@ export class RequestsService {
     const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
       request.category || "CC",
       Number(request.duration_hours || 0),
-      Number(request["discount_percentage"] || 0),
       Number(request["plan_duration_months"] || 1),
       request["plan_type"] || "ONE_TIME",
       request["sessions_per_month"],
@@ -945,7 +942,6 @@ export class RequestsService {
       const { totalAmount } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        Number(req["discount_percentage"] || 0),
         Number(req["plan_duration_months"] || 1),
         req["plan_type"] || "ONE_TIME",
         req["sessions_per_month"],

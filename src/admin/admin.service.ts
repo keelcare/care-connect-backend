@@ -90,7 +90,6 @@ export class AdminService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        Number((req as any).discount_percentage || 0),
         Number((req as any).plan_duration_months || 1),
         (req as any).plan_type || "ONE_TIME",
         (req as any).sessions_per_month,
@@ -188,7 +187,6 @@ export class AdminService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        0,
         Number(req.plan_duration_months || 1),
         req.plan_type || "ONE_TIME",
         req.sessions_per_month || req.bookings.length,

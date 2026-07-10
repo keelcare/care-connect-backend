@@ -158,21 +158,24 @@ export class BookingsService {
         (1000 * 60 * 60)
         : 0;
 
-    const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-      booking.service_requests?.category || "CC",
-      durationHours > 0
-        ? durationHours
-        : Number(booking.service_requests?.duration_hours || 0),
-      Number(booking.service_requests?.["discount_percentage"] || 0),
-      Number(booking.service_requests?.["plan_duration_months"] || 1),
-      booking.service_requests?.["plan_type"] || "ONE_TIME",
-      booking.service_requests?.["sessions_per_month"] || 1,
-    );
+    const { totalAmount, appliedRate, subtotalAmount, gstAmount, gstPercent } =
+      await this.pricingService.calculateCost(
+        booking.service_requests?.category || "CC",
+        durationHours > 0
+          ? durationHours
+          : Number(booking.service_requests?.duration_hours || 0),
+        Number(booking.service_requests?.["plan_duration_months"] || 1),
+        booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"] || 1,
+      );
 
     return {
       ...booking,
       hourly_rate: appliedRate,
       total_amount: totalAmount,
+      subtotal_amount: subtotalAmount,
+      gst_amount: gstAmount,
+      gst_percent: gstPercent,
       title:
         (booking.jobs?.title ||
           (booking.service_requests
@@ -228,19 +231,22 @@ export class BookingsService {
           (1000 * 60 * 60)
           : Number(booking.service_requests?.duration_hours || 0);
 
-      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-        booking.service_requests?.category || "CC",
-        hours,
-        Number(booking.service_requests?.["discount_percentage"] || 0),
-        Number(booking.service_requests?.["plan_duration_months"] || 1),
-        booking.service_requests?.["plan_type"] || "ONE_TIME",
-        booking.service_requests?.["sessions_per_month"],
-      );
+      const { totalAmount, appliedRate, subtotalAmount, gstAmount, gstPercent } =
+        await this.pricingService.calculateCost(
+          booking.service_requests?.category || "CC",
+          hours,
+          Number(booking.service_requests?.["plan_duration_months"] || 1),
+          booking.service_requests?.["plan_type"] || "ONE_TIME",
+          booking.service_requests?.["sessions_per_month"],
+        );
 
       return {
         ...booking,
         hourly_rate: appliedRate,
         total_amount: totalAmount,
+        subtotal_amount: subtotalAmount,
+        gst_amount: gstAmount,
+        gst_percent: gstPercent,
         title:
           (booking.jobs?.title ||
             (booking.service_requests
@@ -291,7 +297,6 @@ export class BookingsService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         booking.service_requests?.category || "CC",
         hours,
-        Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
         booking.service_requests?.["sessions_per_month"],
