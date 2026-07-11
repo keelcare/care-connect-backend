@@ -1,10 +1,12 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
 
@@ -16,7 +18,12 @@ const bookingParties = {
 
 @Injectable()
 export class SupportService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(SupportService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private notificationsService: NotificationsService,
+  ) {}
 
   async createTicket(userId: string, role: string, dto: CreateTicketDto) {
     if (dto.category === "account") {
@@ -56,7 +63,7 @@ export class SupportService {
     const ticketCount = await this.prisma.support_tickets.count();
     const ticketNumber = `TIC-${1000 + ticketCount + 1}`;
 
-    return this.prisma.support_tickets.create({
+    const ticket = await this.prisma.support_tickets.create({
       data: {
         ticket_number: ticketNumber,
         user_id: userId,
@@ -68,6 +75,33 @@ export class SupportService {
         priority: dto.priority || "medium",
       },
     });
+
+    // Best-effort: a failed notification must never fail ticket creation.
+    try {
+      const admins = await this.prisma.users.findMany({
+        where: { role: "admin" },
+        select: { id: true },
+      });
+      const bookingRef = dto.bookingId
+        ? ` for booking #${dto.bookingId.substring(0, 8)}`
+        : "";
+      for (const admin of admins) {
+        await this.notificationsService.createNotification(
+          admin.id,
+          `New support ticket ${ticketNumber}`,
+          `A ${role} raised a ${dto.priority || "medium"}-priority ${dto.category} ticket${bookingRef}: "${dto.subject}"`,
+          dto.priority === "high" || dto.priority === "critical"
+            ? "warning"
+            : "info",
+          "support",
+          ticket.id,
+        );
+      }
+    } catch (err) {
+      this.logger.error("Failed to notify admins about new ticket", err);
+    }
+
+    return ticket;
   }
 
   async getUserTickets(userId: string) {

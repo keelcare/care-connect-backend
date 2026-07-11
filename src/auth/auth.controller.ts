@@ -326,7 +326,12 @@ export class AuthController {
       this.logger.debug(`Redirecting to: ${redirectUrl}`);
       return res.redirect(`${redirectUrl}?token=${sessionToken}`);
     } catch (error) {
-      this.logger.error("Google Callback Error", error);
+      // Log the message + stack explicitly: Logger.error(msg, obj) treats the
+      // second arg as a stack *string*, so passing an Error swallowed the cause.
+      this.logger.error(
+        `Google Callback Error: ${error?.message ?? error}`,
+        error?.stack,
+      );
 
       let frontendUrl =
         this.configService.get("FRONTEND_URL") || "http://localhost:3000";
