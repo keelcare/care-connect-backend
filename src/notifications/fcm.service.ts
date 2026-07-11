@@ -2,6 +2,11 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as admin from "firebase-admin";
 
+export interface FcmSendOptions {
+  android?: admin.messaging.AndroidConfig;
+  apns?: admin.messaging.ApnsConfig;
+}
+
 @Injectable()
 export class FcmService implements OnModuleInit {
   private readonly logger = new Logger(FcmService.name);
@@ -58,6 +63,7 @@ export class FcmService implements OnModuleInit {
     title: string,
     body: string,
     data?: Record<string, string>,
+    opts?: FcmSendOptions,
   ): Promise<boolean> {
     if (!this.initialized) {
       this.logger.debug(
@@ -79,7 +85,7 @@ export class FcmService implements OnModuleInit {
           body,
         },
         data: data || {},
-        apns: {
+        apns: opts?.apns ?? {
           payload: {
             aps: {
               sound: "default",
@@ -87,7 +93,7 @@ export class FcmService implements OnModuleInit {
             },
           },
         },
-        android: {
+        android: opts?.android ?? {
           notification: {
             sound: "default",
           },

@@ -149,7 +149,7 @@ export class UsersController {
     description: "Push token registered successfully",
   })
   async updatePushToken(@Request() req, @Body() body: UpdatePushTokenDto) {
-    await this.usersService.updatePushToken(req.user.id, body.token);
+    await this.usersService.updatePushToken(req.user.id, body.token, body.platform);
     return { message: "Push token updated successfully" };
   }
 

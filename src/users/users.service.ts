@@ -426,10 +426,10 @@ export class UsersService {
     return { profileImageUrl: url };
   }
 
-  async updatePushToken(id: string, token: string) {
+  async updatePushToken(id: string, token: string, platform?: string) {
     return this.prisma.users.update({
       where: { id },
-      data: { fcm_token: token },
+      data: { fcm_token: token, ...(platform ? { push_platform: platform } : {}) },
     });
   }
 

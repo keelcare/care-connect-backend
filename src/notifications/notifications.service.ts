@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
 import { FcmService } from "./fcm.service";
+import { PushService } from "./push.service";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { Twilio } from "twilio";
@@ -17,6 +18,7 @@ export class NotificationsService {
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
     private fcmService: FcmService,
+    private pushService: PushService,
     private sseService: SseService,
   ) {
     //commented for now till we get credentials
@@ -73,7 +75,7 @@ export class NotificationsService {
       }),
       this.prisma.users.findUnique({
         where: { id: userId },
-        select: { fcm_token: true },
+        select: { fcm_token: true, push_platform: true },
       }),
     ]);
 
@@ -89,8 +91,8 @@ export class NotificationsService {
 
     // 3. Send Mobile Push Notification fire-and-forget — don't block the response
     if (user?.fcm_token) {
-      this.fcmService
-        .sendPushNotification(user.fcm_token, title, message, {
+      this.pushService
+        .send(user.fcm_token, user.push_platform, title, message, {
           type: category || type,
           relatedId: relatedId || "",
         })
