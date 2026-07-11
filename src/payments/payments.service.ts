@@ -133,11 +133,21 @@ export class PaymentsService {
     });
 
     if (existingPayment) {
+      // Must mirror the fresh-order shape exactly. amount is rupees for
+      // display; amount_due is paise for the Razorpay SDK — returning only
+      // rupees here made every retry send a mismatched amount to checkout,
+      // which Razorpay rejects as "Payment Failed - Unexpected Error".
+      const rupees = Number(existingPayment.amount);
       return {
         orderId: existingPayment.order_id,
-        amount: Number(existingPayment.amount),
-        currency: existingPayment.currency,
+        order_id: existingPayment.order_id,
+        amount: rupees,
+        amount_due: Math.round(rupees * RAZORPAY_PAISE_MULTIPLIER),
+        currency: existingPayment.currency ?? "INR",
         key: this.configService.get("RAZORPAY_KEY_ID"),
+        key_id: this.configService.get("RAZORPAY_KEY_ID"),
+        name: "Care Connect",
+        description: `Payment for Booking #${bookingId}`,
       };
     }
 
