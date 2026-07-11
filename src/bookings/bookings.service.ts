@@ -31,6 +31,7 @@ import {
   BOOKING_IN_PROGRESS_MAX_MS,
   PROGRESS_REPORT_DUE_HOURS,
 } from "../common/constants/constants";
+import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import { Prisma } from "@prisma/client";
 
 
@@ -176,6 +177,7 @@ export class BookingsService {
       subtotal_amount: subtotalAmount,
       gst_amount: gstAmount,
       gst_percent: gstPercent,
+      payment_status: await this.derivePaymentStatus(booking.id),
       title:
         (booking.jobs?.title ||
           (booking.service_requests
@@ -191,6 +193,36 @@ export class BookingsService {
         ? `${parentProfile.first_name} ${parentProfile.last_name}`
         : "Parent",
     };
+  }
+
+  /**
+   * Payment state of a booking as the parent understands it. There is no
+   * payment_status column — the client-facing value is derived from the latest
+   * `payments` row. The manual_pending placeholder written on completion records
+   * a payout obligation, not a charge the parent made, so it never counts as paid.
+   */
+  async derivePaymentStatus(
+    bookingId: string,
+  ): Promise<"paid" | "failed" | "refunded" | "unpaid"> {
+    const payment = await this.prisma.payments.findFirst({
+      where: {
+        booking_id: bookingId,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+      },
+      orderBy: { created_at: "desc" },
+    });
+    if (!payment) return "unpaid";
+    switch (payment.status) {
+      case PaymentStatus.CAPTURED:
+      case PaymentStatus.PENDING_RELEASE:
+        return "paid";
+      case PaymentStatus.FAILED:
+        return "failed";
+      case PaymentStatus.REFUNDED:
+        return "refunded";
+      default:
+        return "unpaid";
+    }
   }
 
   async getBookingsByParent(parentId: string, pagination?: Pagination) {
@@ -220,6 +252,30 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
+    // Batched payment_status for the whole page (same semantics as
+    // derivePaymentStatus): latest non-placeholder payments row per booking.
+    const paymentRows = await this.prisma.payments.findMany({
+      where: {
+        booking_id: { in: bookings.map((b) => b.id) },
+        provider: { not: MANUAL_PENDING_PROVIDER },
+      },
+      orderBy: { created_at: "desc" },
+      select: { booking_id: true, status: true },
+    });
+    const latestPaymentByBooking = new Map<string, string>();
+    for (const row of paymentRows) {
+      if (row.booking_id && !latestPaymentByBooking.has(row.booking_id)) {
+        latestPaymentByBooking.set(row.booking_id, row.status ?? "");
+      }
+    }
+    const statusOf = (bookingId: string) => {
+      const s = latestPaymentByBooking.get(bookingId);
+      if (s === PaymentStatus.CAPTURED || s === PaymentStatus.PENDING_RELEASE) return "paid";
+      if (s === PaymentStatus.FAILED) return "failed";
+      if (s === PaymentStatus.REFUNDED) return "refunded";
+      return "unpaid";
+    };
+
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
       const nannyProfile = nanny?.profiles;
@@ -247,6 +303,7 @@ export class BookingsService {
         subtotal_amount: subtotalAmount,
         gst_amount: gstAmount,
         gst_percent: gstPercent,
+        payment_status: statusOf(booking.id),
         title:
           (booking.jobs?.title ||
             (booking.service_requests

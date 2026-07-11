@@ -118,6 +118,10 @@ export class RecurringRequestsService {
       const recurringReq = await tx.recurring_service_requests.create({
         data: {
           parent_id: parentId,
+          // A plan is only "active" once a nanny is assigned to its bookings
+          // (see AdminService.manualAssign). Until then it is pending — the column
+          // default of "active" would otherwise show every brand-new plan as live.
+          status: "pending",
           recurrence_type: dto.recurrence_type,
           recurrence_pattern: dto.recurrence_pattern,
           start_date: new Date(dto.start_date),
@@ -248,6 +252,7 @@ export class RecurringRequestsService {
 
       return {
         ...rest,
+        status: this.effectiveStatus(rest.status, !!withNanny),
         start_time_formatted: TimeUtils.formatShortTime(req.start_time),
         total_bookings: _count.bookings,
         next_upcoming_date: upcoming ? upcoming.start_time : null,
@@ -256,6 +261,17 @@ export class RecurringRequestsService {
         estimated_total: estimatedTotal,
       };
     });
+  }
+
+  /**
+   * "active" means a nanny is actually serving the plan. Rows created before the
+   * pending-by-default fix were stored as "active" from birth (the column default),
+   * so a stored "active" with no nanny on any booking is really still pending.
+   * Terminal states (cancelled/completed/expired/error) are reported as-is.
+   */
+  private effectiveStatus(stored: string, hasNanny: boolean): string {
+    if (stored !== "active") return stored;
+    return hasNanny ? "active" : "pending";
   }
 
   async findOne(id: string) {
@@ -269,8 +285,15 @@ export class RecurringRequestsService {
     });
 
     if (!req) throw new NotFoundException("Recurring request not found");
+
+    const assigned = await this.prisma.bookings.findFirst({
+      where: { recurring_request_id: id, status: { not: "CANCELLED" }, nanny_id: { not: null } },
+      select: { id: true },
+    });
+
     return {
       ...req,
+      status: this.effectiveStatus(req.status, !!assigned),
       start_time_formatted: TimeUtils.formatShortTime(req.start_time)
     };
   }

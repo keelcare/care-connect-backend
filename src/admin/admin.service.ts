@@ -629,6 +629,11 @@ export class AdminService {
             where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },
             data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED }
           });
+          // The plan goes live only now that someone is serving it.
+          await tx.recurring_service_requests.update({
+            where: { id: requestId },
+            data: { status: "active" },
+          });
         } else if (bookingId) {
           await tx.bookings.update({
             where: { id: bookingId },

@@ -20,6 +20,57 @@ export class RecurringRequestsCron {
     private readonly notificationsService: NotificationsService,
   ) {}
 
+  /**
+   * A plan nobody was ever assigned to is dead once its first session date has
+   * passed — there is no longer a schedule to serve. Without this it sits in the
+   * parent's list forever, generating sessions no nanny will ever take.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleUnassignedExpiry() {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const stale = await this.prisma.recurring_service_requests.findMany({
+      where: {
+        status: { in: ['active', 'pending'] },
+        start_date: { lt: startOfToday },
+        // No nanny has ever picked up a single session of this plan.
+        bookings: {
+          none: { nanny_id: { not: null }, status: { not: 'CANCELLED' } },
+        },
+      },
+      select: { id: true, parent_id: true },
+    });
+
+    for (const req of stale) {
+      try {
+        await this.prisma.$transaction([
+          this.prisma.recurring_service_requests.update({
+            where: { id: req.id },
+            data: { status: 'expired' },
+          }),
+          // Leave no orphaned sessions behind that can never be served.
+          this.prisma.bookings.updateMany({
+            where: { recurring_request_id: req.id, status: { not: 'CANCELLED' } },
+            data: { status: 'CANCELLED' },
+          }),
+        ]);
+
+        await this.notificationsService.createNotification(
+          req.parent_id,
+          'Recurring plan expired',
+          "We couldn't match a caregiver to your recurring plan before its start date, so it has been closed. You can create a new plan at any time.",
+          'warning',
+          'recurring_request',
+          req.id,
+        );
+        this.logger.log(`Expired unassigned recurring request ${req.id}`);
+      } catch (err) {
+        this.logger.error(`Failed to expire recurring request ${req.id}`, err);
+      }
+    }
+  }
+
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async handleRollingGeneration() {
     this.logger.log('Starting daily rolling generation for recurring requests');

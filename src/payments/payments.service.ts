@@ -15,7 +15,7 @@ import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
-import { PaymentStatus } from "../constants";
+import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
 import {
@@ -700,6 +700,108 @@ export class PaymentsService {
     });
 
     return plans;
+  }
+
+  /**
+   * Every real money movement on the parent's account, not just the ones tied to a
+   * billing cycle — cancellation fees create a `payments` row with no price_snapshot,
+   * so they are invisible to `getPaymentPlans`.
+   *
+   * Excluded: `manual_pending` rows, which the booking-completed listener writes as a
+   * payout accrual when no payment exists. The parent never paid those, so surfacing
+   * them would invent a charge. Also excluded: `created` orders, which are checkouts
+   * that were opened and abandoned without money leaving the account.
+   */
+  async getParentTransactions(userId: string, page = 1, pageSize = 20) {
+    const where: Prisma.paymentsWhereInput = {
+      bookings: { parent_id: userId },
+      provider: { not: MANUAL_PENDING_PROVIDER },
+      status: {
+        in: [
+          PaymentStatus.CAPTURED,
+          PaymentStatus.PENDING_RELEASE,
+          PaymentStatus.REFUNDED,
+          PaymentStatus.FAILED,
+        ],
+      },
+    };
+
+    const [rows, total, settled] = await this.prisma.$transaction([
+      this.prisma.payments.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          bookings: {
+            select: {
+              id: true,
+              start_time: true,
+              service_requests: { select: { category: true } },
+              users_bookings_nanny_idTousers: {
+                select: {
+                  profiles: {
+                    select: {
+                      first_name: true,
+                      last_name: true,
+                      profile_image_url: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          price_snapshots: {
+            orderBy: { cycle_number: "asc" },
+            select: { cycle_number: true, final_amount: true },
+          },
+        },
+      }),
+      this.prisma.payments.count({ where }),
+      // Only money that actually left the account counts toward the total. A refunded
+      // payment nets to zero and a failed one never settled.
+      this.prisma.payments.aggregate({
+        where: {
+          ...where,
+          status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const items = rows.map((row) => {
+      const snapshot = row.price_snapshots[0] ?? null;
+      const profile = row.bookings?.users_bookings_nanny_idTousers?.profiles ?? null;
+      const caregiverName =
+        [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || null;
+
+      return {
+        id: row.id,
+        bookingId: row.booking_id,
+        orderId: row.order_id,
+        paymentId: row.payment_id,
+        // Decimal — serialise as a number so the client never has to parse a string.
+        amount: Number(row.amount),
+        currency: row.currency,
+        status: row.status,
+        kind: snapshot ? "service_cycle" : "cancellation_fee",
+        cycleNumber: snapshot?.cycle_number ?? null,
+        date: row.created_at,
+        caregiverName,
+        caregiverImageUrl: profile?.profile_image_url ?? null,
+        category: row.bookings?.service_requests?.category ?? null,
+        errorDescription: row.error_description,
+      };
+    });
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      hasMore: page * pageSize < total,
+      totalPaid: Number(settled._sum.amount ?? 0),
+    };
   }
 
   async chargeCancellationFee(bookingId: string, amount: number) {
