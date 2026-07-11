@@ -69,6 +69,24 @@ export class PaymentsService {
       );
     }
 
+    // A one-off booking is charged exactly once — refuse a second order so a
+    // stale client screen or a double-tap can't double-charge. Cycle-billed
+    // plan bookings legitimately take one charge per cycle and are skipped.
+    if (!booking.payment_plans) {
+      const alreadyPaid = await this.prisma.payments.findFirst({
+        where: {
+          booking_id: bookingId,
+          provider: { not: MANUAL_PENDING_PROVIDER },
+          status: {
+            in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE],
+          },
+        },
+      });
+      if (alreadyPaid) {
+        throw new BadRequestException("This booking has already been paid.");
+      }
+    }
+
     const paymentPlan = booking.payment_plans;
     const cycleNumber = paymentPlan ? paymentPlan.cycles_completed + 1 : 1;
     
@@ -193,9 +211,14 @@ export class PaymentsService {
       );
     }
 
-    // Check if it's already paid successfully
+    // Check if it's already paid successfully. pending_release counts: that's a
+    // captured charge whose payout is being held, not an unpaid booking.
     const successPayment = await this.prisma.payments.findFirst({
-      where: { booking_id: bookingId, status: "captured" },
+      where: {
+        booking_id: bookingId,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+        status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE] },
+      },
     });
 
     if (successPayment) {

@@ -2,12 +2,14 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
 import { AddressesService } from "../addresses/addresses.service";
+import { NotificationsService } from "../notifications/notifications.service";
 
 @Injectable()
 export class RecurringRequestsService {
@@ -16,6 +18,7 @@ export class RecurringRequestsService {
   constructor(
     private prisma: PrismaService,
     private addressesService: AddressesService,
+    private notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -296,6 +299,77 @@ export class RecurringRequestsService {
       status: this.effectiveStatus(req.status, !!assigned),
       start_time_formatted: TimeUtils.formatShortTime(req.start_time)
     };
+  }
+
+  /**
+   * Parent-initiated cancellation of a whole plan. Ends the series and cancels
+   * every future session that hasn't already started — sessions that are
+   * completed or currently under way are left untouched (they were delivered
+   * and still need to be paid/settled). Assigned nannies whose future sessions
+   * were dropped are notified.
+   */
+  async cancel(id: string, parentId: string, reason?: string) {
+    const req = await this.prisma.recurring_service_requests.findUnique({
+      where: { id },
+      select: { id: true, parent_id: true, status: true, category: true },
+    });
+    if (!req) throw new NotFoundException("Recurring request not found");
+    if (req.parent_id !== parentId) {
+      throw new ForbiddenException("You can only cancel your own recurring plans");
+    }
+    if (["cancelled", "completed", "expired"].includes(req.status)) {
+      throw new BadRequestException(`This plan is already ${req.status}`);
+    }
+
+    const now = TimeUtils.nowIST();
+    const cancellationReason = reason?.trim() || "Recurring plan cancelled by parent";
+
+    // Capture who loses sessions before the rows flip to CANCELLED.
+    const affected = await this.prisma.bookings.findMany({
+      where: {
+        recurring_request_id: id,
+        start_time: { gt: now },
+        status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
+        nanny_id: { not: null },
+      },
+      select: { nanny_id: true },
+      distinct: ["nanny_id"],
+    });
+
+    const [, cancelledBookings] = await this.prisma.$transaction([
+      this.prisma.recurring_service_requests.update({
+        where: { id },
+        data: { status: "cancelled", updated_at: now },
+      }),
+      this.prisma.bookings.updateMany({
+        where: {
+          recurring_request_id: id,
+          start_time: { gt: now },
+          status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
+        },
+        data: { status: "CANCELLED", cancellation_reason: cancellationReason },
+      }),
+    ]);
+
+    for (const { nanny_id } of affected) {
+      await this.notificationsService
+        .createNotification(
+          nanny_id as string,
+          "Recurring plan cancelled",
+          "A parent has cancelled their recurring plan. The upcoming sessions assigned to you have been removed from your schedule.",
+          "warning",
+          "recurring_request",
+          id,
+        )
+        .catch((err) =>
+          this.logger.error(`Failed to notify nanny ${nanny_id} of plan cancellation`, err),
+        );
+    }
+
+    this.logger.log(
+      `Recurring request ${id} cancelled by parent ${parentId}; ${cancelledBookings.count} future sessions cancelled.`,
+    );
+    return { success: true, cancelledSessions: cancelledBookings.count };
   }
 
   async findBookingsForRequest(id: string, page: number = 1, limit: number = 10) {

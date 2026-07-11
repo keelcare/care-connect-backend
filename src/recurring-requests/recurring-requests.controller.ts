@@ -7,6 +7,7 @@ import {
   Get,
   Param,
   Query,
+  Delete,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -46,6 +47,20 @@ export class RecurringRequestsController {
   @ApiOperation({ summary: "Get a specific recurring request by ID" })
   findOne(@Param("id") id: string) {
     return this.recurringRequestsService.findOne(id);
+  }
+
+  @Delete(":id")
+  @ApiOperation({
+    summary:
+      "Cancel a recurring plan (parent only). Ends the series and cancels all future unstarted sessions.",
+  })
+  @ApiResponse({ status: 200, description: "Plan cancelled successfully" })
+  cancel(
+    @Request() req,
+    @Param("id") id: string,
+    @Body("reason") reason?: string,
+  ) {
+    return this.recurringRequestsService.cancel(id, req.user.id, reason);
   }
 
   @Get(":id/bookings")

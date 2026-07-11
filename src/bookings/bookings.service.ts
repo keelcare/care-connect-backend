@@ -197,32 +197,43 @@ export class BookingsService {
 
   /**
    * Payment state of a booking as the parent understands it. There is no
-   * payment_status column — the client-facing value is derived from the latest
-   * `payments` row. The manual_pending placeholder written on completion records
-   * a payout obligation, not a charge the parent made, so it never counts as paid.
+   * payment_status column — the client-facing value is derived from the
+   * `payments` rows. The manual_pending placeholder written on completion
+   * records a payout obligation, not a charge the parent made, so it never
+   * counts as paid.
    */
   async derivePaymentStatus(
     bookingId: string,
   ): Promise<"paid" | "failed" | "refunded" | "unpaid"> {
-    const payment = await this.prisma.payments.findFirst({
+    const rows = await this.prisma.payments.findMany({
       where: {
         booking_id: bookingId,
         provider: { not: MANUAL_PENDING_PROVIDER },
       },
-      orderBy: { created_at: "desc" },
+      select: { status: true },
     });
-    if (!payment) return "unpaid";
-    switch (payment.status) {
-      case PaymentStatus.CAPTURED:
-      case PaymentStatus.PENDING_RELEASE:
-        return "paid";
-      case PaymentStatus.FAILED:
-        return "failed";
-      case PaymentStatus.REFUNDED:
-        return "refunded";
-      default:
-        return "unpaid";
+    return this.paymentStatusFromRows(rows.map((r) => r.status ?? ""));
+  }
+
+  /**
+   * Order-independent: every checkout attempt inserts a `created` row, so an
+   * abandoned attempt AFTER a successful charge must not flip a paid booking
+   * back to unpaid. A capture anywhere in the history wins; a refund means the
+   * money went back; a failure is retryable; anything else is simply unpaid.
+   */
+  private paymentStatusFromRows(
+    statuses: string[],
+  ): "paid" | "failed" | "refunded" | "unpaid" {
+    if (
+      statuses.some(
+        (s) => s === PaymentStatus.CAPTURED || s === PaymentStatus.PENDING_RELEASE,
+      )
+    ) {
+      return "paid";
     }
+    if (statuses.some((s) => s === PaymentStatus.REFUNDED)) return "refunded";
+    if (statuses.some((s) => s === PaymentStatus.FAILED)) return "failed";
+    return "unpaid";
   }
 
   async getBookingsByParent(parentId: string, pagination?: Pagination) {
@@ -238,6 +249,9 @@ export class BookingsService {
           },
         },
         jobs: true,
+        // Cycle-billed bookings are settled per-cycle on the Payments screen,
+        // not per-booking — clients need to know which billing model applies.
+        payment_plans: { select: { id: true } },
         service_requests: {
           include: {
             assignments: {
@@ -252,29 +266,24 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
-    // Batched payment_status for the whole page (same semantics as
-    // derivePaymentStatus): latest non-placeholder payments row per booking.
+    // Batched payment_status for the whole page — same order-independent
+    // semantics as derivePaymentStatus.
     const paymentRows = await this.prisma.payments.findMany({
       where: {
         booking_id: { in: bookings.map((b) => b.id) },
         provider: { not: MANUAL_PENDING_PROVIDER },
       },
-      orderBy: { created_at: "desc" },
       select: { booking_id: true, status: true },
     });
-    const latestPaymentByBooking = new Map<string, string>();
+    const statusesByBooking = new Map<string, string[]>();
     for (const row of paymentRows) {
-      if (row.booking_id && !latestPaymentByBooking.has(row.booking_id)) {
-        latestPaymentByBooking.set(row.booking_id, row.status ?? "");
-      }
+      if (!row.booking_id) continue;
+      const list = statusesByBooking.get(row.booking_id) ?? [];
+      list.push(row.status ?? "");
+      statusesByBooking.set(row.booking_id, list);
     }
-    const statusOf = (bookingId: string) => {
-      const s = latestPaymentByBooking.get(bookingId);
-      if (s === PaymentStatus.CAPTURED || s === PaymentStatus.PENDING_RELEASE) return "paid";
-      if (s === PaymentStatus.FAILED) return "failed";
-      if (s === PaymentStatus.REFUNDED) return "refunded";
-      return "unpaid";
-    };
+    const statusOf = (bookingId: string) =>
+      this.paymentStatusFromRows(statusesByBooking.get(bookingId) ?? []);
 
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
@@ -304,6 +313,7 @@ export class BookingsService {
         gst_amount: gstAmount,
         gst_percent: gstPercent,
         payment_status: statusOf(booking.id),
+        has_payment_plan: !!booking.payment_plans,
         title:
           (booking.jobs?.title ||
             (booking.service_requests
