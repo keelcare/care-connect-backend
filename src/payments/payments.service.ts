@@ -133,22 +133,59 @@ export class PaymentsService {
     });
 
     if (existingPayment) {
-      // Must mirror the fresh-order shape exactly. amount is rupees for
-      // display; amount_due is paise for the Razorpay SDK — returning only
-      // rupees here made every retry send a mismatched amount to checkout,
-      // which Razorpay rejects as "Payment Failed - Unexpected Error".
+      // A stored order is only safe to replay if Razorpay still recognises it
+      // under the *current* key and it is still open for the amount we are
+      // charging now. An order that is unknown (key rotated), already paid, or
+      // priced differently makes checkout fail with a bare "Payment Failed -
+      // Unexpected Error", and since we would hand back the same dead order on
+      // every retry, the booking becomes permanently unpayable.
       const rupees = Number(existingPayment.amount);
-      return {
-        orderId: existingPayment.order_id,
-        order_id: existingPayment.order_id,
-        amount: rupees,
-        amount_due: Math.round(rupees * RAZORPAY_PAISE_MULTIPLIER),
-        currency: existingPayment.currency ?? "INR",
-        key: this.configService.get("RAZORPAY_KEY_ID"),
-        key_id: this.configService.get("RAZORPAY_KEY_ID"),
-        name: "Care Connect",
-        description: `Payment for Booking #${bookingId}`,
-      };
+      const expectedPaise = Math.round(rupees * RAZORPAY_PAISE_MULTIPLIER);
+      const liveOrder = await this.gateway.fetchOrder(existingPayment.order_id);
+      const reusable =
+        liveOrder !== null &&
+        (liveOrder.status === "created" || liveOrder.status === "attempted") &&
+        liveOrder.amount === expectedPaise &&
+        expectedPaise === amountInPaise;
+
+      if (reusable) {
+        // Must mirror the fresh-order shape exactly. amount is rupees for
+        // display; amount_due is paise for the Razorpay SDK — returning only
+        // rupees here made every retry send a mismatched amount to checkout.
+        return {
+          orderId: existingPayment.order_id,
+          order_id: existingPayment.order_id,
+          amount: rupees,
+          amount_due: expectedPaise,
+          // The column defaults to lowercase "inr"; checkout only accepts the
+          // ISO form and rejects anything else as an unexpected error.
+          currency: (existingPayment.currency ?? "INR").toUpperCase(),
+          key: this.configService.get("RAZORPAY_KEY_ID"),
+          key_id: this.configService.get("RAZORPAY_KEY_ID"),
+          name: "Care Connect",
+          description: `Payment for Booking #${bookingId}`,
+        };
+      }
+
+      // Retire the unusable row so this lookup stops finding it, then fall
+      // through and mint a fresh order below.
+      this.logger.warn(
+        `Discarding unusable order ${existingPayment.order_id} for booking ${bookingId} ` +
+          `(gateway status: ${liveOrder?.status ?? "not found"}, ` +
+          `gateway amount: ${liveOrder?.amount ?? "n/a"}, expected: ${amountInPaise})`,
+      );
+      await this.prisma.payments.update({
+        where: { id: existingPayment.id },
+        data: { status: PaymentStatus.FAILED, error_description: "Order no longer usable at gateway" },
+      });
+      await this.audit.writeLog(
+        this.prisma,
+        existingPayment.id,
+        existingPayment.order_id,
+        PaymentStatus.CREATED,
+        PaymentStatus.FAILED,
+        "api:create_order_stale",
+      );
     }
 
     try {
