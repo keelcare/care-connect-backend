@@ -170,6 +170,24 @@ export class BookingsService {
         booking.service_requests?.["sessions_per_month"] || 1,
       );
 
+    // The request only snapshots coordinates; recover the address text the
+    // parent actually entered by matching them back to their saved addresses
+    // (soft-deleted included — removing an address must not blank out history).
+    let serviceAddress: { label: string; address: string } | null = null;
+    const reqLat = booking.service_requests?.location_lat;
+    const reqLng = booking.service_requests?.location_lng;
+    if (reqLat != null && reqLng != null) {
+      const saved = await this.prisma.addresses.findFirst({
+        where: { user_id: booking.parent_id, lat: reqLat, lng: reqLng },
+        orderBy: { created_at: "desc" },
+        select: { label: true, address: true },
+      });
+      if (saved) serviceAddress = saved;
+    }
+    if (!serviceAddress && parentProfile?.address) {
+      serviceAddress = { label: "Home", address: parentProfile.address };
+    }
+
     return {
       ...booking,
       hourly_rate: appliedRate,
@@ -178,6 +196,9 @@ export class BookingsService {
       gst_amount: gstAmount,
       gst_percent: gstPercent,
       payment_status: await this.derivePaymentStatus(booking.id),
+      service_address: serviceAddress,
+      service_location_lat: reqLat != null ? Number(reqLat) : null,
+      service_location_lng: reqLng != null ? Number(reqLng) : null,
       title:
         (booking.jobs?.title ||
           (booking.service_requests
@@ -188,7 +209,7 @@ export class BookingsService {
           : ""),
       nanny_name: nannyProfile
         ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-        : "Pending Assignment",
+        : "Finding your match",
       parent_name: parentProfile
         ? `${parentProfile.first_name} ${parentProfile.last_name}`
         : "Parent",
@@ -324,7 +345,7 @@ export class BookingsService {
             : ""),
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-          : "Pending Assignment",
+          : "Finding your match",
         // Flatten the relationship for the frontend
         nanny: nanny ? {
           ...nanny,
@@ -742,7 +763,7 @@ export class BookingsService {
           : ""),
       nanny_name: nannyProfile
         ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-        : "Pending Assignment",
+        : "Finding your match",
       parent_name: parentProfile
         ? `${parentProfile.first_name} ${parentProfile.last_name}`
         : "Parent",
