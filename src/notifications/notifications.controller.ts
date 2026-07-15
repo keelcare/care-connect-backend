@@ -14,6 +14,9 @@ import { NotificationsService } from "./notifications.service";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
 import { PrismaService } from "../prisma/prisma.service";
+import { Roles } from "../auth/decorators/roles.decorator";
+import { RolesGuard } from "../auth/guards/roles.guard";
+import { UserRole } from "../auth/dto/signup.dto";
 
 @Controller("notifications")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -24,6 +27,8 @@ export class NotificationsController {
   ) {}
 
   @Post("send")
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
   async sendNotification(
     @Body()
     body: {

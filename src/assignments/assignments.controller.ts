@@ -27,8 +27,8 @@ export class AssignmentsController {
   }
 
   @Get(":id")
-  findOne(@Param("id") id: string) {
-    return this.assignmentsService.findOne(id);
+  findOne(@Param("id") id: string, @Request() req) {
+    return this.assignmentsService.findOne(id, req.user.id, req.user.role);
   }
 
   @Put(":id/accept")

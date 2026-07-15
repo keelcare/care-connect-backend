@@ -45,8 +45,8 @@ export class PaymentsController {
     status: 201,
     description: "New order created successfully for retry",
   })
-  async retryOrder(@Param("bookingId") bookingId: string) {
-    return this.paymentsService.retryOrder(bookingId);
+  async retryOrder(@Req() req: any, @Param("bookingId") bookingId: string) {
+    return this.paymentsService.retryOrder(bookingId, req.user.id);
   }
 
   @Post("verify")

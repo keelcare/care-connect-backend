@@ -1,8 +1,15 @@
-import { Injectable, NotFoundException, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  Logger,
+} from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { TimeUtils } from "../common/utils/time.utils";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { CreateRecurringBookingDto } from "./dto/create-recurring-booking.dto";
+import { UpdateRecurringBookingDto } from "./dto/update-recurring-booking.dto";
 
 @Injectable()
 export class RecurringBookingsService {
@@ -10,7 +17,7 @@ export class RecurringBookingsService {
 
   constructor(private prisma: PrismaService) {}
 
-  async create(parentId: string, data: any) {
+  async create(parentId: string, data: CreateRecurringBookingDto) {
     return this.prisma.recurring_bookings.create({
       data: {
         parent_id: parentId,
@@ -44,7 +51,7 @@ export class RecurringBookingsService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string, role: string) {
     const recurring = await this.prisma.recurring_bookings.findUnique({
       where: { id },
       include: {
@@ -58,10 +65,24 @@ export class RecurringBookingsService {
       },
     });
     if (!recurring) throw new NotFoundException("Recurring booking not found");
+
+    // Read scope: the plan's parent, the assigned nanny, or an admin. Return
+    // NotFound rather than Forbidden so we don't leak existence of others' plans.
+    const isParticipant =
+      recurring.parent_id === userId || recurring.nanny_id === userId;
+    if (!isParticipant && role !== "admin") {
+      throw new NotFoundException("Recurring booking not found");
+    }
     return recurring;
   }
 
-  async update(id: string, data: any) {
+  async update(
+    id: string,
+    data: UpdateRecurringBookingDto,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertOwner(id, userId, role);
     return this.prisma.recurring_bookings.update({
       where: { id },
       data: {
@@ -72,11 +93,30 @@ export class RecurringBookingsService {
     });
   }
 
-  async delete(id: string) {
+  async delete(id: string, userId: string, role: string) {
+    await this.assertOwner(id, userId, role);
     return this.prisma.recurring_bookings.update({
       where: { id },
       data: { is_active: false },
     });
+  }
+
+  /**
+   * Mutations to a recurring plan (edit / cancel) are restricted to the plan's
+   * owning parent or an admin. Throws NotFound if the row is missing and
+   * Forbidden if an authenticated non-owner attempts the change.
+   */
+  private async assertOwner(id: string, userId: string, role: string) {
+    const recurring = await this.prisma.recurring_bookings.findUnique({
+      where: { id },
+      select: { parent_id: true },
+    });
+    if (!recurring) throw new NotFoundException("Recurring booking not found");
+    if (recurring.parent_id !== userId && role !== "admin") {
+      throw new ForbiddenException(
+        "You are not authorized to modify this recurring booking",
+      );
+    }
   }
 
   // Cron job to generate bookings from recurring patterns

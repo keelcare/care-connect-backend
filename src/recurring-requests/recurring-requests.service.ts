@@ -277,7 +277,7 @@ export class RecurringRequestsService {
     return hasNanny ? "active" : "pending";
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string, role: string) {
     const req = await this.prisma.recurring_service_requests.findUnique({
       where: { id },
       include: {
@@ -288,6 +288,11 @@ export class RecurringRequestsService {
     });
 
     if (!req) throw new NotFoundException("Recurring request not found");
+    // Scope the read to the owning parent (mirrors cancel) or an admin. Return
+    // NotFound for anyone else so existence of the plan isn't leaked.
+    if (req.parent_id !== userId && role !== "admin") {
+      throw new NotFoundException("Recurring request not found");
+    }
 
     const assigned = await this.prisma.bookings.findFirst({
       where: { recurring_request_id: id, status: { not: "CANCELLED" }, nanny_id: { not: null } },
@@ -372,9 +377,26 @@ export class RecurringRequestsService {
     return { success: true, cancelledSessions: cancelledBookings.count };
   }
 
-  async findBookingsForRequest(id: string, page: number = 1, limit: number = 10) {
+  async findBookingsForRequest(
+    id: string,
+    page: number = 1,
+    limit: number = 10,
+    userId?: string,
+    role?: string,
+  ) {
+    // Scope to the owning parent (mirrors cancel) or an admin before listing
+    // any bookings under the plan.
+    const parent = await this.prisma.recurring_service_requests.findUnique({
+      where: { id },
+      select: { parent_id: true },
+    });
+    if (!parent) throw new NotFoundException("Recurring request not found");
+    if (parent.parent_id !== userId && role !== "admin") {
+      throw new NotFoundException("Recurring request not found");
+    }
+
     const skip = (page - 1) * limit;
-    
+
     const [bookings, total] = await this.prisma.$transaction([
       this.prisma.bookings.findMany({
         where: { recurring_request_id: id },

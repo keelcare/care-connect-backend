@@ -85,7 +85,7 @@ export class ProgressReportsService {
     });
   }
 
-  async getReportById(id: string) {
+  async getReportById(id: string, userId: string, role: string) {
     const report = await this.prisma.progress_reports.findUnique({
       where: { id },
       include: {
@@ -112,6 +112,14 @@ export class ProgressReportsService {
     });
 
     if (!report) throw new NotFoundException("Report not found");
+
+    // Scope the read to the report's nanny, the booking's parent, or an admin.
+    // Return NotFound for anyone else so a report's existence isn't leaked.
+    const isNanny = report.nanny_id === userId;
+    const isParent = report.bookings?.parent_id === userId;
+    if (!isNanny && !isParent && role !== "admin") {
+      throw new NotFoundException("Report not found");
+    }
     return report;
   }
 

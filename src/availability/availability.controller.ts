@@ -11,6 +11,7 @@ import {
 import { AvailabilityService } from "./availability.service";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
+import { CreateAvailabilityBlockDto } from "./dto/create-availability-block.dto";
 
 @Controller("availability")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -28,12 +29,15 @@ export class AvailabilityController {
   }
 
   @Post("block")
-  async createBlock(@Request() req, @Body() data: any) {
+  async createBlock(
+    @Request() req,
+    @Body() data: CreateAvailabilityBlockDto,
+  ) {
     return this.availabilityService.createBlock(req.user.id, data);
   }
 
   @Delete(":id")
-  async deleteBlock(@Param("id") id: string) {
-    return this.availabilityService.delete(id);
+  async deleteBlock(@Param("id") id: string, @Request() req) {
+    return this.availabilityService.delete(id, req.user.id);
   }
 }

@@ -20,7 +20,18 @@ export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
   @Post()
-  async createChat(@Body("bookingId") bookingId: string) {
+  async createChat(@Body("bookingId") bookingId: string, @Request() req) {
+    const userId = req.user.id;
+
+    // Only a participant of the booking may open its chat
+    const isAuthorized = await this.chatService.isUserInBooking(
+      bookingId,
+      userId,
+    );
+    if (!isAuthorized) {
+      throw new ForbiddenException("Not authorized to create this chat");
+    }
+
     return this.chatService.createChat(bookingId);
   }
 
@@ -69,6 +80,13 @@ export class ChatController {
     @Request() req,
   ) {
     const userId = req.user.id;
+
+    // Only a participant of the chat may post to it
+    const isAuthorized = await this.chatService.isUserInChat(chatId, userId);
+    if (!isAuthorized) {
+      throw new ForbiddenException("Not authorized to send messages to this chat");
+    }
+
     return this.chatService.sendMessage(
       chatId,
       userId,

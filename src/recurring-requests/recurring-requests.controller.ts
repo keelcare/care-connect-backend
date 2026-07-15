@@ -45,8 +45,8 @@ export class RecurringRequestsController {
 
   @Get(":id")
   @ApiOperation({ summary: "Get a specific recurring request by ID" })
-  findOne(@Param("id") id: string) {
-    return this.recurringRequestsService.findOne(id);
+  findOne(@Param("id") id: string, @Request() req) {
+    return this.recurringRequestsService.findOne(id, req.user.id, req.user.role);
   }
 
   @Delete(":id")
@@ -66,12 +66,19 @@ export class RecurringRequestsController {
   @Get(":id/bookings")
   @ApiOperation({ summary: "Get paginated bookings for a recurring request" })
   findBookings(
+    @Request() req,
     @Param("id") id: string,
     @Query("page") page: string,
     @Query("limit") limit: string
   ) {
     const pageNum = page ? parseInt(page, 10) : 1;
     const limitNum = limit ? parseInt(limit, 10) : 10;
-    return this.recurringRequestsService.findBookingsForRequest(id, pageNum, limitNum);
+    return this.recurringRequestsService.findBookingsForRequest(
+      id,
+      pageNum,
+      limitNum,
+      req.user.id,
+      req.user.role,
+    );
   }
 }

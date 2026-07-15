@@ -84,18 +84,42 @@ export class AddressesService {
   }
 
   async update(userId: string, id: string, dto: UpdateAddressDto) {
-    const existing = await this.prisma.addresses.findFirst({
-      where: { id, user_id: userId, deleted_at: null },
-    });
-    if (!existing) throw new NotFoundException("Address not found");
-
+    // Ownership check runs inside the transaction so it can't race with a
+    // concurrent write between the check and the mutation.
     return this.prisma.$transaction(async (tx) => {
-      if (dto.isDefault) {
+      const existing = await tx.addresses.findFirst({
+        where: { id, user_id: userId, deleted_at: null },
+      });
+      if (!existing) throw new NotFoundException("Address not found");
+
+      // Explicitly unsetting the current default would leave the user with zero
+      // defaults, breaking getDefault/resolveForUser. Auto-promote the next
+      // most-recently-updated address (mirrors remove()); if this is the only
+      // address, keep it as the default rather than unset it.
+      const unsettingDefault =
+        existing.is_default === true && dto.isDefault === false;
+
+      if (dto.isDefault === true) {
         await tx.addresses.updateMany({
           where: { user_id: userId, is_default: true },
           data: { is_default: false },
         });
       }
+
+      let promotedId: string | null = null;
+      let isDefaultValue: boolean | undefined = dto.isDefault ?? undefined;
+      if (unsettingDefault) {
+        const nextDefault = await tx.addresses.findFirst({
+          where: { user_id: userId, deleted_at: null, id: { not: id } },
+          orderBy: { updated_at: "desc" },
+        });
+        if (nextDefault) {
+          promotedId = nextDefault.id;
+        } else {
+          isDefaultValue = true;
+        }
+      }
+
       const updated = await tx.addresses.update({
         where: { id },
         data: {
@@ -103,23 +127,32 @@ export class AddressesService {
           address: dto.address,
           lat: dto.lat,
           lng: dto.lng,
-          is_default: dto.isDefault ?? undefined,
+          is_default: isDefaultValue,
           updated_at: new Date(),
         },
       });
+
+      if (promotedId) {
+        await tx.addresses.update({
+          where: { id: promotedId },
+          data: { is_default: true },
+        });
+      }
+
       return toApi(updated);
     });
   }
 
   async remove(userId: string, id: string) {
-    const existing = await this.prisma.addresses.findFirst({
-      where: { id, user_id: userId, deleted_at: null },
-    });
-    if (!existing) throw new NotFoundException("Address not found");
-
     // Soft delete: bookings that happened at this address keep their history,
     // and the row remains as an audit trail. All reads filter deleted_at.
+    // Ownership check runs inside the transaction to avoid a check/mutate race.
     return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.addresses.findFirst({
+        where: { id, user_id: userId, deleted_at: null },
+      });
+      if (!existing) throw new NotFoundException("Address not found");
+
       await tx.addresses.update({
         where: { id },
         data: { deleted_at: new Date(), is_default: false, updated_at: new Date() },
@@ -142,12 +175,13 @@ export class AddressesService {
   }
 
   async setDefault(userId: string, id: string) {
-    const existing = await this.prisma.addresses.findFirst({
-      where: { id, user_id: userId, deleted_at: null },
-    });
-    if (!existing) throw new NotFoundException("Address not found");
-
+    // Ownership check runs inside the transaction to avoid a check/mutate race.
     return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.addresses.findFirst({
+        where: { id, user_id: userId, deleted_at: null },
+      });
+      if (!existing) throw new NotFoundException("Address not found");
+
       await tx.addresses.updateMany({
         where: { user_id: userId, is_default: true },
         data: { is_default: false },

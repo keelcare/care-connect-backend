@@ -219,6 +219,19 @@ export class UsersService {
 
     this.decryptOnboardingDetails(user);
 
+    // Exclude sensitive fields (mirror findMe / findAllNannies)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const {
+      password_hash,
+      oauth_access_token,
+      oauth_refresh_token,
+      verification_token,
+      reset_password_token,
+      verification_token_expires,
+      reset_password_token_expires,
+      ...result
+    } = user;
+
     // If user is a nanny, include average rating
     if (user.role === "nanny") {
       const reviews = await this.prisma.reviews.findMany({
@@ -237,13 +250,13 @@ export class UsersService {
           : null;
 
       return {
-        ...user,
+        ...result,
         averageRating,
         totalReviews,
       };
     }
 
-    return user;
+    return result;
   }
 
   async findFullUserById(id: string) {

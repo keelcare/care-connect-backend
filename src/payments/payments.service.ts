@@ -245,7 +245,7 @@ export class PaymentsService {
   }
 
   // 1.5. Retry Failed Order
-  async retryOrder(bookingId: string) {
+  async retryOrder(bookingId: string, requestingUserId: string) {
     // Check if there is a failed payment for this booking
     const failedPayment = await this.prisma.payments.findFirst({
       where: { booking_id: bookingId, status: "failed" },
@@ -273,7 +273,8 @@ export class PaymentsService {
     }
 
     this.logger.log(`Retrying order calculation for booking: ${bookingId}`);
-    return this.createOrder(bookingId);
+    // Pass the requesting user so createOrder's ownership guard still applies.
+    return this.createOrder(bookingId, requestingUserId);
   }
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)

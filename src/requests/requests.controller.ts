@@ -75,7 +75,18 @@ export class RequestsController {
   @ApiOperation({ summary: "Get a specific request by ID" })
   @ApiResponse({ status: 200, description: "Return request details" })
   @ApiResponse({ status: 404, description: "Request not found" })
-  findOne(@Param("id") id: string) {
-    return this.requestsService.findOne(id);
+  async findOne(@Param("id") id: string, @Request() req) {
+    const request = await this.requestsService.findOne(id);
+    // Scope the read to the request's parent, an assigned nanny, or an admin.
+    // Return NotFound for anyone else so we don't leak existence of a request.
+    const userId = req.user.id;
+    const isParent = request.parent_id === userId;
+    const isAssignedNanny = request.assignments?.some(
+      (a) => a.nanny_id === userId,
+    );
+    if (!isParent && !isAssignedNanny && req.user.role !== "admin") {
+      throw new NotFoundException(`Service request with ID ${id} not found`);
+    }
+    return request;
   }
 }

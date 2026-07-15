@@ -12,6 +12,8 @@ import {
 import { RecurringBookingsService } from "./recurring-bookings.service";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
+import { CreateRecurringBookingDto } from "./dto/create-recurring-booking.dto";
+import { UpdateRecurringBookingDto } from "./dto/update-recurring-booking.dto";
 
 @Controller("recurring-bookings")
 @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -26,22 +28,31 @@ export class RecurringBookingsController {
   }
 
   @Get(":id")
-  async findOne(@Param("id") id: string) {
-    return this.recurringBookingsService.findOne(id);
+  async findOne(@Param("id") id: string, @Request() req) {
+    return this.recurringBookingsService.findOne(id, req.user.id, req.user.role);
   }
 
   @Post()
-  async create(@Request() req, @Body() data: any) {
+  async create(@Request() req, @Body() data: CreateRecurringBookingDto) {
     return this.recurringBookingsService.create(req.user.id, data);
   }
 
   @Put(":id")
-  async update(@Param("id") id: string, @Body() data: any) {
-    return this.recurringBookingsService.update(id, data);
+  async update(
+    @Param("id") id: string,
+    @Body() data: UpdateRecurringBookingDto,
+    @Request() req,
+  ) {
+    return this.recurringBookingsService.update(
+      id,
+      data,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Delete(":id")
-  async delete(@Param("id") id: string) {
-    return this.recurringBookingsService.delete(id);
+  async delete(@Param("id") id: string, @Request() req) {
+    return this.recurringBookingsService.delete(id, req.user.id, req.user.role);
   }
 }

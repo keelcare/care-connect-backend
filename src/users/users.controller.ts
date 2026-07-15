@@ -56,6 +56,8 @@ export class UsersController {
     return this.usersService.findMe(req.user.id);
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Get("nannies")
   @ApiOperation({ summary: "Get all nannies" })
   @ApiResponse({ status: 200, description: "Return list of all nannies" })
@@ -73,9 +75,12 @@ export class UsersController {
     return { isAvailable };
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Get(":id")
   @ApiOperation({ summary: "Get user by ID" })
   @ApiResponse({ status: 200, description: "Return user data" })
+  @ApiResponse({ status: 401, description: "Unauthorized" })
   @ApiResponse({ status: 404, description: "User not found" })
   getUser(@Param("id") id: string) {
     return this.usersService.findOne(id);

@@ -65,7 +65,11 @@ export class ProgressReportsController {
 
   @Get(":id")
   @ApiOperation({ summary: "Get a specific progress report by ID" })
-  async getReportById(@Param("id") id: string) {
-    return this.progressReportsService.getReportById(id);
+  async getReportById(@Param("id") id: string, @Request() req) {
+    return this.progressReportsService.getReportById(
+      id,
+      req.user.id,
+      req.user.role,
+    );
   }
 }
