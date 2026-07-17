@@ -17,6 +17,7 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 import { PaginationDto } from "./dto/pagination.dto";
+import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 
 /** Helper: extract the real client IP from the request */
 function getClientIp(req: any): string {
@@ -31,7 +32,10 @@ function getClientIp(req: any): string {
 @Roles(UserRole.ADMIN)
 @UseGuards(AuthGuard("jwt"), RolesGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly bookingStatusLog: BookingStatusLogService,
+  ) {}
 
   // Manual Assignment Management
   @Get("manual-assignment/requests")
@@ -119,6 +123,12 @@ export class AdminController {
   @Get("bookings")
   async getAllBookings(@Query() query: PaginationDto) {
     return this.adminService.getAllBookings(query);
+  }
+
+  // Full status-transition history for one booking (audit trail for ops).
+  @Get("bookings/:id/history")
+  async getBookingStatusHistory(@Param("id") id: string) {
+    return this.bookingStatusLog.getHistory(id);
   }
 
   @Get("recurring-requests")

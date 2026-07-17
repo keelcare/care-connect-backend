@@ -82,10 +82,32 @@ model bookings {
   payment_plans                   payment_plans?
   price_snapshots                 price_snapshots[]
   support_tickets                 support_tickets[]
+  booking_status_logs             booking_status_log[]
 
   @@index([parent_id, status])
   @@index([nanny_id, status])
   @@index([start_time, status])
+}
+
+/// One row per booking status transition — the per-booking history that
+/// payments already get via payment_audit_log. One-off bookings previously kept
+/// only the latest `updated_at`, so prior states were lost. Append-only.
+model booking_status_log {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id  String   @db.Uuid
+  from_status String?  @db.VarChar(50)
+  to_status   String   @db.VarChar(50)
+  /// The user who caused the transition, when known. Null for system/cron.
+  changed_by  String?  @db.Uuid
+  /// 'parent' | 'nanny' | 'admin' | 'system'
+  actor_role  String?  @db.VarChar(20)
+  reason      String?
+  metadata    Json?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  bookings    bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id])
+  @@index([created_at])
 }
 
 model chats {
@@ -423,6 +445,13 @@ model support_tickets {
   priority      String    @default("medium") @db.VarChar(20)
   status        String    @default("open") @db.VarChar(50)
   admin_notes   String?
+  /// The admin who owns this ticket. Null = unassigned/in the shared queue.
+  assigned_admin_id String? @db.Uuid
+  /// When an admin first replied — the SLA first-response timer stops here.
+  first_response_at DateTime? @db.Timestamptz(6)
+  /// Customer satisfaction (1–5), submitted by the raiser after resolution.
+  csat_rating   Int?
+  csat_comment  String?
   resolved_at   DateTime? @db.Timestamptz(6)
   created_at    DateTime? @default(now()) @db.Timestamptz(6)
   updated_at    DateTime? @default(now()) @db.Timestamptz(6)
@@ -432,6 +461,7 @@ model support_tickets {
   support_ticket_messages support_ticket_messages[]
 
   @@index([booking_id])
+  @@index([assigned_admin_id])
 }
 
 model support_ticket_messages {

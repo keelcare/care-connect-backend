@@ -1,5 +1,6 @@
 import { Module, forwardRef } from "@nestjs/common";
 import { BookingsService } from "./bookings.service";
+import { BookingStatusLogService } from "./booking-status-log.service";
 import { BookingsController } from "./bookings.controller";
 import { ChatModule } from "../chat/chat.module";
 import { RequestsModule } from "../requests/requests.module";
@@ -18,7 +19,7 @@ import { ProgressReportsModule } from "../progress-reports/progress-reports.modu
     forwardRef(() => ProgressReportsModule),
   ],
   controllers: [BookingsController],
-  providers: [BookingsService, TasksService, BookingListeners],
-  exports: [BookingsService],
+  providers: [BookingsService, BookingStatusLogService, TasksService, BookingListeners],
+  exports: [BookingsService, BookingStatusLogService],
 })
 export class BookingsModule {}

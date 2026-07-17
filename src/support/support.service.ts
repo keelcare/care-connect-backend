@@ -190,7 +190,7 @@ export class SupportService {
   ) {
     const ticket = await this.prisma.support_tickets.findUnique({
       where: { id: ticketId },
-      select: { id: true, user_id: true, status: true },
+      select: { id: true, user_id: true, status: true, first_response_at: true },
     });
     if (!ticket) {
       throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
@@ -230,17 +230,58 @@ export class SupportService {
     });
 
     // Keep the ticket fresh; move an untouched ticket into "in_progress" when
-    // an admin first replies.
+    // an admin first replies, and stop the SLA first-response timer.
+    const firstAdminReply = isAdmin && !ticket.first_response_at;
     await this.prisma.support_tickets.update({
       where: { id: ticketId },
       data: {
         updated_at: new Date(),
-        ...(isAdmin && ticket.status === "open"
-          ? { status: "in_progress" }
-          : {}),
+        ...(isAdmin && ticket.status === "open" ? { status: "in_progress" } : {}),
+        ...(firstAdminReply ? { first_response_at: new Date() } : {}),
       },
     });
 
     return message;
+  }
+
+  // Ops ownership: an admin claims (or reassigns) a ticket. Pass adminId=null to
+  // release it back to the shared queue.
+  async assignTicket(ticketId: string, adminId: string | null) {
+    await this.prisma.support_tickets.findUniqueOrThrow({
+      where: { id: ticketId },
+      select: { id: true },
+    });
+    return this.prisma.support_tickets.update({
+      where: { id: ticketId },
+      data: { assigned_admin_id: adminId, updated_at: new Date() },
+    });
+  }
+
+  // Customer satisfaction, submitted by the raiser once the ticket is done.
+  async submitCsat(
+    ticketId: string,
+    userId: string,
+    rating: number,
+    comment?: string,
+  ) {
+    if (rating < 1 || rating > 5) {
+      throw new BadRequestException("Rating must be between 1 and 5");
+    }
+    const ticket = await this.prisma.support_tickets.findUnique({
+      where: { id: ticketId },
+      select: { id: true, user_id: true, status: true },
+    });
+    if (!ticket || ticket.user_id !== userId) {
+      throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
+    }
+    if (ticket.status !== "resolved" && ticket.status !== "closed") {
+      throw new BadRequestException(
+        "You can only rate a ticket once it has been resolved.",
+      );
+    }
+    return this.prisma.support_tickets.update({
+      where: { id: ticketId },
+      data: { csat_rating: rating, csat_comment: comment ?? null },
+    });
   }
 }

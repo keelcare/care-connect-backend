@@ -11,6 +11,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { Pagination, paginate } from "../common/utils/pagination.util";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
+import { BookingStatusLogService } from "./booking-status-log.service";
 import { GeoUtils } from "../common/utils/geo.utils";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import {
@@ -47,6 +48,7 @@ export class BookingsService {
     private paymentsService: PaymentsService,
     @Inject(forwardRef(() => ProgressReportsService))
     private progressReportsService: ProgressReportsService,
+    private bookingStatusLog: BookingStatusLogService,
   ) { }
 
   async createBooking(
@@ -118,6 +120,12 @@ export class BookingsService {
 
     // Emit event - side effects (Chat, Notifications, Mail, SSE) are handled by listeners
     this.eventEmitter.emit(BOOKING_EVENTS.CREATED, new BookingCreatedEvent(booking));
+
+    await this.bookingStatusLog.writeLog(null, booking.id, null, BookingStatus.CONFIRMED, {
+      changedBy: parentId,
+      actorRole: "parent",
+      reason: "Booking created",
+    });
 
     return booking;
   }
@@ -471,6 +479,11 @@ export class BookingsService {
 
     this.eventEmitter.emit(BOOKING_EVENTS.STARTED, new BookingStartedEvent(updatedBooking));
 
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.IN_PROGRESS, {
+      changedBy: booking.nanny_id,
+      actorRole: "nanny",
+    });
+
     return updatedBooking;
   }
 
@@ -478,10 +491,14 @@ export class BookingsService {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
 
+    const nextStatus =
+      booking.status === BookingStatus.CONFIRMED
+        ? BookingStatus.EXPIRED
+        : BookingStatus.PARENT_NO_SHOW; // Adaptive status
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW, // Adaptive status
+        status: nextStatus,
         cancellation_reason: reason,
       },
     });
@@ -490,6 +507,11 @@ export class BookingsService {
       BOOKING_EVENTS.CANCELLED,
       new BookingCancelledEvent(updatedBooking, reason),
     );
+
+    await this.bookingStatusLog.writeLog(null, id, booking.status, nextStatus, {
+      actorRole: "system",
+      reason,
+    });
 
     return updatedBooking;
   }
@@ -550,6 +572,11 @@ export class BookingsService {
     });
 
     this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, new BookingCompletedEvent(updatedBooking, totalAmount));
+
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.COMPLETED, {
+      changedBy: booking.nanny_id,
+      actorRole: "nanny",
+    });
 
     // Auto-generate progress report for nanny (fire-and-forget, don't block completion)
     if (booking.nanny_id) {
@@ -706,6 +733,20 @@ export class BookingsService {
 
     this.eventEmitter.emit(BOOKING_EVENTS.CANCELLED, new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId));
 
+    const cancelActorRole = !cancelledByUserId
+      ? "system"
+      : cancelledByUserId === booking.parent_id
+        ? "parent"
+        : cancelledByUserId === booking.nanny_id
+          ? "nanny"
+          : "admin";
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.CANCELLED, {
+      changedBy: cancelledByUserId ?? null,
+      actorRole: cancelActorRole,
+      reason,
+      metadata: { cancellation_fee_status: feeStatus },
+    });
+
     return updatedBooking;
   }
 
@@ -816,6 +857,10 @@ export class BookingsService {
         where: { id: booking.id },
         data: { status: BookingStatus.COMPLETED, actual_end_time: now },
       });
+      await this.bookingStatusLog.writeLog(null, booking.id, booking.status, BookingStatus.COMPLETED, {
+        actorRole: "system",
+        reason: "Auto-completed (fallback after pipeline error)",
+      });
     }
   }
 
@@ -867,6 +912,13 @@ export class BookingsService {
       new BookingCancelledEvent(updatedBooking, reason, reportingUserId),
     );
   }
+
+  await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.CANCELLED, {
+    changedBy: reportingUserId,
+    actorRole: isNannyReporting ? "nanny" : "parent",
+    reason: `No-show reported: ${reason}`,
+    metadata: { noshow_tag: noShowTag },
+  });
 
   return updatedBooking;
 }
