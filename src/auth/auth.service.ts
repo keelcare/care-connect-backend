@@ -59,6 +59,15 @@ export class AuthService {
   }
 
   async login(user: any) {
+    // Accounts in the 30-day deletion window are locked. Recovery is
+    // support-only (see UsersService.deleteMe), so refuse to issue a session
+    // rather than hand back a token every guarded endpoint would then reject.
+    if (user.deleted_at) {
+      throw new UnauthorizedException(
+        "This account is scheduled for deletion. Contact support to restore it.",
+      );
+    }
+
     const payload = {
       email: user.email,
       sub: user.id,

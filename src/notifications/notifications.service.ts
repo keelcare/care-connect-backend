@@ -125,7 +125,7 @@ export class NotificationsService {
 
   async sendToAllNannies(title: string, message: string) {
     const nannies = await this.prisma.users.findMany({
-      where: { role: "nanny" },
+      where: { role: "nanny", is_active: true, deleted_at: null },
       select: { id: true },
     });
 

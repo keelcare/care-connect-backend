@@ -390,6 +390,13 @@ model users {
   is_active                                              Boolean?                     @default(true)
   refresh_token_hash                                     String?                      @db.VarChar(255)
   verification_rejection_reason                          String?
+  /// Soft delete: set when the user requests account deletion. The account is
+  /// deactivated (is_active=false) and PII retained but locked for 30 days, then
+  /// permanently purged by the daily cleanup cron. Cleared on admin/support restore.
+  deleted_at                                             DateTime?                    @db.Timestamptz(6)
+  /// Set once the 48-hour pre-erasure notice (DPDP Rules 2025) has been sent, so
+  /// the purge cron does not notify the same pending-deletion user repeatedly.
+  deletion_notice_sent_at                                DateTime?                    @db.Timestamptz(6)
   fcm_token                                              String?                      @db.VarChar(255)
   /// 'ios' (raw APNs token) or 'android' (FCM registration token) — routes push delivery
   push_platform                                          String?                      @db.VarChar(10)
@@ -695,6 +702,10 @@ model children {
   school_details    Json?
   learning_goals    String[]           @default([])
   metadata          Json? // extended profile: hobbies, bedtime, personality_notes, medical_notes, allergy_severity, nap_schedule, report_url
+  /// Soft delete: set when a parent removes a child. The row is hidden from all
+  /// reads for 30 days (recoverable from "Recently removed"), then hard-deleted
+  /// by the daily cleanup cron. Cleared on restore.
+  deleted_at        DateTime?          @db.Timestamptz(6)
   created_at        DateTime?          @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
   booking_children  booking_children[]

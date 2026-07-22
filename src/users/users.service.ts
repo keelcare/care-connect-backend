@@ -116,6 +116,9 @@ export class UsersService {
     const nannies = await this.prisma.users.findMany({
       where: {
         role: "nanny",
+        // Exclude deactivated and pending-deletion accounts from discovery.
+        is_active: true,
+        deleted_at: null,
         // identity_verification_status: "verified", // Relaxed for testing
       },
       include: {
@@ -176,6 +179,7 @@ export class UsersService {
         nanny_details: true,
         nanny_onboarding_details: true,
         children: {
+          where: { deleted_at: null },
           orderBy: { created_at: "desc" },
         },
       },
@@ -499,39 +503,28 @@ export class UsersService {
       }
     }
 
-    // 2. Anonymise PII
-    const deletedEmail = `deleted-${user.id}@keel.dev`;
+    // 2. Soft delete: deactivate the account and start the 30-day retention
+    //    window. PII is retained (but locked, since is_active=false) so the
+    //    account can be restored by support within 30 days; the daily cleanup
+    //    cron permanently anonymises/purges it once the window elapses.
+    //    Only session/push credentials are cleared, to force the user out.
+    await this.prisma.users.update({
+      where: { id: userId },
+      data: {
+        is_active: false,
+        deleted_at: new Date(),
+        deletion_notice_sent_at: null,
+        oauth_access_token: null,
+        oauth_refresh_token: null,
+        fcm_token: null,
+        refresh_token_hash: null,
+      },
+    });
 
-    await this.prisma.$transaction([
-      this.prisma.users.update({
-        where: { id: userId },
-        data: {
-          email: deletedEmail,
-          is_active: false,
-          oauth_provider: null,
-          oauth_provider_id: null,
-          oauth_access_token: null,
-          oauth_refresh_token: null,
-          password_hash: null,
-          fcm_token: null,
-          refresh_token_hash: null,
-        },
-      }),
-      this.prisma.profiles.update({
-        where: { user_id: userId },
-        data: {
-          first_name: "Deleted",
-          last_name: "User",
-          phone: null,
-          address: null,
-          profile_image_url: null,
-          lat: null,
-          lng: null,
-        },
-      }),
-    ]);
-
-    return { message: "Account deleted and data anonymised successfully" };
+    return {
+      message:
+        "Account scheduled for deletion. It will be permanently deleted after 30 days. Contact support within 30 days to cancel.",
+    };
   }
 
   /**

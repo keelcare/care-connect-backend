@@ -25,6 +25,18 @@ export class FamilyController {
     return this.familyService.findAll(req.user.id);
   }
 
+  // Children removed within the 30-day retention window, for the
+  // "Recently removed" section. Declared before any ":id" route.
+  @Get("recently-removed")
+  async findRecentlyRemoved(@Request() req) {
+    return this.familyService.findRecentlyRemoved(req.user.id);
+  }
+
+  @Post(":id/restore")
+  async restore(@Param("id") id: string, @Request() req) {
+    return this.familyService.restore(id, req.user.id);
+  }
+
   @Post()
   async create(@Body() dto: CreateChildDto, @Request() req) {
     return this.familyService.create(req.user.id, dto);

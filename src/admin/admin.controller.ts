@@ -83,6 +83,12 @@ export class AdminController {
     return this.adminService.unbanUser(userId, req.user.id, getClientIp(req));
   }
 
+  // Support-initiated recovery of an account within its 30-day deletion window.
+  @Put("users/:id/restore")
+  async restoreUser(@Param("id") userId: string, @Req() req: any) {
+    return this.adminService.restoreUser(userId, req.user.id, getClientIp(req));
+  }
+
   // Category Request Management
   @Get("category-requests")
   async getCategoryRequests(@Query("status") status?: string) {
