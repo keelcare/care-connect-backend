@@ -59,6 +59,15 @@ export class AuthService {
   }
 
   async login(user: any) {
+    // Accounts in the 30-day deletion window are locked. Recovery is
+    // support-only (see UsersService.deleteMe), so refuse to issue a session
+    // rather than hand back a token every guarded endpoint would then reject.
+    if (user.deleted_at) {
+      throw new UnauthorizedException(
+        "This account is scheduled for deletion. Contact support to restore it.",
+      );
+    }
+
     const payload = {
       email: user.email,
       sub: user.id,
@@ -340,14 +349,16 @@ export class AuthService {
       user = await this.usersService.findUserForAuth(googleUser.email);
 
       if (user) {
-        // Link account
-        user = await this.usersService.update(user.id, {
+        // Link account. This goes through update()'s Prisma-input branch, which
+        // returns the full user row; assert the declared type since update()'s
+        // union return now also includes the sanitised findOne() shape.
+        user = (await this.usersService.update(user.id, {
           oauth_provider: "google",
           oauth_provider_id: googleUser.oauth_provider_id,
           oauth_access_token: googleUser.oauth_access_token,
           oauth_refresh_token: googleUser.oauth_refresh_token,
           is_verified: true,
-        });
+        })) as typeof user;
       } else {
         // Create new user with profile
         user = await this.usersService.create({

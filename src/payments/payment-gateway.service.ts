@@ -44,6 +44,39 @@ export class PaymentGatewayService {
     }
   }
 
+  /**
+   * Look up an order we previously created. Returns null when the order is
+   * unknown to the current key — which is what happens to orders created under
+   * a rotated or test/live-swapped key. Those must never be handed back to
+   * checkout: it rejects them as an unexplained "Payment Failed" and the parent
+   * has no way out.
+   */
+  async fetchOrder(orderId: string): Promise<{
+    id: string;
+    status: string;
+    amount: number;
+    currency: string;
+  } | null> {
+    if (!this.razorpay) {
+      throw new BadRequestException("Payment gateway is not configured");
+    }
+    try {
+      const order: any = await this.razorpay.orders.fetch(orderId);
+      return {
+        id: order.id,
+        status: order.status,
+        amount: Number(order.amount),
+        currency: order.currency,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Could not fetch Razorpay order ${orderId}; treating as unusable`,
+        error,
+      );
+      return null;
+    }
+  }
+
   verifySignature(
     orderId: string,
     paymentId: string,

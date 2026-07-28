@@ -51,8 +51,8 @@ export class AssignmentsService {
     });
   }
 
-  async findOne(id: string) {
-    return this.prisma.assignments.findUnique({
+  async findOne(id: string, userId: string, role: string) {
+    const assignment = await this.prisma.assignments.findUnique({
       where: { id },
       include: {
         service_requests: {
@@ -60,6 +60,17 @@ export class AssignmentsService {
         },
       },
     });
+
+    if (!assignment) throw new NotFoundException("Assignment not found");
+
+    // Scope the read to the assigned nanny, the request's parent, or an admin.
+    // Return NotFound for anyone else so the assignment isn't enumerable.
+    const isNanny = assignment.nanny_id === userId;
+    const isParent = assignment.service_requests?.parent_id === userId;
+    if (!isNanny && !isParent && role !== "admin") {
+      throw new NotFoundException("Assignment not found");
+    }
+    return assignment;
   }
 
   async accept(id: string, nannyId: string) {

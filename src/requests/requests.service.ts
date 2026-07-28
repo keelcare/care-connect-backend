@@ -19,6 +19,7 @@ import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { PricingEngineService } from "../common/pricing.service";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
+import { AddressesService } from "../addresses/addresses.service";
 
 import { CATEGORY_SKILL_MAP } from "../constants";
 
@@ -34,22 +35,26 @@ export class RequestsService {
     private mailService: MailService,
     private availabilityService: AvailabilityService,
     private pricingService: PricingEngineService,
+    private addressesService: AddressesService,
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
     this.logger.debug(`Creating Request for parent ${parentId}: category=${createRequestDto.category}, date=${createRequestDto.date}`);
 
-    // 1. Get parent profile for location
+    // 1. Get the session's location — the address the parent picked for this
+    // booking, else their default saved address, falling back to the legacy
+    // profiles.lat/lng for any not-yet-backfilled case.
+    const selectedAddress = await this.addressesService.resolveForUser(
+      parentId,
+      createRequestDto.address_id,
+    );
     const parent = await this.usersService.findOne(parentId);
-    if (
-      !parent ||
-      !parent.profiles ||
-      !parent.profiles.lat ||
-      !parent.profiles.lng
-    ) {
-      this.logger.warn(`Parent profile incomplete for ${parentId}`);
+    const lat = selectedAddress?.lat ?? parent?.profiles?.lat;
+    const lng = selectedAddress?.lng ?? parent?.profiles?.lng;
+    if (!parent || !lat || !lng) {
+      this.logger.warn(`Parent has no saved address for ${parentId}`);
       throw new BadRequestException(
-        "Parent profile incomplete. Address and location required.",
+        "Add a saved address before requesting a caregiver.",
       );
     }
 
@@ -90,13 +95,12 @@ export class RequestsService {
               children_ages: createRequestDto.children_ages || [],
               special_requirements: createRequestDto.special_requirements,
               required_skills: createRequestDto.required_skills || [],
-              location_lat: parent.profiles.lat,
-              location_lng: parent.profiles.lng,
+              location_lat: lat,
+              location_lng: lng,
               category: createRequestDto.category,
               status: "pending",
               plan_type: createRequestDto.plan_type || "ONE_TIME",
               plan_duration_months: createRequestDto.plan_duration_months || 1,
-              discount_percentage: createRequestDto.discount_percentage || 0,
               sessions_per_month: createRequestDto.sessions_per_month || null,
             } as any,
           });
@@ -104,7 +108,6 @@ export class RequestsService {
           const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
             createRequestDto.category,
             Number(createRequestDto.duration_hours),
-            Number(createRequestDto.discount_percentage || 0),
             Number(createRequestDto.plan_duration_months || 1),
             createRequestDto.plan_type || "ONE_TIME",
             createRequestDto.sessions_per_month,
@@ -785,7 +788,6 @@ export class RequestsService {
     const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
       request.category || "CC",
       Number(request.duration_hours || 0),
-      Number(request["discount_percentage"] || 0),
       Number(request["plan_duration_months"] || 1),
       request["plan_type"] || "ONE_TIME",
       request["sessions_per_month"],
@@ -940,7 +942,6 @@ export class RequestsService {
       const { totalAmount } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        Number(req["discount_percentage"] || 0),
         Number(req["plan_duration_months"] || 1),
         req["plan_type"] || "ONE_TIME",
         req["sessions_per_month"],

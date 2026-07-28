@@ -23,12 +23,33 @@ export class FamilyService {
     return Object.keys(meta).length ? meta : undefined;
   }
 
+  /** How long a soft-deleted child is recoverable before the cron purges it. */
+  static readonly RETENTION_DAYS = 30;
+
   async findAll(parentId: string) {
     const rows = await this.prisma.children.findMany({
-      where: { parent_id: parentId },
+      where: { parent_id: parentId, deleted_at: null },
       orderBy: { created_at: "desc" },
     });
     // Merge metadata into the top-level response so frontend receives flat fields
+    return rows.map((c) => this.mergeMetadata(c));
+  }
+
+  /**
+   * Children the parent removed within the retention window, newest first.
+   * Backs the "Recently removed" section so removals can be undone for 30 days.
+   */
+  async findRecentlyRemoved(parentId: string) {
+    const cutoff = new Date(
+      Date.now() - FamilyService.RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const rows = await this.prisma.children.findMany({
+      where: {
+        parent_id: parentId,
+        deleted_at: { not: null, gte: cutoff },
+      },
+      orderBy: { deleted_at: "desc" },
+    });
     return rows.map((c) => this.mergeMetadata(c));
   }
 
@@ -66,8 +87,8 @@ export class FamilyService {
   }
 
   async update(id: string, parentId: string, dto: UpdateChildDto) {
-    const child = await this.prisma.children.findUnique({
-      where: { id },
+    const child = await this.prisma.children.findFirst({
+      where: { id, deleted_at: null },
       select: { parent_id: true, metadata: true },
     });
 
@@ -107,15 +128,40 @@ export class FamilyService {
   }
 
   async remove(id: string, parentId: string) {
-    const child = await this.prisma.children.findUnique({
-      where: { id },
+    const child = await this.prisma.children.findFirst({
+      where: { id, deleted_at: null },
       select: { parent_id: true },
     });
 
     if (!child) throw new NotFoundException(`Child ${id} not found`);
     if (child.parent_id !== parentId) throw new ForbiddenException("Permission denied");
 
-    await this.prisma.children.delete({ where: { id } });
+    // Soft delete: hide the child for 30 days (recoverable from "Recently
+    // removed"), keeping past bookings intact. The daily cleanup cron
+    // hard-deletes rows whose retention window has elapsed.
+    await this.prisma.children.update({
+      where: { id },
+      data: { deleted_at: new Date(), updated_at: new Date() },
+    });
     return { success: true };
+  }
+
+  async restore(id: string, parentId: string) {
+    const cutoff = new Date(
+      Date.now() - FamilyService.RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const child = await this.prisma.children.findFirst({
+      where: { id, deleted_at: { not: null, gte: cutoff } },
+      select: { parent_id: true },
+    });
+
+    if (!child) throw new NotFoundException(`Child ${id} not found`);
+    if (child.parent_id !== parentId) throw new ForbiddenException("Permission denied");
+
+    const row = await this.prisma.children.update({
+      where: { id },
+      data: { deleted_at: null, updated_at: new Date() },
+    });
+    return this.mergeMetadata(row);
   }
 }

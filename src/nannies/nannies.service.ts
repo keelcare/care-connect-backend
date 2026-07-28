@@ -5,6 +5,8 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateCategoryRequestDto } from "./dto/create-category-request.dto";
+import { TimeUtils } from "../common/utils/time.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 // Date helpers (no external dep needed)
 function startOfDay(d: Date): Date { const r = new Date(d); r.setHours(0,0,0,0); return r; }
 function endOfDay(d: Date): Date { const r = new Date(d); r.setHours(23,59,59,999); return r; }
@@ -122,15 +124,20 @@ export class NanniesService {
   // ─── Dashboard summary ───────────────────────────────────────────
 
   async getDashboardSummary(nannyId: string) {
-    const todayStart = startOfDay(new Date());
-    const todayEnd = endOfDay(new Date());
+    const todayStart = TimeUtils.startOfDayIST();
+    const todayEnd = TimeUtils.endOfDayIST();
 
-    // Today's bookings
+    // Today's bookings, plus any session currently under way. A session that began
+    // before today's window (an overnight or long booking) is still what the nanny
+    // is doing right now, so it must not fall off the dashboard.
     const todayBookings = await this.prisma.bookings.findMany({
       where: {
         nanny_id: nannyId,
-        start_time: { gte: todayStart, lte: todayEnd },
         status: { not: "CANCELLED" },
+        OR: [
+          { start_time: { gte: todayStart, lte: todayEnd } },
+          { status: BookingStatus.IN_PROGRESS },
+        ],
       },
       include: {
         service_requests: { select: { category: true, num_children: true } },

@@ -6,6 +6,7 @@ import { SupabaseStorageService } from "../supabase-storage/supabase-storage.ser
 import { Prisma } from "@prisma/client";
 import { users, profiles } from "@prisma/client";
 import { UpdateUserDto } from "./dto/update-user.dto";
+import { AddressesService } from "../addresses/addresses.service";
 
 @Injectable()
 export class UsersService {
@@ -16,6 +17,7 @@ export class UsersService {
     private notificationsService: NotificationsService,
     private encryptionService: EncryptionService,
     private storageService: SupabaseStorageService,
+    private addressesService: AddressesService,
   ) { }
 
   private decryptOnboardingDetails<T extends { nanny_onboarding_details?: any }>(
@@ -116,6 +118,9 @@ export class UsersService {
     const nannies = await this.prisma.users.findMany({
       where: {
         role: "nanny",
+        // Exclude deactivated and pending-deletion accounts from discovery.
+        is_active: true,
+        deleted_at: null,
         // identity_verification_status: "verified", // Relaxed for testing
       },
       include: {
@@ -176,6 +181,7 @@ export class UsersService {
         nanny_details: true,
         nanny_onboarding_details: true,
         children: {
+          where: { deleted_at: null },
           orderBy: { created_at: "desc" },
         },
       },
@@ -219,6 +225,19 @@ export class UsersService {
 
     this.decryptOnboardingDetails(user);
 
+    // Exclude sensitive fields (mirror findMe / findAllNannies)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const {
+      password_hash,
+      oauth_access_token,
+      oauth_refresh_token,
+      verification_token,
+      reset_password_token,
+      verification_token_expires,
+      reset_password_token_expires,
+      ...result
+    } = user;
+
     // If user is a nanny, include average rating
     if (user.role === "nanny") {
       const reviews = await this.prisma.reviews.findMany({
@@ -237,13 +256,13 @@ export class UsersService {
           : null;
 
       return {
-        ...user,
+        ...result,
         averageRating,
         totalReviews,
       };
     }
 
-    return user;
+    return result;
   }
 
   async findFullUserById(id: string) {
@@ -343,6 +362,29 @@ export class UsersService {
             profile_image_url: profileImageUrl,
           },
         });
+
+        // Keep the new multi-address table in sync with legacy single-address
+        // writes (e.g. from CareConnect web, which only knows about `profiles`).
+        // `label` is a short tag (Home/Work/…), never the free-text
+        // `locationAddress`, which would overflow the column.
+        if (address && lat != null && lng != null) {
+          const defaultAddress = await this.addressesService.getDefault(id);
+          if (defaultAddress) {
+            await this.addressesService.update(id, defaultAddress.id, {
+              address,
+              lat,
+              lng,
+            });
+          } else {
+            await this.addressesService.create(id, {
+              label: "Home",
+              address,
+              lat,
+              lng,
+              isDefault: true,
+            });
+          }
+        }
       }
 
       // Update nanny details if provided
@@ -403,10 +445,10 @@ export class UsersService {
     return { profileImageUrl: url };
   }
 
-  async updatePushToken(id: string, token: string) {
+  async updatePushToken(id: string, token: string, platform?: string) {
     return this.prisma.users.update({
       where: { id },
-      data: { fcm_token: token },
+      data: { fcm_token: token, ...(platform ? { push_platform: platform } : {}) },
     });
   }
 
@@ -463,39 +505,28 @@ export class UsersService {
       }
     }
 
-    // 2. Anonymise PII
-    const deletedEmail = `deleted-${user.id}@keel.dev`;
+    // 2. Soft delete: deactivate the account and start the 30-day retention
+    //    window. PII is retained (but locked, since is_active=false) so the
+    //    account can be restored by support within 30 days; the daily cleanup
+    //    cron permanently anonymises/purges it once the window elapses.
+    //    Only session/push credentials are cleared, to force the user out.
+    await this.prisma.users.update({
+      where: { id: userId },
+      data: {
+        is_active: false,
+        deleted_at: new Date(),
+        deletion_notice_sent_at: null,
+        oauth_access_token: null,
+        oauth_refresh_token: null,
+        fcm_token: null,
+        refresh_token_hash: null,
+      },
+    });
 
-    await this.prisma.$transaction([
-      this.prisma.users.update({
-        where: { id: userId },
-        data: {
-          email: deletedEmail,
-          is_active: false,
-          oauth_provider: null,
-          oauth_provider_id: null,
-          oauth_access_token: null,
-          oauth_refresh_token: null,
-          password_hash: null,
-          fcm_token: null,
-          refresh_token_hash: null,
-        },
-      }),
-      this.prisma.profiles.update({
-        where: { user_id: userId },
-        data: {
-          first_name: "Deleted",
-          last_name: "User",
-          phone: null,
-          address: null,
-          profile_image_url: null,
-          lat: null,
-          lng: null,
-        },
-      }),
-    ]);
-
-    return { message: "Account deleted and data anonymised successfully" };
+    return {
+      message:
+        "Account scheduled for deletion. It will be permanently deleted after 30 days. Contact support within 30 days to cancel.",
+    };
   }
 
   /**

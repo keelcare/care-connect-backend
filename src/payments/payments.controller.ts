@@ -20,6 +20,7 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 import { PaymentsService } from "./payments.service";
 import { CreateOrderDto, VerifyPaymentDto } from "./dto/create-payment.dto";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
+import { ParentTransactionsQueryDto } from "./dto/parent-transactions-query.dto";
 
 @ApiTags("Payments")
 @Controller("payments")
@@ -44,8 +45,8 @@ export class PaymentsController {
     status: 201,
     description: "New order created successfully for retry",
   })
-  async retryOrder(@Param("bookingId") bookingId: string) {
-    return this.paymentsService.retryOrder(bookingId);
+  async retryOrder(@Req() req: any, @Param("bookingId") bookingId: string) {
+    return this.paymentsService.retryOrder(bookingId, req.user.id);
   }
 
   @Post("verify")
@@ -163,6 +164,28 @@ export class PaymentsController {
   })
   async getPaymentPlans(@Req() req: any) {
     return this.paymentsService.getPaymentPlans(req.user.id);
+  }
+
+  @Get("transactions")
+  @Roles(UserRole.PARENT)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @ApiOperation({
+    summary:
+      "Get every payment the authenticated parent made, including charges not tied to a billing cycle",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Transaction history fetched successfully",
+  })
+  async getParentTransactions(
+    @Req() req: any,
+    @Query() query: ParentTransactionsQueryDto,
+  ) {
+    return this.paymentsService.getParentTransactions(
+      req.user.id,
+      query.page,
+      query.pageSize,
+    );
   }
 
   @Post("refund/:paymentId")

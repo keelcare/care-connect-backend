@@ -90,7 +90,6 @@ export class AdminService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        Number((req as any).discount_percentage || 0),
         Number((req as any).plan_duration_months || 1),
         (req as any).plan_type || "ONE_TIME",
         (req as any).sessions_per_month,
@@ -188,7 +187,6 @@ export class AdminService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         req.category || "CC",
         Number(req.duration_hours),
-        0,
         Number(req.plan_duration_months || 1),
         req.plan_type || "ONE_TIME",
         req.sessions_per_month || req.bookings.length,
@@ -631,6 +629,11 @@ export class AdminService {
             where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },
             data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED }
           });
+          // The plan goes live only now that someone is serving it.
+          await tx.recurring_service_requests.update({
+            where: { id: requestId },
+            data: { status: "active" },
+          });
         } else if (bookingId) {
           await tx.bookings.update({
             where: { id: bookingId },
@@ -1012,6 +1015,46 @@ export class AdminService {
       await this.auditService.logAction({
         adminId,
         action: "UNBAN_USER",
+        targetType: "user",
+        targetId: userId,
+        ipAddress,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Support-initiated recovery of an account inside its 30-day deletion window.
+   * Refuses once the window has elapsed or the account has already been purged
+   * (email anonymised), since the PII needed to restore no longer exists.
+   */
+  async restoreUser(userId: string, adminId?: string, ipAddress?: string) {
+    const RETENTION_DAYS = 30;
+    const user = await this.prisma.users.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found");
+    if (!user.deleted_at) {
+      throw new BadRequestException("Account is not scheduled for deletion");
+    }
+    const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const alreadyPurged = user.email?.startsWith("deleted-");
+    if (alreadyPurged || user.deleted_at < cutoff) {
+      throw new BadRequestException(
+        "The 30-day recovery window has elapsed; this account can no longer be restored",
+      );
+    }
+
+    const result = await this.prisma.users.update({
+      where: { id: userId },
+      data: {
+        is_active: true,
+        deleted_at: null,
+        deletion_notice_sent_at: null,
+      },
+    });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "RESTORE_USER",
         targetType: "user",
         targetId: userId,
         ipAddress,

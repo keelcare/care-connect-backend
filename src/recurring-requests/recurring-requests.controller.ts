@@ -7,6 +7,7 @@ import {
   Get,
   Param,
   Query,
+  Delete,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -44,19 +45,40 @@ export class RecurringRequestsController {
 
   @Get(":id")
   @ApiOperation({ summary: "Get a specific recurring request by ID" })
-  findOne(@Param("id") id: string) {
-    return this.recurringRequestsService.findOne(id);
+  findOne(@Param("id") id: string, @Request() req) {
+    return this.recurringRequestsService.findOne(id, req.user.id, req.user.role);
+  }
+
+  @Delete(":id")
+  @ApiOperation({
+    summary:
+      "Cancel a recurring plan (parent only). Ends the series and cancels all future unstarted sessions.",
+  })
+  @ApiResponse({ status: 200, description: "Plan cancelled successfully" })
+  cancel(
+    @Request() req,
+    @Param("id") id: string,
+    @Body("reason") reason?: string,
+  ) {
+    return this.recurringRequestsService.cancel(id, req.user.id, reason);
   }
 
   @Get(":id/bookings")
   @ApiOperation({ summary: "Get paginated bookings for a recurring request" })
   findBookings(
+    @Request() req,
     @Param("id") id: string,
     @Query("page") page: string,
     @Query("limit") limit: string
   ) {
     const pageNum = page ? parseInt(page, 10) : 1;
     const limitNum = limit ? parseInt(limit, 10) : 10;
-    return this.recurringRequestsService.findBookingsForRequest(id, pageNum, limitNum);
+    return this.recurringRequestsService.findBookingsForRequest(
+      id,
+      pageNum,
+      limitNum,
+      req.user.id,
+      req.user.role,
+    );
   }
 }

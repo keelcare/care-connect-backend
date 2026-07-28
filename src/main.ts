@@ -18,8 +18,18 @@ async function bootstrap() {
   app.useGlobalFilters(new ThrottleExceptionFilter());
 
   // API versioning — all routes now live under /v1/*
-  // Exemptions: health check at /health (no version prefix needed for uptime monitors)
-  app.setGlobalPrefix('v1', { exclude: ['health', 'ready', ''] });
+  // Exemptions: health check at /health (no version prefix needed for uptime
+  // monitors) and the .well-known files, which iOS/Android fetch from the
+  // domain root for Universal/App Link verification.
+  app.setGlobalPrefix('v1', {
+    exclude: [
+      'health',
+      'ready',
+      '',
+      '.well-known/apple-app-site-association',
+      '.well-known/assetlinks.json',
+    ],
+  });
 
   app.use(cookieParser());
 
@@ -108,6 +118,7 @@ async function bootstrap() {
         allowedOriginsSet.has(origin) ||
         origin.startsWith("capacitor://") ||
         origin.startsWith("keel://") ||
+        origin.startsWith("keelcarepartner://") ||
         origin.startsWith("careconnect://")
       ) {
         callback(null, true);

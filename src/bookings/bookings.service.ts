@@ -11,6 +11,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { Pagination, paginate } from "../common/utils/pagination.util";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PaymentsService } from "../payments/payments.service";
+import { BookingStatusLogService } from "./booking-status-log.service";
 import { GeoUtils } from "../common/utils/geo.utils";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import {
@@ -31,6 +32,7 @@ import {
   BOOKING_IN_PROGRESS_MAX_MS,
   PROGRESS_REPORT_DUE_HOURS,
 } from "../common/constants/constants";
+import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import { Prisma } from "@prisma/client";
 
 
@@ -46,6 +48,7 @@ export class BookingsService {
     private paymentsService: PaymentsService,
     @Inject(forwardRef(() => ProgressReportsService))
     private progressReportsService: ProgressReportsService,
+    private bookingStatusLog: BookingStatusLogService,
   ) { }
 
   async createBooking(
@@ -118,6 +121,12 @@ export class BookingsService {
     // Emit event - side effects (Chat, Notifications, Mail, SSE) are handled by listeners
     this.eventEmitter.emit(BOOKING_EVENTS.CREATED, new BookingCreatedEvent(booking));
 
+    await this.bookingStatusLog.writeLog(null, booking.id, null, BookingStatus.CONFIRMED, {
+      changedBy: parentId,
+      actorRole: "parent",
+      reason: "Booking created",
+    });
+
     return booking;
   }
 
@@ -158,21 +167,46 @@ export class BookingsService {
         (1000 * 60 * 60)
         : 0;
 
-    const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-      booking.service_requests?.category || "CC",
-      durationHours > 0
-        ? durationHours
-        : Number(booking.service_requests?.duration_hours || 0),
-      Number(booking.service_requests?.["discount_percentage"] || 0),
-      Number(booking.service_requests?.["plan_duration_months"] || 1),
-      booking.service_requests?.["plan_type"] || "ONE_TIME",
-      booking.service_requests?.["sessions_per_month"] || 1,
-    );
+    const { totalAmount, appliedRate, subtotalAmount, gstAmount, gstPercent } =
+      await this.pricingService.calculateCost(
+        booking.service_requests?.category || "CC",
+        durationHours > 0
+          ? durationHours
+          : Number(booking.service_requests?.duration_hours || 0),
+        Number(booking.service_requests?.["plan_duration_months"] || 1),
+        booking.service_requests?.["plan_type"] || "ONE_TIME",
+        booking.service_requests?.["sessions_per_month"] || 1,
+      );
+
+    // The request only snapshots coordinates; recover the address text the
+    // parent actually entered by matching them back to their saved addresses
+    // (soft-deleted included — removing an address must not blank out history).
+    let serviceAddress: { label: string; address: string } | null = null;
+    const reqLat = booking.service_requests?.location_lat;
+    const reqLng = booking.service_requests?.location_lng;
+    if (reqLat != null && reqLng != null) {
+      const saved = await this.prisma.addresses.findFirst({
+        where: { user_id: booking.parent_id, lat: reqLat, lng: reqLng },
+        orderBy: { created_at: "desc" },
+        select: { label: true, address: true },
+      });
+      if (saved) serviceAddress = saved;
+    }
+    if (!serviceAddress && parentProfile?.address) {
+      serviceAddress = { label: "Home", address: parentProfile.address };
+    }
 
     return {
       ...booking,
       hourly_rate: appliedRate,
       total_amount: totalAmount,
+      subtotal_amount: subtotalAmount,
+      gst_amount: gstAmount,
+      gst_percent: gstPercent,
+      payment_status: await this.derivePaymentStatus(booking.id),
+      service_address: serviceAddress,
+      service_location_lat: reqLat != null ? Number(reqLat) : null,
+      service_location_lng: reqLng != null ? Number(reqLng) : null,
       title:
         (booking.jobs?.title ||
           (booking.service_requests
@@ -183,11 +217,52 @@ export class BookingsService {
           : ""),
       nanny_name: nannyProfile
         ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-        : "Pending Assignment",
+        : "Finding your match",
       parent_name: parentProfile
         ? `${parentProfile.first_name} ${parentProfile.last_name}`
         : "Parent",
     };
+  }
+
+  /**
+   * Payment state of a booking as the parent understands it. There is no
+   * payment_status column — the client-facing value is derived from the
+   * `payments` rows. The manual_pending placeholder written on completion
+   * records a payout obligation, not a charge the parent made, so it never
+   * counts as paid.
+   */
+  async derivePaymentStatus(
+    bookingId: string,
+  ): Promise<"paid" | "failed" | "refunded" | "unpaid"> {
+    const rows = await this.prisma.payments.findMany({
+      where: {
+        booking_id: bookingId,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+      },
+      select: { status: true },
+    });
+    return this.paymentStatusFromRows(rows.map((r) => r.status ?? ""));
+  }
+
+  /**
+   * Order-independent: every checkout attempt inserts a `created` row, so an
+   * abandoned attempt AFTER a successful charge must not flip a paid booking
+   * back to unpaid. A capture anywhere in the history wins; a refund means the
+   * money went back; a failure is retryable; anything else is simply unpaid.
+   */
+  private paymentStatusFromRows(
+    statuses: string[],
+  ): "paid" | "failed" | "refunded" | "unpaid" {
+    if (
+      statuses.some(
+        (s) => s === PaymentStatus.CAPTURED || s === PaymentStatus.PENDING_RELEASE,
+      )
+    ) {
+      return "paid";
+    }
+    if (statuses.some((s) => s === PaymentStatus.REFUNDED)) return "refunded";
+    if (statuses.some((s) => s === PaymentStatus.FAILED)) return "failed";
+    return "unpaid";
   }
 
   async getBookingsByParent(parentId: string, pagination?: Pagination) {
@@ -203,6 +278,9 @@ export class BookingsService {
           },
         },
         jobs: true,
+        // Cycle-billed bookings are settled per-cycle on the Payments screen,
+        // not per-booking — clients need to know which billing model applies.
+        payment_plans: { select: { id: true } },
         service_requests: {
           include: {
             assignments: {
@@ -217,6 +295,25 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
+    // Batched payment_status for the whole page — same order-independent
+    // semantics as derivePaymentStatus.
+    const paymentRows = await this.prisma.payments.findMany({
+      where: {
+        booking_id: { in: bookings.map((b) => b.id) },
+        provider: { not: MANUAL_PENDING_PROVIDER },
+      },
+      select: { booking_id: true, status: true },
+    });
+    const statusesByBooking = new Map<string, string[]>();
+    for (const row of paymentRows) {
+      if (!row.booking_id) continue;
+      const list = statusesByBooking.get(row.booking_id) ?? [];
+      list.push(row.status ?? "");
+      statusesByBooking.set(row.booking_id, list);
+    }
+    const statusOf = (bookingId: string) =>
+      this.paymentStatusFromRows(statusesByBooking.get(bookingId) ?? []);
+
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
       const nannyProfile = nanny?.profiles;
@@ -228,19 +325,24 @@ export class BookingsService {
           (1000 * 60 * 60)
           : Number(booking.service_requests?.duration_hours || 0);
 
-      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-        booking.service_requests?.category || "CC",
-        hours,
-        Number(booking.service_requests?.["discount_percentage"] || 0),
-        Number(booking.service_requests?.["plan_duration_months"] || 1),
-        booking.service_requests?.["plan_type"] || "ONE_TIME",
-        booking.service_requests?.["sessions_per_month"],
-      );
+      const { totalAmount, appliedRate, subtotalAmount, gstAmount, gstPercent } =
+        await this.pricingService.calculateCost(
+          booking.service_requests?.category || "CC",
+          hours,
+          Number(booking.service_requests?.["plan_duration_months"] || 1),
+          booking.service_requests?.["plan_type"] || "ONE_TIME",
+          booking.service_requests?.["sessions_per_month"],
+        );
 
       return {
         ...booking,
         hourly_rate: appliedRate,
         total_amount: totalAmount,
+        subtotal_amount: subtotalAmount,
+        gst_amount: gstAmount,
+        gst_percent: gstPercent,
+        payment_status: statusOf(booking.id),
+        has_payment_plan: !!booking.payment_plans,
         title:
           (booking.jobs?.title ||
             (booking.service_requests
@@ -251,7 +353,7 @@ export class BookingsService {
             : ""),
         nanny_name: nannyProfile
           ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-          : "Pending Assignment",
+          : "Finding your match",
         // Flatten the relationship for the frontend
         nanny: nanny ? {
           ...nanny,
@@ -291,7 +393,6 @@ export class BookingsService {
       const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
         booking.service_requests?.category || "CC",
         hours,
-        Number(booking.service_requests?.["discount_percentage"] || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
         booking.service_requests?.["sessions_per_month"],
@@ -378,6 +479,11 @@ export class BookingsService {
 
     this.eventEmitter.emit(BOOKING_EVENTS.STARTED, new BookingStartedEvent(updatedBooking));
 
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.IN_PROGRESS, {
+      changedBy: booking.nanny_id,
+      actorRole: "nanny",
+    });
+
     return updatedBooking;
   }
 
@@ -385,10 +491,14 @@ export class BookingsService {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
 
+    const nextStatus =
+      booking.status === BookingStatus.CONFIRMED
+        ? BookingStatus.EXPIRED
+        : BookingStatus.PARENT_NO_SHOW; // Adaptive status
     const updatedBooking = await this.prisma.bookings.update({
       where: { id },
       data: {
-        status: booking.status === BookingStatus.CONFIRMED ? BookingStatus.EXPIRED : BookingStatus.PARENT_NO_SHOW, // Adaptive status
+        status: nextStatus,
         cancellation_reason: reason,
       },
     });
@@ -397,6 +507,11 @@ export class BookingsService {
       BOOKING_EVENTS.CANCELLED,
       new BookingCancelledEvent(updatedBooking, reason),
     );
+
+    await this.bookingStatusLog.writeLog(null, id, booking.status, nextStatus, {
+      actorRole: "system",
+      reason,
+    });
 
     return updatedBooking;
   }
@@ -457,6 +572,11 @@ export class BookingsService {
     });
 
     this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, new BookingCompletedEvent(updatedBooking, totalAmount));
+
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.COMPLETED, {
+      changedBy: booking.nanny_id,
+      actorRole: "nanny",
+    });
 
     // Auto-generate progress report for nanny (fire-and-forget, don't block completion)
     if (booking.nanny_id) {
@@ -613,6 +733,20 @@ export class BookingsService {
 
     this.eventEmitter.emit(BOOKING_EVENTS.CANCELLED, new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId));
 
+    const cancelActorRole = !cancelledByUserId
+      ? "system"
+      : cancelledByUserId === booking.parent_id
+        ? "parent"
+        : cancelledByUserId === booking.nanny_id
+          ? "nanny"
+          : "admin";
+    await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.CANCELLED, {
+      changedBy: cancelledByUserId ?? null,
+      actorRole: cancelActorRole,
+      reason,
+      metadata: { cancellation_fee_status: feeStatus },
+    });
+
     return updatedBooking;
   }
 
@@ -670,7 +804,7 @@ export class BookingsService {
           : ""),
       nanny_name: nannyProfile
         ? `${nannyProfile.first_name} ${nannyProfile.last_name}`
-        : "Pending Assignment",
+        : "Finding your match",
       parent_name: parentProfile
         ? `${parentProfile.first_name} ${parentProfile.last_name}`
         : "Parent",
@@ -723,6 +857,10 @@ export class BookingsService {
         where: { id: booking.id },
         data: { status: BookingStatus.COMPLETED, actual_end_time: now },
       });
+      await this.bookingStatusLog.writeLog(null, booking.id, booking.status, BookingStatus.COMPLETED, {
+        actorRole: "system",
+        reason: "Auto-completed (fallback after pipeline error)",
+      });
     }
   }
 
@@ -774,6 +912,13 @@ export class BookingsService {
       new BookingCancelledEvent(updatedBooking, reason, reportingUserId),
     );
   }
+
+  await this.bookingStatusLog.writeLog(null, id, booking.status, BookingStatus.CANCELLED, {
+    changedBy: reportingUserId,
+    actorRole: isNannyReporting ? "nanny" : "parent",
+    reason: `No-show reported: ${reason}`,
+    metadata: { noshow_tag: noShowTag },
+  });
 
   return updatedBooking;
 }

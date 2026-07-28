@@ -27,3 +27,9 @@ export enum PaymentStatus {
   REFUNDED = "refunded",
   PENDING_RELEASE = "pending_release",
 }
+
+/**
+ * Provider on the placeholder `payments` row written when a booking completes with no
+ * payment attached. It records a payout obligation, not a charge the parent made.
+ */
+export const MANUAL_PENDING_PROVIDER = "manual_pending";

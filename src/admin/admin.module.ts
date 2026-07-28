@@ -12,6 +12,7 @@ import { RequestsModule } from "../requests/requests.module";
 import { DisputesModule } from "../disputes/disputes.module";
 import { MailModule } from "../mail/mail.module";
 import { AvailabilityModule } from "../availability/availability.module";
+import { BookingsModule } from "../bookings/bookings.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AvailabilityModule } from "../availability/availability.module";
     DisputesModule,
     MailModule,
     AvailabilityModule,
+    forwardRef(() => BookingsModule),
   ],
   controllers: [AdminController],
   providers: [AdminService, AdminAuditService],

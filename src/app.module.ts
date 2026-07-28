@@ -7,6 +7,7 @@ import { SentryModule, SentryGlobalFilter } from "@sentry/nestjs/setup";
 import { ScheduleModule } from "@nestjs/schedule";
 import { EventEmitterModule } from "@nestjs/event-emitter";
 import { AppController } from "./app.controller";
+import { WellKnownController } from "./well-known/well-known.controller";
 import { AppService } from "./app.service";
 import { AuthModule } from "./auth/auth.module";
 import { UsersModule } from "./users/users.module";
@@ -41,6 +42,8 @@ import { MailModule } from "./mail/mail.module";
 import { DisputesModule } from "./disputes/disputes.module";
 import { ProgressReportsModule } from "./progress-reports/progress-reports.module";
 import { RecurringRequestsModule } from './recurring-requests/recurring-requests.module';
+import { AddressesModule } from "./addresses/addresses.module";
+import { CallsModule } from "./calls/calls.module";
 
 @Module({
   imports: [
@@ -110,8 +113,10 @@ import { RecurringRequestsModule } from './recurring-requests/recurring-requests
     DisputesModule,
     ProgressReportsModule,
     RecurringRequestsModule,
+    AddressesModule,
+    CallsModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, WellKnownController],
   providers: [
     AppService,
     {

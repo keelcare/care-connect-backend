@@ -4,6 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsGateway } from "./notifications.gateway";
 import { FcmService } from "./fcm.service";
+import { PushService } from "./push.service";
 import { SseService } from "../sse/sse.service";
 
 describe("NotificationsService", () => {
@@ -38,6 +39,12 @@ describe("NotificationsService", () => {
           provide: FcmService,
           useValue: {
             sendPushNotification: jest.fn(),
+          },
+        },
+        {
+          provide: PushService,
+          useValue: {
+            send: jest.fn(),
           },
         },
         {

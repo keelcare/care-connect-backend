@@ -15,7 +15,7 @@ import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
-import { PaymentStatus } from "../constants";
+import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
 import {
@@ -69,6 +69,24 @@ export class PaymentsService {
       );
     }
 
+    // A one-off booking is charged exactly once — refuse a second order so a
+    // stale client screen or a double-tap can't double-charge. Cycle-billed
+    // plan bookings legitimately take one charge per cycle and are skipped.
+    if (!booking.payment_plans) {
+      const alreadyPaid = await this.prisma.payments.findFirst({
+        where: {
+          booking_id: bookingId,
+          provider: { not: MANUAL_PENDING_PROVIDER },
+          status: {
+            in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE],
+          },
+        },
+      });
+      if (alreadyPaid) {
+        throw new BadRequestException("This booking has already been paid.");
+      }
+    }
+
     const paymentPlan = booking.payment_plans;
     const cycleNumber = paymentPlan ? paymentPlan.cycles_completed + 1 : 1;
     
@@ -115,12 +133,59 @@ export class PaymentsService {
     });
 
     if (existingPayment) {
-      return {
-        orderId: existingPayment.order_id,
-        amount: Number(existingPayment.amount),
-        currency: existingPayment.currency,
-        key: this.configService.get("RAZORPAY_KEY_ID"),
-      };
+      // A stored order is only safe to replay if Razorpay still recognises it
+      // under the *current* key and it is still open for the amount we are
+      // charging now. An order that is unknown (key rotated), already paid, or
+      // priced differently makes checkout fail with a bare "Payment Failed -
+      // Unexpected Error", and since we would hand back the same dead order on
+      // every retry, the booking becomes permanently unpayable.
+      const rupees = Number(existingPayment.amount);
+      const expectedPaise = Math.round(rupees * RAZORPAY_PAISE_MULTIPLIER);
+      const liveOrder = await this.gateway.fetchOrder(existingPayment.order_id);
+      const reusable =
+        liveOrder !== null &&
+        (liveOrder.status === "created" || liveOrder.status === "attempted") &&
+        liveOrder.amount === expectedPaise &&
+        expectedPaise === amountInPaise;
+
+      if (reusable) {
+        // Must mirror the fresh-order shape exactly. amount is rupees for
+        // display; amount_due is paise for the Razorpay SDK — returning only
+        // rupees here made every retry send a mismatched amount to checkout.
+        return {
+          orderId: existingPayment.order_id,
+          order_id: existingPayment.order_id,
+          amount: rupees,
+          amount_due: expectedPaise,
+          // The column defaults to lowercase "inr"; checkout only accepts the
+          // ISO form and rejects anything else as an unexpected error.
+          currency: (existingPayment.currency ?? "INR").toUpperCase(),
+          key: this.configService.get("RAZORPAY_KEY_ID"),
+          key_id: this.configService.get("RAZORPAY_KEY_ID"),
+          name: "Care Connect",
+          description: `Payment for Booking #${bookingId}`,
+        };
+      }
+
+      // Retire the unusable row so this lookup stops finding it, then fall
+      // through and mint a fresh order below.
+      this.logger.warn(
+        `Discarding unusable order ${existingPayment.order_id} for booking ${bookingId} ` +
+          `(gateway status: ${liveOrder?.status ?? "not found"}, ` +
+          `gateway amount: ${liveOrder?.amount ?? "n/a"}, expected: ${amountInPaise})`,
+      );
+      await this.prisma.payments.update({
+        where: { id: existingPayment.id },
+        data: { status: PaymentStatus.FAILED, error_description: "Order no longer usable at gateway" },
+      });
+      await this.audit.writeLog(
+        this.prisma,
+        existingPayment.id,
+        existingPayment.order_id,
+        PaymentStatus.CREATED,
+        PaymentStatus.FAILED,
+        "api:create_order_stale",
+      );
     }
 
     try {
@@ -180,7 +245,7 @@ export class PaymentsService {
   }
 
   // 1.5. Retry Failed Order
-  async retryOrder(bookingId: string) {
+  async retryOrder(bookingId: string, requestingUserId: string) {
     // Check if there is a failed payment for this booking
     const failedPayment = await this.prisma.payments.findFirst({
       where: { booking_id: bookingId, status: "failed" },
@@ -193,9 +258,14 @@ export class PaymentsService {
       );
     }
 
-    // Check if it's already paid successfully
+    // Check if it's already paid successfully. pending_release counts: that's a
+    // captured charge whose payout is being held, not an unpaid booking.
     const successPayment = await this.prisma.payments.findFirst({
-      where: { booking_id: bookingId, status: "captured" },
+      where: {
+        booking_id: bookingId,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+        status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE] },
+      },
     });
 
     if (successPayment) {
@@ -203,7 +273,8 @@ export class PaymentsService {
     }
 
     this.logger.log(`Retrying order calculation for booking: ${bookingId}`);
-    return this.createOrder(bookingId);
+    // Pass the requesting user so createOrder's ownership guard still applies.
+    return this.createOrder(bookingId, requestingUserId);
   }
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)
@@ -497,6 +568,10 @@ export class PaymentsService {
             date: new Date().toLocaleDateString(),
             receiptId: payment.order_id,
             bookingDetails: `Booking #${updatedBooking.id.substring(0, 8)}`,
+            // Breakup from the immutable price snapshot for this charge.
+            subtotal: snapshot ? Number(snapshot.subtotal_amount) : undefined,
+            gstPercent: snapshot ? Number(snapshot.gst_percent_used) : undefined,
+            gstAmount: snapshot ? Number(snapshot.gst_amount) : undefined,
           })
           .catch((err) =>
             this.logger.error("Failed to send payment receipt email", err),
@@ -696,6 +771,108 @@ export class PaymentsService {
     });
 
     return plans;
+  }
+
+  /**
+   * Every real money movement on the parent's account, not just the ones tied to a
+   * billing cycle — cancellation fees create a `payments` row with no price_snapshot,
+   * so they are invisible to `getPaymentPlans`.
+   *
+   * Excluded: `manual_pending` rows, which the booking-completed listener writes as a
+   * payout accrual when no payment exists. The parent never paid those, so surfacing
+   * them would invent a charge. Also excluded: `created` orders, which are checkouts
+   * that were opened and abandoned without money leaving the account.
+   */
+  async getParentTransactions(userId: string, page = 1, pageSize = 20) {
+    const where: Prisma.paymentsWhereInput = {
+      bookings: { parent_id: userId },
+      provider: { not: MANUAL_PENDING_PROVIDER },
+      status: {
+        in: [
+          PaymentStatus.CAPTURED,
+          PaymentStatus.PENDING_RELEASE,
+          PaymentStatus.REFUNDED,
+          PaymentStatus.FAILED,
+        ],
+      },
+    };
+
+    const [rows, total, settled] = await this.prisma.$transaction([
+      this.prisma.payments.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          bookings: {
+            select: {
+              id: true,
+              start_time: true,
+              service_requests: { select: { category: true } },
+              users_bookings_nanny_idTousers: {
+                select: {
+                  profiles: {
+                    select: {
+                      first_name: true,
+                      last_name: true,
+                      profile_image_url: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          price_snapshots: {
+            orderBy: { cycle_number: "asc" },
+            select: { cycle_number: true, final_amount: true },
+          },
+        },
+      }),
+      this.prisma.payments.count({ where }),
+      // Only money that actually left the account counts toward the total. A refunded
+      // payment nets to zero and a failed one never settled.
+      this.prisma.payments.aggregate({
+        where: {
+          ...where,
+          status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const items = rows.map((row) => {
+      const snapshot = row.price_snapshots[0] ?? null;
+      const profile = row.bookings?.users_bookings_nanny_idTousers?.profiles ?? null;
+      const caregiverName =
+        [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || null;
+
+      return {
+        id: row.id,
+        bookingId: row.booking_id,
+        orderId: row.order_id,
+        paymentId: row.payment_id,
+        // Decimal — serialise as a number so the client never has to parse a string.
+        amount: Number(row.amount),
+        currency: row.currency,
+        status: row.status,
+        kind: snapshot ? "service_cycle" : "cancellation_fee",
+        cycleNumber: snapshot?.cycle_number ?? null,
+        date: row.created_at,
+        caregiverName,
+        caregiverImageUrl: profile?.profile_image_url ?? null,
+        category: row.bookings?.service_requests?.category ?? null,
+        errorDescription: row.error_description,
+      };
+    });
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      hasMore: page * pageSize < total,
+      totalPaid: Number(settled._sum.amount ?? 0),
+    };
   }
 
   async chargeCancellationFee(bookingId: string, amount: number) {

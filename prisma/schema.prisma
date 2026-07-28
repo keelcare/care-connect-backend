@@ -50,15 +50,13 @@ model bookings {
   reschedule_count                Int?                        @default(0)
   tags                            String[]                    @default([])
   recurring_request_id            String?                     @db.Uuid
-  /// Pricing layer 1: which discount commitment tier applies
-  discount_tier_id                String?                     @db.Uuid
-  /// Pricing layer 2: how the final price is computed
+  /// Pricing layer 1: how the final price is computed
   pricing_mode                    String                      @default("standard") @db.VarChar(50)
-  /// Used when pricing_mode = 'custom_rate_plus_discount'
+  /// Used when pricing_mode = 'custom_rate'
   custom_hourly_rate              Decimal?                    @db.Decimal(10, 2)
-  /// Used when pricing_mode = 'custom_override' (skip all calculation)
+  /// Used when pricing_mode = 'custom_override' (treated as the pre-tax subtotal)
   custom_final_price              Decimal?                    @db.Decimal(12, 2)
-  /// Pricing layer 3: whether rate is pinned to booking creation date or floats
+  /// Pricing layer 2: whether rate is pinned to booking creation date or floats
   price_lock_mode                 String                      @default("locked") @db.VarChar(50)
   /// Session schedule: hours per day (e.g. 4)
   hours_per_day                   Decimal?                    @db.Decimal(4, 2)
@@ -67,13 +65,13 @@ model bookings {
   /// Total number of recurring months (e.g. 6)
   plan_duration_months            Int                         @default(1)
   booking_children                booking_children[]
+  call_sessions                   call_sessions[]
   jobs                            jobs?                       @relation(fields: [job_id], references: [id], onUpdate: NoAction)
   users_bookings_nanny_idTousers  users?                      @relation("bookings_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   users_bookings_parent_idTousers users?                      @relation("bookings_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   recurring_bookings              recurring_bookings?         @relation(fields: [recurring_booking_id], references: [id], onUpdate: NoAction)
   recurring_service_requests      recurring_service_requests? @relation(fields: [recurring_request_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   service_requests                service_requests?           @relation(fields: [request_id], references: [id], onUpdate: NoAction)
-  discount_tiers                  discount_tiers?             @relation(fields: [discount_tier_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
   assignments                     assignments[]
   chats                           chats[]
   disputes                        disputes[]
@@ -84,10 +82,32 @@ model bookings {
   payment_plans                   payment_plans?
   price_snapshots                 price_snapshots[]
   support_tickets                 support_tickets[]
+  booking_status_logs             booking_status_log[]
 
   @@index([parent_id, status])
   @@index([nanny_id, status])
   @@index([start_time, status])
+}
+
+/// One row per booking status transition — the per-booking history that
+/// payments already get via payment_audit_log. One-off bookings previously kept
+/// only the latest `updated_at`, so prior states were lost. Append-only.
+model booking_status_log {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id  String   @db.Uuid
+  from_status String?  @db.VarChar(50)
+  to_status   String   @db.VarChar(50)
+  /// The user who caused the transition, when known. Null for system/cron.
+  changed_by  String?  @db.Uuid
+  /// 'parent' | 'nanny' | 'admin' | 'system'
+  actor_role  String?  @db.VarChar(20)
+  reason      String?
+  metadata    Json?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  bookings    bookings @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id])
+  @@index([created_at])
 }
 
 model chats {
@@ -96,6 +116,23 @@ model chats {
   created_at DateTime?  @default(now()) @db.Timestamptz(6)
   bookings   bookings?  @relation(fields: [booking_id], references: [id], onUpdate: NoAction)
   messages   messages[]
+}
+
+/// One row per WebRTC call attempt between the booking's parent and nanny.
+model call_sessions {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  booking_id String    @db.Uuid
+  caller_id  String    @db.Uuid
+  callee_id  String    @db.Uuid
+  /// RINGING | ONGOING | ENDED | MISSED | REJECTED | CANCELLED | FAILED
+  status     String    @default("RINGING") @db.VarChar(20)
+  /// Set when the callee answers
+  started_at DateTime? @db.Timestamptz(6)
+  ended_at   DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  bookings   bookings  @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([booking_id])
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -204,7 +241,6 @@ model service_requests {
   updated_at            DateTime?           @default(now()) @db.Timestamptz(6)
   required_skills       String[]
   category              String?             @db.VarChar(50)
-  discount_percentage   Decimal?            @default(0) @db.Decimal(5, 2)
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
   sessions_per_month    Int?
@@ -294,6 +330,25 @@ model profiles {
   users                users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+/// Saved addresses for a user (multiple allowed; exactly one is_default per user).
+model addresses {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String    @db.Uuid
+  label      String    @default("Home") @db.VarChar(50)
+  address    String
+  lat        Decimal   @db.Decimal(10, 8)
+  lng        Decimal   @db.Decimal(11, 8)
+  is_default Boolean   @default(false)
+  /// Soft delete: rows are never hard-deleted, so completed bookings keep
+  /// their address history and removals leave an audit trail.
+  deleted_at DateTime? @db.Timestamptz(6)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id])
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model reviews {
   id                               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
@@ -335,7 +390,17 @@ model users {
   is_active                                              Boolean?                     @default(true)
   refresh_token_hash                                     String?                      @db.VarChar(255)
   verification_rejection_reason                          String?
+  /// Soft delete: set when the user requests account deletion. The account is
+  /// deactivated (is_active=false) and PII retained but locked for 30 days, then
+  /// permanently purged by the daily cleanup cron. Cleared on admin/support restore.
+  deleted_at                                             DateTime?                    @db.Timestamptz(6)
+  /// Set once the 48-hour pre-erasure notice (DPDP Rules 2025) has been sent, so
+  /// the purge cron does not notify the same pending-deletion user repeatedly.
+  deletion_notice_sent_at                                DateTime?                    @db.Timestamptz(6)
   fcm_token                                              String?                      @db.VarChar(255)
+  /// 'ios' (raw APNs token) or 'android' (FCM registration token) — routes push delivery
+  push_platform                                          String?                      @db.VarChar(10)
+  addresses                                              addresses[]
   applications                                           applications[]
   assignments                                            assignments[]
   availability_blocks                                    availability_blocks[]
@@ -387,6 +452,13 @@ model support_tickets {
   priority      String    @default("medium") @db.VarChar(20)
   status        String    @default("open") @db.VarChar(50)
   admin_notes   String?
+  /// The admin who owns this ticket. Null = unassigned/in the shared queue.
+  assigned_admin_id String? @db.Uuid
+  /// When an admin first replied — the SLA first-response timer stops here.
+  first_response_at DateTime? @db.Timestamptz(6)
+  /// Customer satisfaction (1–5), submitted by the raiser after resolution.
+  csat_rating   Int?
+  csat_comment  String?
   resolved_at   DateTime? @db.Timestamptz(6)
   created_at    DateTime? @default(now()) @db.Timestamptz(6)
   updated_at    DateTime? @default(now()) @db.Timestamptz(6)
@@ -396,6 +468,7 @@ model support_tickets {
   support_ticket_messages support_ticket_messages[]
 
   @@index([booking_id])
+  @@index([assigned_admin_id])
 }
 
 model support_ticket_messages {
@@ -471,19 +544,6 @@ model rate_cards {
   created_by_user users?    @relation("rate_cards_created_by", fields: [created_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([service_id, effective_from])
-}
-
-/// Named commitment tiers that grant a discount (monthly / half_yearly / yearly)
-model discount_tiers {
-  id               String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  code             String          @unique @db.VarChar(50)
-  label            String          @db.VarChar(100)
-  duration_months  Int
-  discount_percent Decimal         @db.Decimal(5, 2)
-  active           Boolean         @default(true)
-  created_at       DateTime        @default(now()) @db.Timestamptz(6)
-  bookings         bookings[]
-  payment_plans    payment_plans[]
 }
 
 model favorite_nannies {
@@ -642,6 +702,10 @@ model children {
   school_details    Json?
   learning_goals    String[]           @default([])
   metadata          Json? // extended profile: hobbies, bedtime, personality_notes, medical_notes, allergy_severity, nap_schedule, report_url
+  /// Soft delete: set when a parent removes a child. The row is hidden from all
+  /// reads for 30 days (recoverable from "Recently removed"), then hard-deleted
+  /// by the daily cleanup cron. Cleared on restore.
+  deleted_at        DateTime?          @db.Timestamptz(6)
   created_at        DateTime?          @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
   booking_children  booking_children[]
@@ -705,7 +769,6 @@ model whatsapp_messages {
 model payment_plans {
   id               String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   booking_id       String            @unique @db.Uuid
-  discount_tier_id String?           @db.Uuid
   total_cycles     Int
   cycles_completed Int               @default(0)
   start_date       DateTime          @db.Timestamptz(6)
@@ -714,7 +777,6 @@ model payment_plans {
   created_at       DateTime          @default(now()) @db.Timestamptz(6)
   updated_at       DateTime          @default(now()) @db.Timestamptz(6)
   bookings         bookings          @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  discount_tiers   discount_tiers?   @relation(fields: [discount_tier_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
   price_snapshots  price_snapshots[]
 
   @@index([status, next_due_date])
@@ -728,9 +790,17 @@ model price_snapshots {
   payment_id            String?        @db.Uuid
   cycle_number          Int
   base_hourly_rate_used Decimal        @db.Decimal(10, 2)
-  discount_percent_used Decimal        @db.Decimal(5, 2)
+  /// Retained for historical accuracy only — the discount system was removed and
+  /// this is always 0 on new rows. Rows charged before the removal keep their rate.
+  discount_percent_used Decimal        @default(0) @db.Decimal(5, 2)
   hours_billed          Decimal        @db.Decimal(8, 2)
   custom_price_applied  Boolean        @default(false)
+  /// Pre-tax amount. GST rate frozen at charge time so a later flag flip never
+  /// rewrites what a customer was actually charged.
+  subtotal_amount       Decimal        @default(0) @db.Decimal(12, 2)
+  gst_percent_used      Decimal        @default(0) @db.Decimal(5, 2)
+  gst_amount            Decimal        @default(0) @db.Decimal(12, 2)
+  /// subtotal_amount + gst_amount — the amount sent to Razorpay.
   final_amount          Decimal        @db.Decimal(12, 2)
   calculation_breakdown Json
   razorpay_payment_id   String?        @db.VarChar(255)

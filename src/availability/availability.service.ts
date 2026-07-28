@@ -1,7 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { CreateAvailabilityBlockDto } from "./dto/create-availability-block.dto";
 
 @Injectable()
 export class AvailabilityService {
@@ -9,7 +10,7 @@ export class AvailabilityService {
 
   constructor(private prisma: PrismaService) {}
 
-  async createBlock(nannyId: string, data: any) {
+  async createBlock(nannyId: string, data: CreateAvailabilityBlockDto) {
     return this.prisma.availability_blocks.create({
       data: {
         nanny_id: nannyId,
@@ -29,7 +30,13 @@ export class AvailabilityService {
     });
   }
 
-  async delete(id: string) {
+  async delete(id: string, nannyId: string) {
+    // Scope the delete to the owning nanny so one nanny can't remove another's
+    // availability block. NotFound (not Forbidden) so we don't leak existence.
+    const block = await this.prisma.availability_blocks.findFirst({
+      where: { id, nanny_id: nannyId },
+    });
+    if (!block) throw new NotFoundException("Availability block not found");
     return this.prisma.availability_blocks.delete({
       where: { id },
     });

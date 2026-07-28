@@ -112,4 +112,25 @@ export class TimeUtils {
   static nowIST(): Date {
     return new Date();
   }
+
+  /**
+   * Start/end of the IST calendar day containing `ref`.
+   *
+   * date-fns `startOfDay` works in the *server's* timezone, which is UTC in
+   * production — so a "today" window built with it actually spans 05:30 IST today
+   * to 05:29 IST tomorrow, and drops early-morning IST sessions from the day they
+   * belong to. Bookings are IST wall-clock instants (see combineDateAndTime), so
+   * any day bucketing must be done in IST.
+   */
+  static startOfDayIST(ref: Date = new Date()): Date {
+    const istDate = new Date(ref.getTime() + (5 * 60 + 30) * 60 * 1000);
+    const day = istDate.toISOString().split("T")[0];
+    return new Date(`${day}T00:00:00${this.IST_OFFSET}`);
+  }
+
+  static endOfDayIST(ref: Date = new Date()): Date {
+    const istDate = new Date(ref.getTime() + (5 * 60 + 30) * 60 * 1000);
+    const day = istDate.toISOString().split("T")[0];
+    return new Date(`${day}T23:59:59.999${this.IST_OFFSET}`);
+  }
 }

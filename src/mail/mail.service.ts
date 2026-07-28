@@ -168,23 +168,35 @@ export class MailService {
       date: string;
       receiptId: string;
       bookingDetails: string;
+      /** GST breakup from the price snapshot — what was actually charged. */
+      subtotal?: number;
+      gstPercent?: number;
+      gstAmount?: number;
     },
   ) {
     const subject = `Payment Receipt - ${details.receiptId}`;
+    // Only render the tax breakup when the snapshot recorded GST; a zero-GST
+    // charge keeps the flat amount as before.
+    const gstRows =
+      details.gstAmount && details.gstAmount > 0
+        ? `
+          <p><strong>Subtotal:</strong> ${details.currency.toUpperCase()} ${(details.subtotal ?? details.amount - details.gstAmount).toFixed(2)}</p>
+          <p><strong>GST (${details.gstPercent ?? 0}%):</strong> ${details.currency.toUpperCase()} ${details.gstAmount.toFixed(2)}</p>`
+        : "";
     const template = `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
         <h2 style="color: #2c3e50;">Payment Receipt</h2>
         <p>Hello ${userName},</p>
         <p>We have successfully received your payment of <strong>${details.currency.toUpperCase()} ${details.amount.toFixed(2)}</strong>.</p>
-        
+
         <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
           <h3 style="margin-top: 0; color: #34495e;">Payment Details</h3>
           <p><strong>Receipt ID:</strong> ${details.receiptId}</p>
-          <p><strong>Date:</strong> ${details.date}</p>
-          <p><strong>Amount:</strong> ${details.currency.toUpperCase()} ${details.amount.toFixed(2)}</p>
+          <p><strong>Date:</strong> ${details.date}</p>${gstRows}
+          <p><strong>Amount Paid:</strong> ${details.currency.toUpperCase()} ${details.amount.toFixed(2)}</p>
           <p><strong>Booking:</strong> ${details.bookingDetails}</p>
         </div>
-        
+
         <p>If you have any questions about this payment, please contact CareConnect support.</p>
         <p style="color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
           Thank you for using CareConnect!<br>

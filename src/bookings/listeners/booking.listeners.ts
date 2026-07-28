@@ -15,6 +15,8 @@ import { SseService } from "../../sse/sse.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SSE_EVENTS } from "../../events/sse-event.types";
 import { PaymentsService } from "../../payments/payments.service";
+import { BookingStatus } from "../../common/constants/booking-status.enum";
+import { MANUAL_PENDING_PROVIDER } from "../../constants";
 
 @Injectable()
 export class BookingListeners {
@@ -115,8 +117,8 @@ export class BookingListeners {
           booking_id: booking.id,
           amount: totalAmount,
           status: "pending_release",
-          order_id: `manual_pending_${booking.id}_${Date.now()}`,
-          provider: "manual_pending",
+          order_id: `${MANUAL_PENDING_PROVIDER}_${booking.id}_${Date.now()}`,
+          provider: MANUAL_PENDING_PROVIDER,
         },
       }).catch(err => this.logger.error(`Failed to create manual payment: ${err.message}`));
     }
@@ -138,12 +140,18 @@ export class BookingListeners {
       ).catch(err => this.logger.error(`Failed to notify nanny: ${err.message}`));
     }
 
-    // 3. SSE
+    // 3. SSE. paymentDue tells the parent app to open the pay-now screen —
+    // true unless a real (non-placeholder) payment was already captured.
+    const paymentDue = !(
+      existingPayment &&
+      existingPayment.provider !== MANUAL_PENDING_PROVIDER &&
+      ["captured", "pending_release"].includes(existingPayment.status ?? "")
+    );
     this.sseService.emitToUsers(
       [booking.parent_id, booking.nanny_id].filter(Boolean) as string[],
       {
         type: SSE_EVENTS.BOOKING_COMPLETED,
-        data: { ...booking, totalAmount },
+        data: { ...booking, totalAmount, paymentDue },
         timestamp: new Date().toISOString(),
       }
     );
@@ -200,8 +208,25 @@ export class BookingListeners {
       }
     }
 
+    // System-driven cancellation (auto-expiry / no-show sweep) has no acting user,
+    // so neither branch above fires — notify both parties explicitly.
+    if (!cancelledByUserId) {
+      const title = booking.status === BookingStatus.EXPIRED ? "Booking expired" : "Booking cancelled";
+      const message = `Your booking on ${bookingDate} was ${booking.status === BookingStatus.EXPIRED ? "automatically expired" : "cancelled"}. Reason: ${reason || "No reason provided"}.`;
+
+      await this.notificationsService
+        .createNotification(booking.parent_id, title, message, "warning", "booking", booking.id)
+        .catch((err) => this.logger.error(`Failed to notify parent of system cancellation: ${err.message}`));
+
+      if (booking.nanny_id) {
+        await this.notificationsService
+          .createNotification(booking.nanny_id, title, message, "warning", "booking", booking.id)
+          .catch((err) => this.logger.error(`Failed to notify nanny of system cancellation: ${err.message}`));
+      }
+    }
+
     // Always delete chat on cancellation
-    await this.chatService.deleteChatByBookingId(booking.id).catch(err => 
+    await this.chatService.deleteChatByBookingId(booking.id).catch(err =>
       this.logger.error(`Failed to delete chat for cancelled booking ${booking.id}: ${err.message}`)
     );
   }

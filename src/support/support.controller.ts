@@ -18,6 +18,8 @@ import { SupportService } from "./support.service";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
 import { CreateTicketMessageDto } from "./dto/create-ticket-message.dto";
+import { SubmitCsatDto } from "./dto/submit-csat.dto";
+import { AssignTicketDto } from "./dto/assign-ticket.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { UserRole } from "../auth/dto/signup.dto";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -85,7 +87,31 @@ export class SupportController {
     return this.supportService.addMessage(id, req.user.id, isAdmin, dto.content);
   }
 
+  @Post("tickets/:id/csat")
+  @ApiOperation({ summary: "Rate a resolved ticket (customer satisfaction)" })
+  async submitCsat(
+    @Request() req,
+    @Param("id") id: string,
+    @Body() dto: SubmitCsatDto,
+  ) {
+    return this.supportService.submitCsat(id, req.user.id, dto.rating, dto.comment);
+  }
+
   // Admin Endpoints
+  @Post("admin/tickets/:id/assign")
+  @Roles(UserRole.ADMIN)
+  @UseGuards(RolesGuard)
+  @ApiOperation({ summary: "Claim or reassign a ticket (Admin only)" })
+  async assignTicket(
+    @Request() req,
+    @Param("id") id: string,
+    @Body() dto: AssignTicketDto,
+  ) {
+    // Omitted adminId = claim for the current admin; explicit null = release.
+    const adminId = dto.adminId === undefined ? req.user.id : dto.adminId;
+    return this.supportService.assignTicket(id, adminId);
+  }
+
   @Get("admin/tickets/:id")
   @Roles(UserRole.ADMIN)
   @UseGuards(RolesGuard)

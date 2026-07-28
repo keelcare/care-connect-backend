@@ -8,7 +8,13 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // cross-site attackers, so CSRF is not applicable in those contexts).
 // Only native app URL schemes are exempt. Browser origins such as http(s)://localhost
 // are NOT exempt — a malicious page served from localhost could otherwise bypass CSRF.
-const EXEMPT_ORIGINS = ['capacitor://localhost', 'ionic://localhost', 'keel://', 'careconnect://'];
+const EXEMPT_ORIGINS = [
+  'capacitor://localhost',
+  'ionic://localhost',
+  'keel://',
+  'keelcarepartner://',
+  'careconnect://',
+];
 
 @Injectable()
 export class CsrfMiddleware implements NestMiddleware {

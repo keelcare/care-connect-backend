@@ -9,6 +9,7 @@ import { NotificationsModule } from "../notifications/notifications.module";
 import { FavoritesModule } from "../favorites/favorites.module";
 import { AvailabilityModule } from "../availability/availability.module";
 import { MailModule } from "../mail/mail.module";
+import { AddressesModule } from "../addresses/addresses.module";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { MailModule } from "../mail/mail.module";
     FavoritesModule,
     AvailabilityModule,
     MailModule,
+    AddressesModule,
     PassportModule,
     JwtModule.register({}),
   ],

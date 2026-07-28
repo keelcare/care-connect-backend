@@ -2,17 +2,24 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
+import { AddressesService } from "../addresses/addresses.service";
+import { NotificationsService } from "../notifications/notifications.service";
 
 @Injectable()
 export class RecurringRequestsService {
   private readonly logger = new Logger(RecurringRequestsService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private addressesService: AddressesService,
+    private notificationsService: NotificationsService,
+  ) {}
 
   /**
    * Helper to generate a list of dates based on recurrence pattern
@@ -71,7 +78,12 @@ export class RecurringRequestsService {
   async create(parentId: string, dto: CreateRecurringRequestDto) {
     this.logger.log(`Parent ${parentId} creating recurring request`);
 
-    // 1. Get parent profile for location
+    // 1. Get the sessions' location — the address the parent picked, else their
+    // default saved address, falling back to the legacy profiles.lat/lng.
+    const selectedAddress = await this.addressesService.resolveForUser(
+      parentId,
+      dto.address_id,
+    );
     const parent = await this.prisma.users.findUnique({
       where: { id: parentId },
       include: { profiles: true },
@@ -81,9 +93,11 @@ export class RecurringRequestsService {
       throw new NotFoundException("Parent profile not found");
     }
 
-    if (!parent.profiles.lat || !parent.profiles.lng) {
+    const lat = selectedAddress?.lat ?? parent.profiles.lat;
+    const lng = selectedAddress?.lng ?? parent.profiles.lng;
+    if (!lat || !lng) {
       throw new BadRequestException(
-        "Parent profile incomplete. Address and location required.",
+        "Add a saved address before requesting a caregiver.",
       );
     }
 
@@ -107,6 +121,10 @@ export class RecurringRequestsService {
       const recurringReq = await tx.recurring_service_requests.create({
         data: {
           parent_id: parentId,
+          // A plan is only "active" once a nanny is assigned to its bookings
+          // (see AdminService.manualAssign). Until then it is pending — the column
+          // default of "active" would otherwise show every brand-new plan as live.
+          status: "pending",
           recurrence_type: dto.recurrence_type,
           recurrence_pattern: dto.recurrence_pattern,
           start_date: new Date(dto.start_date),
@@ -122,8 +140,8 @@ export class RecurringRequestsService {
           plan_type: dto.plan_type,
           sessions_per_month: dto.sessions_per_month,
           max_hourly_rate: dto.max_hourly_rate,
-          location_lat: parent.profiles.lat,
-          location_lng: parent.profiles.lng,
+          location_lat: lat,
+          location_lng: lng,
         },
       });
 
@@ -237,6 +255,7 @@ export class RecurringRequestsService {
 
       return {
         ...rest,
+        status: this.effectiveStatus(rest.status, !!withNanny),
         start_time_formatted: TimeUtils.formatShortTime(req.start_time),
         total_bookings: _count.bookings,
         next_upcoming_date: upcoming ? upcoming.start_time : null,
@@ -247,7 +266,18 @@ export class RecurringRequestsService {
     });
   }
 
-  async findOne(id: string) {
+  /**
+   * "active" means a nanny is actually serving the plan. Rows created before the
+   * pending-by-default fix were stored as "active" from birth (the column default),
+   * so a stored "active" with no nanny on any booking is really still pending.
+   * Terminal states (cancelled/completed/expired/error) are reported as-is.
+   */
+  private effectiveStatus(stored: string, hasNanny: boolean): string {
+    if (stored !== "active") return stored;
+    return hasNanny ? "active" : "pending";
+  }
+
+  async findOne(id: string, userId: string, role: string) {
     const req = await this.prisma.recurring_service_requests.findUnique({
       where: { id },
       include: {
@@ -258,15 +288,115 @@ export class RecurringRequestsService {
     });
 
     if (!req) throw new NotFoundException("Recurring request not found");
+    // Scope the read to the owning parent (mirrors cancel) or an admin. Return
+    // NotFound for anyone else so existence of the plan isn't leaked.
+    if (req.parent_id !== userId && role !== "admin") {
+      throw new NotFoundException("Recurring request not found");
+    }
+
+    const assigned = await this.prisma.bookings.findFirst({
+      where: { recurring_request_id: id, status: { not: "CANCELLED" }, nanny_id: { not: null } },
+      select: { id: true },
+    });
+
     return {
       ...req,
+      status: this.effectiveStatus(req.status, !!assigned),
       start_time_formatted: TimeUtils.formatShortTime(req.start_time)
     };
   }
 
-  async findBookingsForRequest(id: string, page: number = 1, limit: number = 10) {
+  /**
+   * Parent-initiated cancellation of a whole plan. Ends the series and cancels
+   * every future session that hasn't already started — sessions that are
+   * completed or currently under way are left untouched (they were delivered
+   * and still need to be paid/settled). Assigned nannies whose future sessions
+   * were dropped are notified.
+   */
+  async cancel(id: string, parentId: string, reason?: string) {
+    const req = await this.prisma.recurring_service_requests.findUnique({
+      where: { id },
+      select: { id: true, parent_id: true, status: true, category: true },
+    });
+    if (!req) throw new NotFoundException("Recurring request not found");
+    if (req.parent_id !== parentId) {
+      throw new ForbiddenException("You can only cancel your own recurring plans");
+    }
+    if (["cancelled", "completed", "expired"].includes(req.status)) {
+      throw new BadRequestException(`This plan is already ${req.status}`);
+    }
+
+    const now = TimeUtils.nowIST();
+    const cancellationReason = reason?.trim() || "Recurring plan cancelled by parent";
+
+    // Capture who loses sessions before the rows flip to CANCELLED.
+    const affected = await this.prisma.bookings.findMany({
+      where: {
+        recurring_request_id: id,
+        start_time: { gt: now },
+        status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
+        nanny_id: { not: null },
+      },
+      select: { nanny_id: true },
+      distinct: ["nanny_id"],
+    });
+
+    const [, cancelledBookings] = await this.prisma.$transaction([
+      this.prisma.recurring_service_requests.update({
+        where: { id },
+        data: { status: "cancelled", updated_at: now },
+      }),
+      this.prisma.bookings.updateMany({
+        where: {
+          recurring_request_id: id,
+          start_time: { gt: now },
+          status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
+        },
+        data: { status: "CANCELLED", cancellation_reason: cancellationReason },
+      }),
+    ]);
+
+    for (const { nanny_id } of affected) {
+      await this.notificationsService
+        .createNotification(
+          nanny_id as string,
+          "Recurring plan cancelled",
+          "A parent has cancelled their recurring plan. The upcoming sessions assigned to you have been removed from your schedule.",
+          "warning",
+          "recurring_request",
+          id,
+        )
+        .catch((err) =>
+          this.logger.error(`Failed to notify nanny ${nanny_id} of plan cancellation`, err),
+        );
+    }
+
+    this.logger.log(
+      `Recurring request ${id} cancelled by parent ${parentId}; ${cancelledBookings.count} future sessions cancelled.`,
+    );
+    return { success: true, cancelledSessions: cancelledBookings.count };
+  }
+
+  async findBookingsForRequest(
+    id: string,
+    page: number = 1,
+    limit: number = 10,
+    userId?: string,
+    role?: string,
+  ) {
+    // Scope to the owning parent (mirrors cancel) or an admin before listing
+    // any bookings under the plan.
+    const parent = await this.prisma.recurring_service_requests.findUnique({
+      where: { id },
+      select: { parent_id: true },
+    });
+    if (!parent) throw new NotFoundException("Recurring request not found");
+    if (parent.parent_id !== userId && role !== "admin") {
+      throw new NotFoundException("Recurring request not found");
+    }
+
     const skip = (page - 1) * limit;
-    
+
     const [bookings, total] = await this.prisma.$transaction([
       this.prisma.bookings.findMany({
         where: { recurring_request_id: id },

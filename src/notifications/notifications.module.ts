@@ -5,6 +5,8 @@ import { ConfigModule } from "@nestjs/config";
 import { JwtModule } from "@nestjs/jwt";
 import { NotificationsGateway } from "./notifications.gateway";
 import { FcmService } from "./fcm.service";
+import { ApnsService } from "./apns.service";
+import { PushService } from "./push.service";
 import { PrismaService } from "../prisma/prisma.service";
 
 @Global() // Make it global so it can be easily injected into other modules (Bookings, Chat, etc.)
@@ -15,8 +17,10 @@ import { PrismaService } from "../prisma/prisma.service";
     NotificationsService,
     NotificationsGateway,
     FcmService,
+    ApnsService,
+    PushService,
     PrismaService,
   ],
-  exports: [NotificationsService, FcmService],
+  exports: [NotificationsService, FcmService, PushService],
 })
 export class NotificationsModule {}

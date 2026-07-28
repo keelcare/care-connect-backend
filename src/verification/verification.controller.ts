@@ -11,6 +11,7 @@ import {
   BadRequestException,
   Delete,
   Res,
+  Logger,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
@@ -26,6 +27,8 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 
 @Controller("verification")
 export class VerificationController {
+  private readonly logger = new Logger(VerificationController.name);
+
   constructor(private readonly verificationService: VerificationService) {}
 
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
@@ -60,13 +63,17 @@ export class VerificationController {
     try {
       return await this.verificationService.uploadDocuments(req.user.id, dto, file);
     } catch (e) {
-      require('fs').writeFileSync('upload_error.txt', e.stack || e.toString());
+      this.logger.error(
+        `Failed to upload verification documents for user ${req.user.id}`,
+        e instanceof Error ? e.stack : String(e),
+      );
       throw e;
     }
   }
 
   // Admin proxy endpoint to stream document from Drive
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
   @Get("document/:id")
   async getDocument(@Param("id") id: string, @Res() res: Response) {
     const { stream, mimeType } =
