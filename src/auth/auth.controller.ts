@@ -276,6 +276,8 @@ export class AuthController {
             const ALLOWED_SCHEMES = [
               "careconnect:",
               "keel:",
+              // Partner (nanny) app — app.json `scheme` in mobile-nanny.
+              "keelcarepartner:",
               "ionic:",
               "capacitor:",
             ];

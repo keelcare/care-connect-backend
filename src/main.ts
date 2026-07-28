@@ -118,6 +118,7 @@ async function bootstrap() {
         allowedOriginsSet.has(origin) ||
         origin.startsWith("capacitor://") ||
         origin.startsWith("keel://") ||
+        origin.startsWith("keelcarepartner://") ||
         origin.startsWith("careconnect://")
       ) {
         callback(null, true);
