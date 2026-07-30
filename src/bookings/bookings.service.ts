@@ -503,6 +503,23 @@ export class BookingsService {
       },
     });
 
+    // Keep the originating request in step: left as "pending" it would sit in
+    // the admin manual-assignment queue (and the parent's list) forever, for a
+    // slot that has already come and gone.
+    if (booking.request_id) {
+      await this.prisma.service_requests.updateMany({
+        where: { id: booking.request_id, status: { in: ["pending", "accepted"] } },
+        data: { status: "EXPIRED" },
+      });
+      await this.prisma.assignments.updateMany({
+        where: {
+          request_id: booking.request_id,
+          status: { in: ["pending", "accepted"] },
+        },
+        data: { status: "expired", responded_at: new Date() },
+      });
+    }
+
     this.eventEmitter.emit(
       BOOKING_EVENTS.CANCELLED,
       new BookingCancelledEvent(updatedBooking, reason),

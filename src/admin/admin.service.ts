@@ -45,10 +45,30 @@ export class AdminService {
 
   // Manual Assignment Management
   async getManualAssignmentRequests() {
+    const now = TimeUtils.nowIST();
+    // `date` is a DATE column, so a timestamp bound can only be day-accurate here.
+    // Keep it deliberately lenient (the IST day boundary lands on the previous UTC
+    // day) and let the exact start-time check below drop anything already past.
+    const earliestDate = TimeUtils.startOfDayIST(now);
+
     const requests = await this.prisma.service_requests.findMany({
       where: {
         status: "pending",
         category: { in: ["ST", "SN"] },
+        date: { gte: earliestDate },
+        // A request whose booking was cancelled, expired or no-showed is dead —
+        // only ones still genuinely waiting for a nanny belong in this queue.
+        OR: [
+          { bookings: { is: null } },
+          {
+            bookings: {
+              is: {
+                nanny_id: null,
+                status: { in: [BookingStatus.REQUESTED, "pending"] },
+              },
+            },
+          },
+        ],
       },
       include: {
         users: {
@@ -80,10 +100,19 @@ export class AdminService {
 
 
 
-    const standardMapped = await Promise.all(requests.map(async (req) => {
+    // Day-level filtering above can still let through a slot earlier today.
+    const upcomingRequests = requests.filter((req) => {
+      try {
+        return TimeUtils.combineDateAndTime(req.date, req.start_time) > now;
+      } catch {
+        return false;
+      }
+    });
+
+    const standardMapped = await Promise.all(upcomingRequests.map(async (req) => {
       const parent = req.users;
       const profile = parent?.profiles;
-      const booking = req.bookings?.[0];
+      const booking = req.bookings;
       const children =
         booking?.booking_children?.map((bc) => bc.children) || [];
 
@@ -145,7 +174,11 @@ export class AdminService {
     }));
 
     const recurringRequests = await this.prisma.recurring_service_requests.findMany({
-      where: { status: "active" },
+      // Plans awaiting their first assignment are created as "pending" and only
+      // flip to "active" once a nanny is attached (see manualAssign), so both
+      // states can still hold unassigned sessions. Cancelled/expired/errored
+      // plans are excluded outright.
+      where: { status: { in: ["pending", "active"] } },
       include: {
         users: {
           select: {
@@ -174,8 +207,17 @@ export class AdminService {
       orderBy: { created_at: "desc" },
     });
 
+    // Only plans with at least one *future* session still waiting on a nanny.
+    // Past sessions can no longer be served, so a plan made up entirely of them
+    // is not something an admin can act on.
     const unassignedRecurring = recurringRequests.filter(req =>
-      req.bookings.some(b => !b.nanny_id && b.status === "requested")
+      req.bookings.some(
+        b =>
+          !b.nanny_id &&
+          b.status === BookingStatus.REQUESTED &&
+          b.start_time !== null &&
+          b.start_time > now,
+      )
     );
 
     const recurringMapped = await Promise.all(unassignedRecurring.map(async (req) => {

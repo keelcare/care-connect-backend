@@ -108,6 +108,10 @@ export class AuthService {
         is_active: user.is_active,
         ban_reason: user.ban_reason,
         oauth_provider: user.oauth_provider,
+        // Needed on first render after sign-in: the partner app's verification
+        // banner keys off this, and without it the status reads as unknown
+        // until something else fetches /users/me.
+        identity_verification_status: user.identity_verification_status,
         profiles:
           user.profiles &&
           (Array.isArray(user.profiles) ? user.profiles[0] : user.profiles),
