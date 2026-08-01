@@ -382,6 +382,26 @@ export class BookingsService {
       orderBy: { created_at: "desc" },
     });
 
+    // Same batched derivation as the parent list. The nanny needs it too:
+    // completing a job is not the same event as the parent paying for it, so
+    // her app must not claim the money arrived until a payment row says so.
+    const paymentRows = await this.prisma.payments.findMany({
+      where: {
+        booking_id: { in: bookings.map((b) => b.id) },
+        provider: { not: MANUAL_PENDING_PROVIDER },
+      },
+      select: { booking_id: true, status: true },
+    });
+    const statusesByBooking = new Map<string, string[]>();
+    for (const row of paymentRows) {
+      if (!row.booking_id) continue;
+      const list = statusesByBooking.get(row.booking_id) ?? [];
+      list.push(row.status ?? "");
+      statusesByBooking.set(row.booking_id, list);
+    }
+    const statusOf = (bookingId: string) =>
+      this.paymentStatusFromRows(statusesByBooking.get(bookingId) ?? []);
+
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const hours =
         booking.start_time && booking.end_time
@@ -404,6 +424,7 @@ export class BookingsService {
         ...booking,
         hourly_rate: appliedRate,
         total_amount: totalAmount,
+        payment_status: statusOf(booking.id),
         title:
           (booking.jobs?.title ||
             (booking.service_requests
