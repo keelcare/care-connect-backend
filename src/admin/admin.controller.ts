@@ -17,6 +17,8 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 import { PaginationDto } from "./dto/pagination.dto";
+import { RevenueQueryDto, UpdateCommissionDto } from "./dto/revenue-query.dto";
+import { RevenueService } from "./revenue.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 
 /** Helper: extract the real client IP from the request */
@@ -34,6 +36,7 @@ function getClientIp(req: any): string {
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
+    private readonly revenueService: RevenueService,
     private readonly bookingStatusLog: BookingStatusLogService,
   ) {}
 
@@ -217,6 +220,46 @@ export class AdminController {
     @Req() req: any,
   ) {
     return this.adminService.updateSetting(key, value, req.user.id, getClientIp(req));
+  }
+
+  // Revenue & Payouts
+  @Get("revenue/summary")
+  async getRevenueSummary(@Query() query: RevenueQueryDto) {
+    return this.revenueService.getSummary(query);
+  }
+
+  @Get("revenue/trend")
+  async getRevenueTrend(@Query() query: RevenueQueryDto) {
+    return this.revenueService.getTrend(query);
+  }
+
+  @Get("revenue/payouts")
+  async getOutstandingPayouts(@Query() query: RevenueQueryDto) {
+    return this.revenueService.getOutstandingPayouts(query);
+  }
+
+  @Post("revenue/payouts/:paymentId/release")
+  async releasePayout(@Param("paymentId") paymentId: string, @Req() req: any) {
+    return this.revenueService.releasePayout(paymentId, req.user.id, getClientIp(req));
+  }
+
+  @Post("revenue/payouts/nanny/:nannyId/release")
+  async releasePayoutsForNanny(@Param("nannyId") nannyId: string, @Req() req: any) {
+    return this.revenueService.releasePayoutsForNanny(nannyId, req.user.id, getClientIp(req));
+  }
+
+  @Get("revenue/commission")
+  async getCommission() {
+    return { percent: await this.revenueService.getCommissionPercent() };
+  }
+
+  @Post("revenue/commission")
+  async updateCommission(@Body() body: UpdateCommissionDto, @Req() req: any) {
+    return this.revenueService.setCommissionPercent(
+      body.percent,
+      req.user.id,
+      getClientIp(req),
+    );
   }
 
   // Analytics

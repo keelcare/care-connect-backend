@@ -29,6 +29,23 @@ export interface GstConfig {
 /** The statutory rate. Used when GST_PERCENT is unset or unparseable. */
 const DEFAULT_GST_PERCENT = 18;
 
+export interface CommissionConfig {
+  percent: number;
+  /** False when no rate has ever been set — surfaced so admin UI can prompt for one. */
+  configured: boolean;
+}
+
+/**
+ * Key in `system_settings` holding the platform take rate, as `{ percent: 5 }`.
+ *
+ * The rate lives in the database, not in env, because an admin can change it from
+ * the dashboard and both the caregiver app and the revenue ledger have to move at
+ * the same instant. There is no per-payment commission column: the rate is applied
+ * at read time, so changing it re-states historical margin. That is deliberate —
+ * the platform bills one rate-card price and the split is internal accounting.
+ */
+export const COMMISSION_SETTING_KEY = 'platform_commission_percent';
+
 export interface CycleChargeInput {
   bookingId: string;
   cycleNumber: number;
@@ -67,6 +84,39 @@ export class PricingEngineService {
   private effectiveGstPercent(): number {
     const { enabled, percent } = this.getGstConfig();
     return enabled ? percent : 0;
+  }
+
+  // ─── Commission ───────────────────────────────────────────────────────────────
+
+  /**
+   * The platform commission in force, as a percentage of the caregiver's pre-tax
+   * service fee. This is the *only* place the rate is resolved — the caregiver
+   * earnings endpoints and the admin revenue ledger both call it, so a rate change
+   * can never leave one side quoting a number the other contradicts.
+   *
+   * An unconfigured or malformed setting resolves to 0%, never to a guess: inventing
+   * a rate would quietly take money off a caregiver's payout that no admin ever set.
+   * `configured: false` lets the admin dashboard prompt for one instead.
+   */
+  async getCommissionConfig(): Promise<CommissionConfig> {
+    const row = await this.prisma.system_settings.findUnique({
+      where: { key: COMMISSION_SETTING_KEY },
+    });
+
+    if (!row) return { percent: 0, configured: false };
+
+    const value = row.value as { percent?: unknown } | number | null;
+    const percent =
+      typeof value === 'number' ? value : Number((value as { percent?: unknown })?.percent);
+
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      this.logger.warn(
+        `${COMMISSION_SETTING_KEY} is set to an unusable value; treating as unconfigured (0%).`,
+      );
+      return { percent: 0, configured: false };
+    }
+
+    return { percent, configured: true };
   }
 
   // ─── Reference-data cache ─────────────────────────────────────────────────────

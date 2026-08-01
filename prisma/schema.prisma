@@ -292,10 +292,17 @@ model payments {
   refund_id         String?
   signature         String?
   updated_at        DateTime?           @default(now()) @db.Timestamptz(6)
+  /// Set when an admin releases the caregiver's share of this payment. A
+  /// `pending_release` row with a null `released_at` is an outstanding payout.
+  released_at       DateTime?           @db.Timestamptz(6)
+  released_by       String?             @db.Uuid
   payment_audit_log payment_audit_log[]
   price_snapshots   price_snapshots[]
   bookings          bookings            @relation(fields: [booking_id], references: [id])
   nanny             users?              @relation("payments_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  released_by_user  users?              @relation("payments_released_by", fields: [released_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([status, released_at])
 }
 
 model payment_audit_log {
@@ -436,6 +443,7 @@ model users {
   admin_audit_log       admin_audit_log[]
   user_consents         user_consents[]
   rate_cards_created    rate_cards[]            @relation("rate_cards_created_by")
+  payouts_released      payments[]              @relation("payments_released_by")
 
   @@unique([oauth_provider, oauth_provider_id])
 }

@@ -16,6 +16,11 @@ import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
 import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
+import {
+  caregiverEarningsWhere,
+  preTaxServiceFee,
+  round2,
+} from "../common/payout-policy";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
 import {
@@ -912,12 +917,11 @@ export class PaymentsService {
   }
 
   async getNannyEarnings(nannyId: string) {
-    // 1. Calculate total earned from captured payments
+    // 1. Calculate total earned. `pending_release` counts: completing a booking flips
+    // a captured payment to that status, so filtering on `captured` alone would drop
+    // a nanny's earnings the moment the job was done.
     const capturedPayments = await this.prisma.payments.aggregate({
-      where: {
-        nanny_id: nannyId,
-        status: PaymentStatus.CAPTURED,
-      },
+      where: caregiverEarningsWhere(nannyId),
       _sum: {
         amount: true,
       },
@@ -943,10 +947,7 @@ export class PaymentsService {
 
     // 3. Fetch recent transactions (captured payments)
     const recentTransactions = await this.prisma.payments.findMany({
-      where: {
-        nanny_id: nannyId,
-        status: PaymentStatus.CAPTURED,
-      },
+      where: caregiverEarningsWhere(nannyId),
       include: {
         bookings: {
           select: {
@@ -974,6 +975,14 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * The caregiver's view of the same ledger the admin revenue screen reads. Every
+   * rule about which rows count, who they belong to and what the pre-tax base is
+   * lives in `common/payout-policy.ts`, so the two can never drift apart.
+   *
+   * Windowing is on `created_at` to match the admin ledger — a caregiver querying a
+   * day's earnings and an admin auditing that day must land on the same rows.
+   */
   async getNannyEarningsAnalytics(nannyId: string, period: "week" | "month" = "week") {
     const now = new Date();
     const days = period === "week" ? 7 : 30;
@@ -985,56 +994,63 @@ export class PaymentsService {
     const lastPeriodStart = new Date(startDate);
     lastPeriodStart.setDate(lastPeriodStart.getDate() - days);
 
-    // Total available (all time captured)
-    const totalAgg = await this.prisma.payments.aggregate({
-      where: { nanny_id: nannyId, status: PaymentStatus.CAPTURED },
-      _sum: { amount: true },
-    });
+    const earned = caregiverEarningsWhere(nannyId);
+    const earningRow = {
+      amount: true,
+      created_at: true,
+      released_at: true,
+      price_snapshots: { select: { gst_amount: true } },
+    } satisfies Prisma.paymentsSelect;
 
-    // Pending processing
-    const pendingAgg = await this.prisma.payments.aggregate({
-      where: { nanny_id: nannyId, status: PaymentStatus.CREATED },
-      _sum: { amount: true },
-    });
+    const [allTime, periodPayments, lastPeriodPayments, jobsCompleted, jobsThisPeriod] =
+      await this.prisma.$transaction([
+        this.prisma.payments.findMany({ where: earned, select: earningRow }),
+        this.prisma.payments.findMany({
+          where: { ...earned, created_at: { gte: startDate } },
+          select: earningRow,
+        }),
+        this.prisma.payments.findMany({
+          where: { ...earned, created_at: { gte: lastPeriodStart, lt: startDate } },
+          select: earningRow,
+        }),
+        this.prisma.bookings.count({
+          where: { nanny_id: nannyId, status: BookingStatus.COMPLETED },
+        }),
+        this.prisma.bookings.count({
+          where: {
+            nanny_id: nannyId,
+            status: BookingStatus.COMPLETED,
+            end_time: { gte: startDate },
+          },
+        }),
+      ]);
 
-    // Jobs completed in period
-    const jobsCompleted = await this.prisma.bookings.count({
-      where: { nanny_id: nannyId, status: "COMPLETED" },
-    });
-    const jobsThisPeriod = await this.prisma.bookings.count({
-      where: {
-        nanny_id: nannyId,
-        status: "COMPLETED",
-        end_time: { gte: startDate },
-      },
-    });
+    const sum = (rows: typeof allTime) =>
+      round2(rows.reduce((s, p) => s + preTaxServiceFee(p), 0));
 
-    // Period earnings & last period for comparison
-    const periodPayments = await this.prisma.payments.findMany({
-      where: {
-        nanny_id: nannyId,
-        status: PaymentStatus.CAPTURED,
-        updated_at: { gte: startDate },
-      },
-      select: { amount: true, updated_at: true },
-    });
-    const periodTotal = periodPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const totalEarned = sum(allTime);
+    const periodTotal = sum(periodPayments);
+    const lastPeriodTotal = sum(lastPeriodPayments);
 
-    const lastPeriodPayments = await this.prisma.payments.aggregate({
-      where: {
-        nanny_id: nannyId,
-        status: PaymentStatus.CAPTURED,
-        updated_at: { gte: lastPeriodStart, lt: startDate },
-      },
-      _sum: { amount: true },
-    });
-    const lastPeriodTotal = Number(lastPeriodPayments._sum.amount || 0);
     const periodChange =
       lastPeriodTotal > 0
         ? Math.round(((periodTotal - lastPeriodTotal) / lastPeriodTotal) * 100)
         : null;
 
-    // Revenue trend: group by day
+    // Resolved server-side and returned alongside the figures it produced, so a rate
+    // change ships without a client release and no app can drift from the ledger.
+    const { percent: commissionPercent } = await this.pricingService.getCommissionConfig();
+    const share = (gross: number) => round2(gross * (1 - commissionPercent / 100));
+
+    const commissionAmount = round2(totalEarned * (commissionPercent / 100));
+    const netPayout = share(totalEarned);
+
+    // An admin releasing a payout stamps `released_at`. Without splitting on it the
+    // caregiver would keep seeing money already in her bank as still owed.
+    const paidOut = share(sum(allTime.filter((p) => p.released_at != null)));
+    const outstanding = round2(netPayout - paidOut);
+
+    // Revenue trend: gross earnings grouped by day, matching `totalEarned`.
     const trend: { date: string; amount: number; projection?: number }[] = [];
     for (let i = days - 1; i >= 0; i--) {
       const day = new Date(now);
@@ -1043,25 +1059,28 @@ export class PaymentsService {
       const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
 
       const dayPayments = periodPayments.filter((p) => {
-        const d = new Date(p.updated_at!);
+        const d = new Date(p.created_at!);
         return d >= dayStart && d <= dayEnd;
       });
-      const dayAmount = dayPayments.reduce((s, p) => s + Number(p.amount), 0);
 
       trend.push({
         date: day.toISOString().slice(0, 10),
-        amount: dayAmount,
+        amount: sum(dayPayments),
       });
     }
 
     // Average daily projection
     const activeDays = trend.filter((t) => t.amount > 0).length;
-    const avgDaily = activeDays > 0 ? periodTotal / activeDays : 0;
+    const avgDaily = activeDays > 0 ? round2(periodTotal / activeDays) : 0;
     trend.forEach((t) => { if (t.amount === 0 && new Date(t.date) > now) t.projection = avgDaily; });
 
     return {
-      totalAvailable: Number(totalAgg._sum.amount || 0),
-      pendingProcessing: Number(pendingAgg._sum.amount || 0),
+      totalEarned,
+      commissionPercent,
+      commissionAmount,
+      netPayout,
+      paidOut,
+      outstanding,
       jobsCompleted,
       jobsThisPeriod,
       periodTotal,

@@ -51,3 +51,52 @@ describe('PricingEngineService — GST config', () => {
     expect(svc.getGstConfig().percent).toBe(5);
   });
 });
+
+/**
+ * The single resolver behind both the caregiver's payout figures and the admin
+ * revenue ledger. A wrong answer here is money quoted wrong to a caregiver, so the
+ * unconfigured and malformed paths matter as much as the happy one.
+ */
+describe('PricingEngineService — commission config', () => {
+  async function build(row: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        {
+          provide: PrismaService,
+          useValue: { system_settings: { findUnique: async () => row } },
+        },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('reports the configured rate', async () => {
+    const svc = await build({ value: { percent: 5 } });
+    expect(await svc.getCommissionConfig()).toEqual({ percent: 5, configured: true });
+  });
+
+  it('accepts a bare number, which is how the setting may have been written by hand', async () => {
+    const svc = await build({ value: 12.5 });
+    expect(await svc.getCommissionConfig()).toEqual({ percent: 12.5, configured: true });
+  });
+
+  it('reports unconfigured — never a guess — when no rate has been set', async () => {
+    // Inventing a rate would take money off a caregiver's payout that no admin set.
+    const svc = await build(null);
+    expect(await svc.getCommissionConfig()).toEqual({ percent: 0, configured: false });
+  });
+
+  it('treats an unusable value as unconfigured rather than as 0% by accident', async () => {
+    for (const value of [{ percent: 'abc' }, { percent: -1 }, { percent: 101 }, {}, 'nope']) {
+      const svc = await build({ value });
+      expect(await svc.getCommissionConfig()).toEqual({ percent: 0, configured: false });
+    }
+  });
+
+  it('allows an explicit 0%, distinguished from unset by `configured`', async () => {
+    const svc = await build({ value: { percent: 0 } });
+    expect(await svc.getCommissionConfig()).toEqual({ percent: 0, configured: true });
+  });
+});

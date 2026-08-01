@@ -212,7 +212,13 @@ export class PaymentsController {
   @Get("nanny/earnings/analytics")
   @Roles(UserRole.NANNY)
   @UseGuards(AuthGuard("jwt"), RolesGuard)
-  @ApiOperation({ summary: "Get earnings analytics with trend data for the nanny dashboard" })
+  @ApiOperation({
+    summary: "Get earnings analytics with trend data for the nanny dashboard",
+    description:
+      "Amounts are the caregiver's pre-tax service fee. `commissionPercent` is the " +
+      "platform rate in force and `netPayout` is what the caregiver actually receives; " +
+      "clients must display those rather than applying a rate of their own.",
+  })
   @ApiResponse({ status: 200, description: "Earnings analytics returned" })
   async getNannyEarningsAnalytics(@Req() req: any, @Query("period") period: "week" | "month" = "week") {
     return this.paymentsService.getNannyEarningsAnalytics(req.user.id, period);

@@ -4,6 +4,7 @@ import { JwtModule } from "@nestjs/jwt";
 import { AdminService } from "./admin.service";
 import { AdminController } from "./admin.controller";
 import { AdminAuditService } from "./admin-audit.service";
+import { RevenueService } from "./revenue.service";
 
 import { NotificationsModule } from "../notifications/notifications.module";
 import { FavoritesModule } from "../favorites/favorites.module";
@@ -28,7 +29,7 @@ import { BookingsModule } from "../bookings/bookings.module";
     forwardRef(() => BookingsModule),
   ],
   controllers: [AdminController],
-  providers: [AdminService, AdminAuditService],
-  exports: [AdminService, AdminAuditService],
+  providers: [AdminService, AdminAuditService, RevenueService],
+  exports: [AdminService, AdminAuditService, RevenueService],
 })
 export class AdminModule {}

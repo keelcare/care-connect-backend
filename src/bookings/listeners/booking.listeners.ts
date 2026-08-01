@@ -115,6 +115,9 @@ export class BookingListeners {
       await this.prisma.payments.create({
         data: {
           booking_id: booking.id,
+          // Without this the row is invisible to every nanny earnings query — they
+          // all filter on nanny_id, so the payout would accrue to nobody.
+          nanny_id: booking.nanny_id ?? null,
           amount: totalAmount,
           status: "pending_release",
           order_id: `${MANUAL_PENDING_PROVIDER}_${booking.id}_${Date.now()}`,
