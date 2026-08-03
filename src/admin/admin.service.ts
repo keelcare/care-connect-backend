@@ -1217,6 +1217,13 @@ export class AdminService {
           _count: {
             select: { bookings: { where: { status: { not: "CANCELLED" } } } }
           },
+          // Lets the admin list flag unstaffed plans without opening each one.
+          nanny: {
+            select: {
+              id: true,
+              profiles: { select: { first_name: true, last_name: true, profile_image_url: true } },
+            },
+          },
           bookings: {
             where: { start_time: { gte: new Date() }, status: { not: "CANCELLED" } },
             orderBy: { start_time: 'asc' },
@@ -1517,7 +1524,9 @@ export class AdminService {
     const acceptanceRate =
       totalAssignments > 0 ? (acceptedAssignments / totalAssignments) * 100 : 0;
 
-    const totalRevenue = revenueData._sum.amount || 0;
+    // `payments.amount` is a Decimal, which serializes to a JSON string. Clients
+    // expect a number here, so coerce before it leaves the service.
+    const totalRevenue = Number(revenueData._sum.amount ?? 0);
 
     // Matching Health Metrics
     const matchingSuccessRate =
@@ -1538,7 +1547,7 @@ export class AdminService {
       }
     });
 
-    const popularTimes = hourCounts
+    const popularBookingTimes = hourCounts
       .map((count, hour) => ({ hour, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
@@ -1553,7 +1562,7 @@ export class AdminService {
         rejected: rejectedAssignments,
       },
       totalRevenue,
-      popularTimes,
+      popularBookingTimes,
       totalRequests,
       completedBookings,
       cancelledBookings,
