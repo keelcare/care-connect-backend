@@ -282,25 +282,25 @@ describe('the split as a parent experiences it', () => {
   });
 });
 
-describe('planInstalments — the matching fee never changes what a plan costs', () => {
+describe('planInstalments — splits what is left to pay', () => {
   const sum = (parts: { amount: number }[]) =>
     Math.round(parts.reduce((a, p) => a + p.amount, 0) * 100) / 100;
 
-  it('carves the fee out of the advance rather than adding it on top', () => {
-    const parts = planInstalments(10000, { splittable: true, matchingFee: 500 });
+  it('halves the amount net of a fee already collected at confirmation', () => {
+    // Plan 10,000 with a 249 matching fee taken at confirmation leaves 9,751,
+    // and the advance is half of *that* — not half of 10,000. This is what makes
+    // the confirmation screen's promise true: the fee comes off the total.
+    const parts = planInstalments(9751, { splittable: true });
 
     expect(parts).toEqual([
-      { kind: 'matching_fee', amount: 500, dueNow: true },
-      { kind: 'cycle', amount: 4500, dueNow: true },
-      { kind: 'cycle', amount: 5000, dueNow: false },
+      { kind: 'cycle', amount: 4875.5, dueNow: true },
+      { kind: 'cycle', amount: 4875.5, dueNow: false },
     ]);
-    // The parent pays 10,000 either way — the fee is just the first thing.
-    expect(sum(parts)).toBe(10000);
-    // And 50% is still due up front: 500 + 4,500.
-    expect(sum(parts.filter((p) => p.dueNow))).toBe(5000);
+    // 249 already paid + these two = the 10,000 originally quoted.
+    expect(round2(249 + sum(parts))).toBe(10000);
   });
 
-  it('leaves the plain 50/50 untouched when no fee is configured', () => {
+  it('leaves the plain 50/50 untouched when no fee was charged', () => {
     const parts = planInstalments(11880, { splittable: true });
 
     expect(parts).toEqual([
@@ -309,41 +309,23 @@ describe('planInstalments — the matching fee never changes what a plan costs',
     ]);
   });
 
-  it('still takes the fee up front on a one-time booking, which is never split', () => {
-    const parts = planInstalments(3000, { splittable: false, matchingFee: 500 });
-
-    expect(parts).toEqual([
-      { kind: 'matching_fee', amount: 500, dueNow: true },
-      { kind: 'cycle', amount: 2500, dueNow: true },
+  it('charges a one-time booking whole — there is nothing to spread it across', () => {
+    expect(planInstalments(2751, { splittable: false })).toEqual([
+      { kind: 'cycle', amount: 2751, dueNow: true },
     ]);
-    expect(sum(parts)).toBe(3000);
   });
 
-  it('defers the remainder rather than writing an uncollectable sliver', () => {
-    // A fee that swallows the advance whole. Splitting normally would leave a
-    // sub-rupee advance row Razorpay would reject, stranding the cycle open.
-    const parts = planInstalments(1000, { splittable: true, matchingFee: 500 });
-
-    expect(parts).toEqual([
-      { kind: 'matching_fee', amount: 500, dueNow: true },
-      { kind: 'cycle', amount: 500, dueNow: false },
-    ]);
-    expect(sum(parts)).toBe(1000);
-  });
-
-  it('never bills more than the cycle when the fee exceeds it', () => {
-    const parts = planInstalments(400, { splittable: false, matchingFee: 900 });
-
-    expect(sum(parts)).toBe(400);
-  });
-
-  it('splits odd amounts to the paisa, with the remainder collected up front', () => {
-    const parts = planInstalments(999.99, { splittable: true, matchingFee: 100 });
+  it('puts the odd paisa on the advance, which is charged against a live checkout', () => {
+    const parts = planInstalments(999.99, { splittable: true });
 
     expect(sum(parts)).toBe(999.99);
-    expect(parts[0]).toEqual({ kind: 'matching_fee', amount: 100, dueNow: true });
+    expect(parts[0].amount).toBeGreaterThan(parts[1].amount);
   });
 });
+
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
 
 describe('apportion', () => {
   it('splits a tax line in proportion to uneven instalments', () => {

@@ -251,6 +251,36 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * Whether the charge being opened is the matching fee and nothing else.
+   *
+   * Deliberately narrow: it authorises billing a booking with no caregiver on it,
+   * so it must not be satisfied by a cycle instalment that happens to sit beside
+   * a fee. When no instalment is named, the fee only qualifies if it is the sole
+   * thing outstanding.
+   */
+  private async hasOnlyMatchingFeeOutstanding(
+    bookingId: string,
+    installmentId?: string,
+  ): Promise<boolean> {
+    if (installmentId) {
+      const named = await this.prisma.payment_installments.findUnique({
+        where: { id: installmentId },
+        select: { kind: true, booking_id: true },
+      });
+      return named?.booking_id === bookingId && named?.kind === MATCHING_FEE_KIND;
+    }
+
+    const outstanding = await this.prisma.payment_installments.findMany({
+      where: { booking_id: bookingId, status: INSTALMENT_PENDING },
+      select: { kind: true },
+    });
+
+    return (
+      outstanding.length > 0 && outstanding.every((i) => i.kind === MATCHING_FEE_KIND)
+    );
+  }
+
   async createOrder(
     bookingId: string,
     requestingUserId?: string,
@@ -269,7 +299,12 @@ export class PaymentsService {
     });
 
     if (!booking) throw new NotFoundException("Booking not found");
-    if (!booking.nanny_id) {
+
+    // Care is never billed before someone is assigned to deliver it. The matching
+    // fee is the deliberate exception: it is charged when the parent confirms the
+    // booking, which is by definition before any caregiver exists.
+    const feeOnly = await this.hasOnlyMatchingFeeOutstanding(bookingId, installmentId);
+    if (!booking.nanny_id && !feeOnly) {
       throw new BadRequestException(
         "Payment is only allowed after a nanny has been assigned.",
       );
@@ -1224,7 +1259,10 @@ export class PaymentsService {
           row.bookings?.recurring_service_requests?.category ??
           null,
         sessionStart: row.bookings?.start_time ?? null,
-        payable: !!row.bookings?.nanny_id,
+        // The fee is owed from confirmation, so it stays payable with no caregiver
+        // on the booking — otherwise an abandoned fee checkout would be stranded
+        // until a match happened. Everything else waits for someone to deliver it.
+        payable: row.kind === MATCHING_FEE_KIND || !!row.bookings?.nanny_id,
         /** `cycle` or `matching_fee` — the client labels the charge from this. */
         kind: row.kind,
         /** True when this is a recurring plan's cycle rather than a single session. */

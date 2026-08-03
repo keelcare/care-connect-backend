@@ -23,6 +23,7 @@ export class PricingController {
       example: {
         gst: { enabled: false, percent: 18 },
         splitPayment: { enabled: true, ratioPercent: 50, dueDays: 14 },
+        matchingFee: { enabled: true, amount: 249 },
       },
     },
   })
@@ -33,6 +34,10 @@ export class PricingController {
       // days"). The amounts themselves still come from the order response — this
       // is the policy, not the arithmetic.
       splitPayment: await this.pricingService.getAdvancePaymentConfig(),
+      // The parent has to be told what they are about to be charged *before* they
+      // confirm, since the fee is taken at that moment. Read-only policy — the
+      // amount actually billed comes back on the create response.
+      matchingFee: await this.pricingService.getMatchingFeeConfig(),
     };
   }
 }

@@ -223,13 +223,43 @@ export class RecurringRequestsService {
         })
       );
 
-      return { recurringReq, generatedBookingsCount: createdBookings.length };
+      // Billing for the whole plan anchors to its earliest session (see
+      // PaymentsService.planBillingAnchor); the fee is raised against the same row.
+      const anchorBooking = createdBookings.reduce(
+        (earliest, b) => (b.start_time < earliest.start_time ? b : earliest),
+        createdBookings[0],
+      );
+
+      return {
+        recurringReq,
+        generatedBookingsCount: createdBookings.length,
+        anchorBookingId: anchorBooking?.id ?? null,
+      };
     }, {
       timeout: 20000, // Increase timeout to 20s for bulk inserts
       maxWait: 5000,
     });
 
-    return result;
+    // The matching fee is charged now, at confirmation — the parent has just
+    // agreed to the plan, and it is deducted from the first cycle rather than
+    // added on top. Raised outside the transaction so a pricing problem cannot
+    // roll back a plan the parent has already committed to; without a fee row the
+    // first cycle simply bills in full.
+    const matchingFee = result.anchorBookingId
+      ? await this.pricingService.raiseMatchingFee(result.anchorBookingId)
+      : null;
+
+    return {
+      ...result,
+      /** Present only when a fee applies — the client charges it immediately. */
+      matching_fee: matchingFee
+        ? {
+            bookingId: result.anchorBookingId,
+            installmentId: matchingFee.installmentId,
+            amount: matchingFee.amount,
+          }
+        : null,
+    };
   }
 
   async findAllByParent(parentId: string) {

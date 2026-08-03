@@ -20,6 +20,19 @@ import {
 /** `payment_installments.kind` for the one-off placement fee. */
 export const MATCHING_FEE_KIND = 'matching_fee';
 
+/**
+ * The matching fee's cycle number. Deliberately outside the 1..N monthly cycles:
+ * it is not a month of care, and keeping it at 0 means cycle 1 is still the first
+ * month while the ordinary "oldest unpaid cycle first" ordering charges the fee
+ * before anything else.
+ */
+export const MATCHING_FEE_CYCLE = 0;
+
+/** Round to paise. Money must never carry float drift into a charge. */
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 export interface QuoteInput {
   serviceId: string;
   hoursPerDay: number;
@@ -67,10 +80,10 @@ export const SPLIT_PAYMENTS_ENABLED_KEY = 'split_payments_enabled';
 /**
  * One-off fee for placing a caregiver, as `{ enabled: boolean, amount: 500 }`.
  *
- * Charged when a caregiver is assigned and *carved out of* the booking's total
- * rather than added to it: the parent's all-in cost is unchanged, the fee is
- * simply the first thing they pay. A plan pays it once, on its first cycle, not
- * every month.
+ * Charged when the parent *confirms the booking* — before any caregiver exists —
+ * and deducted from the booking's total rather than added to it: the all-in cost
+ * is unchanged, the fee is simply the first thing they pay, and every later
+ * instalment is smaller for it. Charged once per booking, never per month.
  *
  * Off unless an admin turns it on — unlike split payments, this is a charge, and
  * a missing row must never invent one.
@@ -557,19 +570,25 @@ export class PricingEngineService {
     // not every month. The `already charged` check is what makes re-snapshotting
     // an abandoned first checkout safe: it looks for a fee row on the *booking*,
     // so a second attempt at cycle 1 cannot mint a second fee.
-    const matchingFee = await this.resolveMatchingFeeFor(bookingId, cycleNumber);
+    // The matching fee was already collected when the parent confirmed the
+    // booking, so the first cycle bills what is *left*: 50% of the reduced
+    // amount, not 50% of the headline price. Later cycles are untouched — the fee
+    // is a one-off, and it has already been accounted for here.
+    const feeCredit = await this.matchingFeeCreditFor(bookingId, cycleNumber);
+    const netTotal = round2(Math.max(0, breakdown.finalAmount - feeCredit));
 
-    const planned = planInstalments(breakdown.finalAmount, {
-      splittable,
-      matchingFee,
-    });
+    // Tax lines shrink with the amount they belong to, so subtotal + GST still
+    // reconciles to what is actually charged.
+    const netRatio = breakdown.finalAmount > 0 ? netTotal / breakdown.finalAmount : 0;
+    const netSubtotal = round2(breakdown.subtotalAmount * netRatio);
+    const netGst = round2(netTotal - netSubtotal);
+
+    const planned = planInstalments(netTotal, { splittable });
     const parts = planned.length;
 
-    // Apportioned by amount rather than split evenly: a matching fee makes the
-    // rows uneven, and the tax lines have to follow the money they belong to.
     const weights = planned.map((p) => p.amount);
-    const subtotals = apportion(breakdown.subtotalAmount, weights);
-    const gsts = apportion(breakdown.gstAmount, weights);
+    const subtotals = apportion(netSubtotal, weights);
+    const gsts = apportion(netGst, weights);
 
     // Snapshot and installments are one write: a snapshot with no installments
     // would be a cycle nothing can ever charge.
@@ -585,11 +604,17 @@ export class PricingEngineService {
           base_hourly_rate_used: breakdown.baseHourlyRate ?? 0,
           hours_billed: breakdown.totalHours ?? 0,
           custom_price_applied: breakdown.customPriceApplied,
-          subtotal_amount: breakdown.subtotalAmount,
+          subtotal_amount: netSubtotal,
           gst_percent_used: breakdown.gstPercent,
-          gst_amount: breakdown.gstAmount,
-          final_amount: breakdown.finalAmount,
-          calculation_breakdown: breakdown as any,
+          gst_amount: netGst,
+          final_amount: netTotal,
+          // The gross figures stay in the breakdown so a cycle discounted by the
+          // fee can still be reconciled back to the price it was quoted at.
+          calculation_breakdown: {
+            ...breakdown,
+            matchingFeeCredited: feeCredit,
+            grossFinalAmount: breakdown.finalAmount,
+          } as any,
           status: 'pending',
         },
       });
@@ -620,38 +645,125 @@ export class PricingEngineService {
 
     this.logger.log(
       `Price snapshot created: booking=${bookingId} cycle=${cycleNumber} ` +
-        `amount=${breakdown.finalAmount} installments=${parts}`,
+        `amount=${netTotal}${feeCredit ? ` (less ${feeCredit} matching fee)` : ''} ` +
+        `installments=${parts}`,
     );
 
     return {
       snapshotId: snapshot.id,
-      finalAmount: breakdown.finalAmount,
+      finalAmount: netTotal,
       breakdown,
     };
   }
 
   /**
-   * The matching fee to carve out of this cycle, or 0.
+   * The matching fee already raised against this booking, to be deducted from
+   * its first cycle. 0 for every later cycle — the fee is a one-off.
    *
-   * Only ever the first cycle, and only if this booking has never had a fee row
-   * written before — a parent who abandons the first checkout and comes back must
-   * not be charged for the same placement twice.
+   * Read off the fee row rather than the current setting: an admin who changes
+   * the amount between confirmation and assignment must not change what this
+   * parent was actually charged, and one who switches the fee off entirely must
+   * not turn an already-collected fee into a discount on top of itself.
    */
-  private async resolveMatchingFeeFor(
+  private async matchingFeeCreditFor(
     bookingId: string,
     cycleNumber: number,
   ): Promise<number> {
     if (cycleNumber !== 1) return 0;
 
-    const { enabled, amount } = await this.getMatchingFeeConfig();
-    if (!enabled) return 0;
-
-    const alreadyCharged = await this.prisma.payment_installments.findFirst({
+    const fee = await this.prisma.payment_installments.findFirst({
       where: { booking_id: bookingId, kind: MATCHING_FEE_KIND },
-      select: { id: true },
+      select: { amount: true },
     });
 
-    return alreadyCharged ? 0 : amount;
+    return fee ? Number(fee.amount) : 0;
+  }
+
+  /**
+   * Raise the matching fee for a booking, payable immediately.
+   *
+   * Called when the parent confirms the booking — before any caregiver exists —
+   * because that is the moment they agreed to it. It gets its own snapshot at
+   * `cycle_number` 0, outside the monthly cycles, so the ordinary billing
+   * machinery can charge it without a special case and `cycle 1` stays the first
+   * month of care.
+   *
+   * Returns null when no fee applies, which is the common case: the fee is off
+   * unless an admin has explicitly enabled it.
+   */
+  async raiseMatchingFee(
+    bookingId: string,
+  ): Promise<{ snapshotId: string; installmentId: string; amount: number } | null> {
+    const { enabled, amount } = await this.getMatchingFeeConfig();
+    if (!enabled || amount <= 0) return null;
+
+    // A parent who abandons checkout and comes back must not be charged for the
+    // same placement twice, so an existing row wins over raising a new one.
+    const existing = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, kind: MATCHING_FEE_KIND },
+      select: { id: true, price_snapshot_id: true, amount: true },
+    });
+    if (existing) {
+      return {
+        snapshotId: existing.price_snapshot_id,
+        installmentId: existing.id,
+        amount: Number(existing.amount),
+      };
+    }
+
+    // The fee is a flat, tax-inclusive charge — there are no hours behind it, so
+    // GST is carried on the amount itself rather than added to it.
+    const gstPercent = this.effectiveGstPercent();
+    const subtotal = round2(amount / (1 + gstPercent / 100));
+    const gst = round2(amount - subtotal);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const snapshot = await tx.price_snapshots.create({
+        data: {
+          booking_id: bookingId,
+          cycle_number: MATCHING_FEE_CYCLE,
+          base_hourly_rate_used: 0,
+          hours_billed: 0,
+          custom_price_applied: false,
+          subtotal_amount: subtotal,
+          gst_percent_used: gstPercent,
+          gst_amount: gst,
+          final_amount: amount,
+          calculation_breakdown: {
+            kind: MATCHING_FEE_KIND,
+            note: 'One-off placement fee, deducted from the first billing cycle.',
+            amount,
+          } as any,
+          status: 'pending',
+        },
+      });
+
+      const installment = await tx.payment_installments.create({
+        data: {
+          booking_id: bookingId,
+          price_snapshot_id: snapshot.id,
+          cycle_number: MATCHING_FEE_CYCLE,
+          installment_no: 1,
+          total_installments: 1,
+          kind: MATCHING_FEE_KIND,
+          amount,
+          subtotal_amount: subtotal,
+          gst_amount: gst,
+          due_date: new Date(),
+          status: 'pending',
+        },
+      });
+
+      return { snapshot, installment };
+    });
+
+    this.logger.log(`Matching fee ${amount} raised for booking ${bookingId}`);
+
+    return {
+      snapshotId: created.snapshot.id,
+      installmentId: created.installment.id,
+      amount,
+    };
   }
 
   /**

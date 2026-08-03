@@ -261,74 +261,33 @@ export interface PlannedInstalment {
 }
 
 /**
- * How a cycle is collected, once the matching fee is taken into account.
+ * How a cycle is collected.
  *
- * The fee is **carved out of** the cycle total, never added to it: the parent's
- * all-in cost is identical whether the fee is on or off, it is just the first
- * thing they pay. So the amounts always sum back to `total` exactly.
+ * The matching fee is **not** part of this. It is charged separately, when the
+ * parent confirms the booking, and the amount reaching this function is already
+ * net of it — so an advance is 50% of what is *left to pay*, not 50% of the
+ * headline price:
  *
- * For a splittable cycle with a fee, that means three rows — the fee and the
- * remainder of the advance, both due immediately, then the balance:
+ *     plan 10,000, fee 249 charged at confirmation
+ *       → this is called with 9,751 → 4,875.50 advance + 4,875.50 balance
+ *       → parent pays 249 + 4,875.50 + 4,875.50 = 10,000
  *
- *     total 10,000, fee 500  →  500 (fee, now) + 4,500 (advance, now) + 5,000 (balance)
- *
- * The advance half is still 50% of the cycle; the fee is simply part of it. If the
- * fee is large enough to swallow the whole advance the remainder row is dropped
- * rather than written as zero — Razorpay cannot charge ₹0, and a permanently
- * unpayable row would keep the cycle open forever.
+ * Netting the fee off here rather than carving it out of the advance is what
+ * makes the confirmation screen's promise true: the fee comes off the total, so
+ * every later instalment is smaller than it would otherwise have been.
  */
 export function planInstalments(
   total: number,
-  opts: { splittable: boolean; matchingFee?: number },
+  opts: { splittable: boolean },
 ): PlannedInstalment[] {
-  const fee = Math.min(
-    Math.max(0, Math.round((opts.matchingFee ?? 0) * RAZORPAY_PAISE_MULTIPLIER)),
-    Math.round(total * RAZORPAY_PAISE_MULTIPLIER),
-  );
-  const totalPaise = Math.round(total * RAZORPAY_PAISE_MULTIPLIER);
-  const toRupees = (paise: number) => paise / RAZORPAY_PAISE_MULTIPLIER;
-
-  // Anything below the gateway floor cannot be its own charge, so it stays folded
-  // into the row beside it instead of becoming a row nothing can settle.
-  const chargeable = (paise: number) => paise >= RAZORPAY_MIN_AMOUNT_PAISE;
-
   if (!opts.splittable) {
-    if (!chargeable(fee) || !chargeable(totalPaise - fee)) {
-      return [{ kind: 'cycle', amount: total, dueNow: true }];
-    }
-    return [
-      { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
-      { kind: 'cycle', amount: toRupees(totalPaise - fee), dueNow: true },
-    ];
+    return [{ kind: 'cycle', amount: total, dueNow: true }];
   }
 
-  // Split in paise off the total, so advance + balance reconcile to the cent
-  // regardless of what the fee does to the first half.
-  const [advance, balance] = splitAmount(total).map((n) =>
-    Math.round(n * RAZORPAY_PAISE_MULTIPLIER),
-  );
-
-  if (!chargeable(fee)) {
-    return [
-      { kind: 'cycle', amount: toRupees(advance), dueNow: true },
-      { kind: 'cycle', amount: toRupees(balance), dueNow: false },
-    ];
-  }
-
-  const advanceRemainder = advance - fee;
-  if (!chargeable(advanceRemainder)) {
-    // The fee covers the advance outright. Whatever it doesn't cover joins the
-    // balance rather than becoming an uncollectable sliver.
-    return [
-      { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
-      { kind: 'cycle', amount: toRupees(totalPaise - fee), dueNow: false },
-    ];
-  }
-
+  const [advance, balance] = splitAmount(total);
   return [
-    { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
-    { kind: 'cycle', amount: toRupees(advanceRemainder), dueNow: true },
-    { kind: 'cycle', amount: toRupees(balance), dueNow: false },
+    { kind: 'cycle', amount: advance, dueNow: true },
+    { kind: 'cycle', amount: balance, dueNow: false },
   ];
 }
 

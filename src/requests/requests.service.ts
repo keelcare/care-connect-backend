@@ -157,6 +157,12 @@ export class RequestsService {
           return { request, booking, totalAmount, hourlyRate };
         });
 
+      // The matching fee is charged now, at confirmation — the parent has just
+      // agreed to the booking, and it is deducted from what they owe rather than
+      // added on top. Outside the transaction so a pricing problem cannot roll
+      // back a booking the parent has already committed to.
+      const matchingFee = await this.pricingService.raiseMatchingFee(booking.id);
+
       // 4. Notify Parent about matching in progress
       await this.notificationsService.createNotification(
         parentId,
@@ -184,6 +190,14 @@ export class RequestsService {
         ...request,
         hourly_rate: hourlyRate,
         total_amount: totalAmount,
+        /** Present only when a fee applies — the client charges it immediately. */
+        matching_fee: matchingFee
+          ? {
+              bookingId: booking.id,
+              installmentId: matchingFee.installmentId,
+              amount: matchingFee.amount,
+            }
+          : null,
       };
     } catch (error) {
       if (error.code === "P2002") {

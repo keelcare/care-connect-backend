@@ -173,3 +173,144 @@ describe('PricingEngineService — advance payment config', () => {
     expect((await svc.getAdvancePaymentConfig()).ratioPercent).toBe(50);
   });
 });
+
+/**
+ * The matching fee is a charge, so the paths that decide *whether* to raise one
+ * matter as much as the amount. Getting these wrong bills a parent for a fee no
+ * admin enabled, or bills them twice for the same placement.
+ */
+describe('PricingEngineService — matching fee config', () => {
+  async function build(settingValue: unknown | undefined) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        {
+          provide: PrismaService,
+          useValue: {
+            system_settings: {
+              findUnique: jest
+                .fn()
+                .mockResolvedValue(settingValue === undefined ? null : { value: settingValue }),
+            },
+          },
+        },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('charges nothing when no fee has ever been configured', async () => {
+    const svc = await build(undefined);
+    expect(await svc.getMatchingFeeConfig()).toEqual({ enabled: false, amount: 0 });
+  });
+
+  it('requires `enabled` explicitly — an amount alone is not consent to bill', async () => {
+    const svc = await build({ amount: 249 });
+    expect(await svc.getMatchingFeeConfig()).toEqual({ enabled: false, amount: 0 });
+  });
+
+  it('reports the configured fee when switched on', async () => {
+    const svc = await build({ enabled: true, amount: 249 });
+    expect(await svc.getMatchingFeeConfig()).toEqual({ enabled: true, amount: 249 });
+  });
+
+  it('refuses an enabled fee with an unusable amount rather than guessing one', async () => {
+    for (const amount of [0, -100, 'abc', null, 10_000_000]) {
+      const svc = await build({ enabled: true, amount });
+      expect(await svc.getMatchingFeeConfig()).toEqual({ enabled: false, amount: 0 });
+    }
+  });
+
+  it('reports nothing owed once the fee is switched back off', async () => {
+    const svc = await build({ enabled: false, amount: 249 });
+    expect(await svc.getMatchingFeeConfig()).toEqual({ enabled: false, amount: 0 });
+  });
+});
+
+/**
+ * `raiseMatchingFee` runs at booking confirmation. The re-entrancy case is the
+ * one that costs real money: a parent who abandons the payment sheet and comes
+ * back must be shown the same charge, never a second one.
+ */
+describe('PricingEngineService — raising the fee at confirmation', () => {
+  function build(opts: { fee?: unknown; existing?: unknown } = {}) {
+    const create = jest.fn().mockImplementation(({ data }) => ({ id: 'new-row', ...data }));
+    const prisma = {
+      system_settings: {
+        findUnique: jest.fn().mockResolvedValue(opts.fee ? { value: opts.fee } : null),
+      },
+      payment_installments: {
+        findFirst: jest.fn().mockResolvedValue(opts.existing ?? null),
+      },
+      $transaction: jest.fn().mockImplementation((cb: any) =>
+        cb({
+          price_snapshots: { create },
+          payment_installments: { create },
+        }),
+      ),
+    };
+    return { prisma, create };
+  }
+
+  async function service(prisma: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('raises nothing when the fee is off', async () => {
+    const { prisma } = build();
+    const svc = await service(prisma);
+
+    expect(await svc.raiseMatchingFee('booking-1')).toBeNull();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('raises a fee payable immediately, outside the monthly cycles', async () => {
+    const { prisma, create } = build({ fee: { enabled: true, amount: 249 } });
+    const svc = await service(prisma);
+
+    const res = await svc.raiseMatchingFee('booking-1');
+
+    expect(res?.amount).toBe(249);
+    // cycle 0 keeps cycle 1 as the first month of care while still sorting first.
+    const snapshot = create.mock.calls[0][0].data;
+    expect(snapshot.cycle_number).toBe(0);
+    expect(snapshot.final_amount).toBe(249);
+
+    const installment = create.mock.calls[1][0].data;
+    expect(installment.kind).toBe('matching_fee');
+    // Due on sight: it is owed from the moment the parent confirms.
+    expect(installment.due_date).toBeInstanceOf(Date);
+  });
+
+  it('never charges twice for the same placement', async () => {
+    const { prisma } = build({
+      fee: { enabled: true, amount: 249 },
+      existing: { id: 'fee-1', price_snapshot_id: 'snap-1', amount: 249 },
+    });
+    const svc = await service(prisma);
+
+    const res = await svc.raiseMatchingFee('booking-1');
+
+    expect(res).toEqual({ snapshotId: 'snap-1', installmentId: 'fee-1', amount: 249 });
+    // The existing row is returned as-is; nothing new is written.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('honours the fee already raised, not a rate an admin changed since', async () => {
+    const { prisma } = build({
+      fee: { enabled: true, amount: 999 },
+      existing: { id: 'fee-1', price_snapshot_id: 'snap-1', amount: 249 },
+    });
+    const svc = await service(prisma);
+
+    expect((await svc.raiseMatchingFee('booking-1'))?.amount).toBe(249);
+  });
+});
