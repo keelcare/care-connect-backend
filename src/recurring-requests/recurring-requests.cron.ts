@@ -6,10 +6,22 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { TimeUtils } from '../common/utils/time.utils';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
 import { BookingStatus } from '../common/constants/booking-status.enum';
+import { cycleWindow } from '../common/utils/pricing.utils';
+import { PaymentsService } from '../payments/payments.service';
 
 // If generation has been stuck (latest booking further in the past than this)
 // for a plan, stop retrying it automatically and flag it for the parent.
 const STUCK_GENERATION_DAYS = 14;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// A plan is not allowed to roll forever while we search for the cycle a date
+// falls in; well past any sold term, so only a corrupt anchor date hits it.
+const MAX_CYCLE_LOOKAHEAD = 120;
+
+// How far ahead a cycle is opened for payment. A parent should be able to settle
+// next month's advance before that month's care begins, not on the morning of.
+const CYCLE_BILLING_LEAD_DAYS = 7;
 
 @Injectable()
 export class RecurringRequestsCron {
@@ -19,7 +31,50 @@ export class RecurringRequestsCron {
     private readonly prisma: PrismaService,
     private readonly recurringRequestsService: RecurringRequestsService,
     private readonly notificationsService: NotificationsService,
+    private readonly paymentsService: PaymentsService,
   ) {}
+
+  /**
+   * Open the next billing cycle of every live plan shortly before that month
+   * actually starts, so its 50% advance is payable *before* the care it pays for
+   * begins rather than after the fact.
+   *
+   * Cycle 1 is opened at assignment (`openFirstCycleForPlan`) — this is what keeps
+   * months 2..N coming. Opening is idempotent, so a daily re-run over the same
+   * lead window costs a lookup and writes nothing.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleCycleBilling() {
+    const plans = await this.prisma.recurring_service_requests.findMany({
+      where: {
+        status: 'active',
+        // Nothing is owed for a plan nobody is serving yet.
+        nanny_id: { not: null },
+      },
+      select: { id: true, start_date: true, plan_duration_months: true },
+    });
+
+    const horizon = new Date(Date.now() + CYCLE_BILLING_LEAD_DAYS * DAY_MS);
+
+    for (const plan of plans) {
+      try {
+        const termMonths = plan.plan_duration_months
+          ? Number(plan.plan_duration_months)
+          : MAX_CYCLE_LOOKAHEAD;
+
+        // Every cycle whose month has started or is about to. Past cycles are
+        // included so a plan that was down while a boundary passed still gets
+        // billed rather than skipping a month silently.
+        for (let n = 1; n <= termMonths; n++) {
+          const { start } = cycleWindow(plan.start_date, n);
+          if (start > horizon) break;
+          await this.paymentsService.openCycleForPlan(plan.id, n);
+        }
+      } catch (err) {
+        this.logger.error(`Cycle billing failed for plan ${plan.id}`, err as Error);
+      }
+    }
+  }
 
   /**
    * A plan nobody was ever assigned to is dead once its first session date has
@@ -68,6 +123,24 @@ export class RecurringRequestsCron {
         this.logger.error(`Failed to expire recurring request ${req.id}`, err);
       }
     }
+  }
+
+  /**
+   * Which natural cycle of a plan a given date falls in, and that cycle's
+   * exclusive end.
+   *
+   * Cycles are anchored on the plan's start date — a plan beginning 4 Sep has
+   * cycles 4 Sep–3 Oct, 4 Oct–3 Nov, and so on — so month lengths vary and the
+   * anchor day never drifts.
+   */
+  private cycleFor(planStart: Date, date: Date): { number: number; end: Date } {
+    for (let n = 1; n <= MAX_CYCLE_LOOKAHEAD; n++) {
+      const { end } = cycleWindow(planStart, n);
+      if (date < end) return { number: n, end };
+    }
+    // Anchor is implausibly far in the past; fall back to a single month from
+    // the date itself so generation still makes progress rather than stalling.
+    return { number: MAX_CYCLE_LOOKAHEAD, end: TimeUtils.addMonths(date, 1) };
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
@@ -121,14 +194,31 @@ export class RecurringRequestsCron {
         }
 
         if (daysUntilLatestBooking <= 7) {
-          // Generate for next 30 days starting after the latest booking
           const nextStartDate = new Date(latestBookingDate);
           nextStartDate.setDate(nextStartDate.getDate() + 1);
 
-          // Ensure we don't generate past the end_date if it exists
-          let targetEndDate = new Date(nextStartDate);
-          targetEndDate.setDate(targetEndDate.getDate() + 30);
+          // Roll forward by whole natural cycles anchored on the plan's start
+          // date, not by a flat 30 days. A 30-day step drifts off the anchor —
+          // after a few months a plan that began on the 4th is generating from
+          // the 1st — and it under-generates every 31-day month.
+          const cycle = this.cycleFor(req.start_date, nextStartDate);
 
+          // The sold term is a count of natural months. Plans predating the
+          // column (no duration stored) keep rolling indefinitely as before,
+          // rather than being cut off after a single month.
+          const termMonths = req.plan_duration_months
+            ? Number(req.plan_duration_months)
+            : null;
+          if (termMonths && cycle.number > termMonths) {
+            continue;
+          }
+
+          // `generateDates` takes an *inclusive* end date, and the cycle window's
+          // end is exclusive — step back a day so the next cycle's first session
+          // isn't generated twice.
+          let targetEndDate = new Date(cycle.end.getTime() - DAY_MS);
+
+          // Ensure we don't generate past the end_date if it exists
           if (req.end_date && targetEndDate > new Date(req.end_date)) {
             targetEndDate = new Date(req.end_date);
           }

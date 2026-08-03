@@ -1,6 +1,9 @@
 import {
+  apportion,
   calculatePrice,
+  cycleWindow,
   isSplittable,
+  planInstalments,
   resolveDaysPerWeek,
   splitAmount,
   weeksInCycleFor,
@@ -276,5 +279,110 @@ describe('the split as a parent experiences it', () => {
 
     expect(cycle).toBe(11880);
     expect(splitAmount(cycle, 2)).toEqual([5940, 5940]);
+  });
+});
+
+describe('planInstalments — the matching fee never changes what a plan costs', () => {
+  const sum = (parts: { amount: number }[]) =>
+    Math.round(parts.reduce((a, p) => a + p.amount, 0) * 100) / 100;
+
+  it('carves the fee out of the advance rather than adding it on top', () => {
+    const parts = planInstalments(10000, { splittable: true, matchingFee: 500 });
+
+    expect(parts).toEqual([
+      { kind: 'matching_fee', amount: 500, dueNow: true },
+      { kind: 'cycle', amount: 4500, dueNow: true },
+      { kind: 'cycle', amount: 5000, dueNow: false },
+    ]);
+    // The parent pays 10,000 either way — the fee is just the first thing.
+    expect(sum(parts)).toBe(10000);
+    // And 50% is still due up front: 500 + 4,500.
+    expect(sum(parts.filter((p) => p.dueNow))).toBe(5000);
+  });
+
+  it('leaves the plain 50/50 untouched when no fee is configured', () => {
+    const parts = planInstalments(11880, { splittable: true });
+
+    expect(parts).toEqual([
+      { kind: 'cycle', amount: 5940, dueNow: true },
+      { kind: 'cycle', amount: 5940, dueNow: false },
+    ]);
+  });
+
+  it('still takes the fee up front on a one-time booking, which is never split', () => {
+    const parts = planInstalments(3000, { splittable: false, matchingFee: 500 });
+
+    expect(parts).toEqual([
+      { kind: 'matching_fee', amount: 500, dueNow: true },
+      { kind: 'cycle', amount: 2500, dueNow: true },
+    ]);
+    expect(sum(parts)).toBe(3000);
+  });
+
+  it('defers the remainder rather than writing an uncollectable sliver', () => {
+    // A fee that swallows the advance whole. Splitting normally would leave a
+    // sub-rupee advance row Razorpay would reject, stranding the cycle open.
+    const parts = planInstalments(1000, { splittable: true, matchingFee: 500 });
+
+    expect(parts).toEqual([
+      { kind: 'matching_fee', amount: 500, dueNow: true },
+      { kind: 'cycle', amount: 500, dueNow: false },
+    ]);
+    expect(sum(parts)).toBe(1000);
+  });
+
+  it('never bills more than the cycle when the fee exceeds it', () => {
+    const parts = planInstalments(400, { splittable: false, matchingFee: 900 });
+
+    expect(sum(parts)).toBe(400);
+  });
+
+  it('splits odd amounts to the paisa, with the remainder collected up front', () => {
+    const parts = planInstalments(999.99, { splittable: true, matchingFee: 100 });
+
+    expect(sum(parts)).toBe(999.99);
+    expect(parts[0]).toEqual({ kind: 'matching_fee', amount: 100, dueNow: true });
+  });
+});
+
+describe('apportion', () => {
+  it('splits a tax line in proportion to uneven instalments', () => {
+    expect(apportion(1800, [500, 4500, 5000])).toEqual([90, 810, 900]);
+  });
+
+  it('sums back exactly, giving the remainder to the first part', () => {
+    const parts = apportion(100, [1, 1, 1]);
+    expect(Math.round(parts.reduce((a, b) => a + b, 0) * 100) / 100).toBe(100);
+  });
+
+  it('falls back to an even split when there is nothing to weight by', () => {
+    expect(apportion(100, [0, 0])).toEqual([50, 50]);
+  });
+});
+
+describe('cycleWindow — natural months', () => {
+  it('runs 1 Aug to 31 Aug, not 1 Aug to 1 Sep', () => {
+    const { start, end } = cycleWindow('2026-08-01', 1);
+    expect(start.toISOString().slice(0, 10)).toBe('2026-08-01');
+    // Exclusive: 1 Sep belongs to cycle 2.
+    expect(end.toISOString().slice(0, 10)).toBe('2026-09-01');
+  });
+
+  it('anchors on the start day — 4 Sep to 3 Oct', () => {
+    const { start, end } = cycleWindow('2026-09-04', 1);
+    expect(start.toISOString().slice(0, 10)).toBe('2026-09-04');
+    expect(end.toISOString().slice(0, 10)).toBe('2026-10-04');
+  });
+
+  it('clamps a start day the target month does not have', () => {
+    // 31 Jan + 1 month has no 31 Feb; the cycle ends at the month's last day
+    // rather than silently rolling into March.
+    const { end } = cycleWindow('2027-01-31', 1);
+    expect(end.getMonth()).toBe(1);
+  });
+
+  it('does not drift as cycles roll forward', () => {
+    const { start } = cycleWindow('2026-09-04', 7);
+    expect(start.toISOString().slice(0, 10)).toBe('2027-03-04');
   });
 });

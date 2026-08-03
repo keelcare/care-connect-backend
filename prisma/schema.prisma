@@ -846,9 +846,15 @@ model payment_installments {
   price_snapshot_id  String          @db.Uuid
   payment_plan_id    String?         @db.Uuid
   cycle_number       Int
-  /// 1-based position within the cycle. 1 is the advance, 2 the balance.
+  /// 1-based position within the cycle. 1 is the advance, 2 the balance — unless a
+  /// matching fee was carved out, which takes position 1 and shifts the rest.
   installment_no     Int
   total_installments Int             @default(1)
+  /// `cycle` — a share of the cycle's own price.
+  /// `matching_fee` — the one-off placement fee, carved *out of* the first cycle's
+  /// total rather than added to it, so the parent's all-in cost is unchanged and
+  /// the fee is simply the first thing they pay.
+  kind               String          @default("cycle") @db.VarChar(20)
   amount             Decimal         @db.Decimal(12, 2)
   subtotal_amount    Decimal         @default(0) @db.Decimal(12, 2)
   gst_amount         Decimal         @default(0) @db.Decimal(12, 2)
@@ -876,6 +882,7 @@ model payment_installments {
   @@index([booking_id])
   @@index([status, due_date])
   @@index([payment_id])
+  @@index([kind, booking_id])
 }
 
 model progress_reports {

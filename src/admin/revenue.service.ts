@@ -6,6 +6,7 @@ import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import { RevenueQueryDto } from "./dto/revenue-query.dto";
 import {
   COMMISSION_SETTING_KEY,
+  MATCHING_FEE_KEY,
   PricingEngineService,
 } from "../common/pricing.service";
 import {
@@ -65,6 +66,53 @@ export class RevenueService {
     });
 
     return { percent };
+  }
+
+  /** Current matching-fee policy, for the admin settings screen. */
+  async getMatchingFee() {
+    return this.pricingService.getMatchingFeeConfig();
+  }
+
+  /**
+   * Turn the matching fee on/off and set its amount.
+   *
+   * Both are stored together in one row so a half-applied update can never leave
+   * the fee enabled at a stale amount. Changing this only affects bookings matched
+   * from now on — fees already carved into an installment are settled facts.
+   */
+  async setMatchingFee(
+    enabled: boolean,
+    amount: number,
+    adminId: string,
+    ipAddress?: string,
+  ) {
+    if (enabled && (!Number.isFinite(amount) || amount <= 0)) {
+      throw new BadRequestException(
+        "Matching fee amount must be greater than 0 when the fee is enabled",
+      );
+    }
+    if (amount != null && amount < 0) {
+      throw new BadRequestException("Matching fee amount cannot be negative");
+    }
+
+    const value = { enabled, amount: round2(Number(amount) || 0) };
+
+    await this.prisma.system_settings.upsert({
+      where: { key: MATCHING_FEE_KEY },
+      update: { value, updated_at: new Date() },
+      create: { key: MATCHING_FEE_KEY, value },
+    });
+
+    await this.auditService.logAction({
+      adminId,
+      action: "UPDATE_MATCHING_FEE",
+      targetType: "system_setting",
+      targetId: MATCHING_FEE_KEY,
+      metadata: value,
+      ipAddress,
+    });
+
+    return value;
   }
 
   private dateRange(query: RevenueQueryDto) {

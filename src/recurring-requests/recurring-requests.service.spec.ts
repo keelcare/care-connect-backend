@@ -38,10 +38,10 @@ describe('RecurringRequestsService', () => {
   });
 
   describe('generateDates', () => {
-    it('spans a calendar month inclusively, which is more dates than the plan bills', () => {
-      // This is precisely why a plan's price must not be derived from its row
-      // count: a month of weekdays generates 22–24 sessions, while the plan is
-      // sold and billed as 4 weeks — 20.
+    it('spans one natural month, ending before the next one starts', () => {
+      // A plan's price must not be derived from its row count: September's
+      // weekdays generate 22 sessions while the plan is sold and billed as
+      // 4 weeks — 20. Both are correct; they answer different questions.
       const dates = service.generateDates(
         '2026-09-01',
         undefined,
@@ -49,8 +49,40 @@ describe('RecurringRequestsService', () => {
         { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
         1,
       );
-      expect(dates.length).toBeGreaterThan(20);
+      expect(dates).toHaveLength(22);
       expect(dates.every((d) => d.getDay() >= 1 && d.getDay() <= 5)).toBe(true);
+      // The boundary day belongs to cycle 2. Generating it here is what used to
+      // make an August plan a 32-day month.
+      expect(dates.every((d) => d < new Date('2026-10-01T00:00:00'))).toBe(true);
+    });
+
+    it('gives a longer month more sessions than a shorter one', () => {
+      const forMonth = (start: string) =>
+        service.generateDates(
+          start,
+          undefined,
+          RecurrenceType.WEEKLY,
+          { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
+          1,
+        ).length;
+
+      // The whole point of natural months: February is short and December is
+      // long, and the schedule says so at one flat monthly price.
+      expect(forMonth('2027-02-01')).toBe(20);
+      expect(forMonth('2026-12-01')).toBe(23);
+    });
+
+    it('anchors the month on the start date, not on the 1st', () => {
+      const dates = service.generateDates(
+        '2026-09-04',
+        undefined,
+        RecurrenceType.WEEKLY,
+        { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
+        1,
+      );
+      // 4 Sep – 3 Oct, as a parent starting mid-month would expect.
+      expect(dates[0].toISOString().slice(0, 10)).toBe('2026-09-04');
+      expect(dates[dates.length - 1] < new Date('2026-10-04T00:00:00')).toBe(true);
     });
 
     it('only emits the weekdays that were selected', () => {
@@ -73,6 +105,8 @@ describe('RecurringRequestsService', () => {
         parent_id: 'parent-1',
         category: 'ST',
         status: 'pending',
+        start_date: new Date('2026-09-01'),
+        recurrence_type: 'WEEKLY',
         start_time: new Date('2026-09-01T04:30:00.000Z'),
         duration_hours: 8,
         plan_type: 'MONTHLY',
@@ -104,7 +138,7 @@ describe('RecurringRequestsService', () => {
       expect(result.hourly_rate).toBe(99);
     });
 
-    it('reports the sessions the plan was sold as, not the month already scheduled', async () => {
+    it('counts sessions off the real calendar, not a flat four weeks a month', async () => {
       mockPrisma.recurring_service_requests.findMany.mockResolvedValue([
         plan({ plan_duration_months: 6, plan_type: 'SIX_MONTH' }),
       ]);
@@ -112,9 +146,12 @@ describe('RecurringRequestsService', () => {
 
       const [result] = await service.findAllByParent('parent-1');
 
-      // 5 days × 4 weeks × 6 months. Counting generated rows would say 24 — a
-      // six-month plan rendered as a fraction of its own first month.
-      expect(result.total_sessions).toBe(120);
+      // Six natural months of weekdays from 1 Sep 2026: 22 + 22 + 21 + 23 + 21 + 20.
+      // Not 120 (5 × 4 × 6) — that is the billing factor, and using it as a session
+      // count is what pinned the label at a flat number whatever the calendar said.
+      // Counting generated rows would say 24 instead: a six-month plan rendered as
+      // a fraction of its own first month.
+      expect(result.total_sessions).toBe(129);
       expect(result.total_bookings).toBe(24);
     });
 

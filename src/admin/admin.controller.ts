@@ -17,7 +17,11 @@ import { RolesGuard } from "../auth/guards/roles.guard";
 
 import { AdminManualAssignmentDto } from "./dto/admin-manual-assignment.dto";
 import { PaginationDto } from "./dto/pagination.dto";
-import { RevenueQueryDto, UpdateCommissionDto } from "./dto/revenue-query.dto";
+import {
+  RevenueQueryDto,
+  UpdateCommissionDto,
+  UpdateMatchingFeeDto,
+} from "./dto/revenue-query.dto";
 import { RevenueService } from "./revenue.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 
@@ -257,6 +261,21 @@ export class AdminController {
   async updateCommission(@Body() body: UpdateCommissionDto, @Req() req: any) {
     return this.revenueService.setCommissionPercent(
       body.percent,
+      req.user.id,
+      getClientIp(req),
+    );
+  }
+
+  @Get("revenue/matching-fee")
+  async getMatchingFee() {
+    return this.revenueService.getMatchingFee();
+  }
+
+  @Post("revenue/matching-fee")
+  async updateMatchingFee(@Body() body: UpdateMatchingFeeDto, @Req() req: any) {
+    return this.revenueService.setMatchingFee(
+      body.enabled,
+      body.amount,
       req.user.id,
       getClientIp(req),
     );

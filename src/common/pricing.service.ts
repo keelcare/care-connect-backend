@@ -3,8 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  apportion,
   calculatePrice,
   isSplittable,
+  planInstalments,
   resolveDaysPerWeek,
   splitAmount,
   weeksInCycleFor,
@@ -14,6 +16,9 @@ import {
   PriceInput,
   PricingMode,
 } from './utils/pricing.utils';
+
+/** `payment_installments.kind` for the one-off placement fee. */
+export const MATCHING_FEE_KIND = 'matching_fee';
 
 export interface QuoteInput {
   serviceId: string;
@@ -58,6 +63,28 @@ export const ADVANCE_PAYMENT_DAYS_KEY = 'advance_payment_due_days';
 
 /** Kill switch: turn split payments off without a redeploy. */
 export const SPLIT_PAYMENTS_ENABLED_KEY = 'split_payments_enabled';
+
+/**
+ * One-off fee for placing a caregiver, as `{ enabled: boolean, amount: 500 }`.
+ *
+ * Charged when a caregiver is assigned and *carved out of* the booking's total
+ * rather than added to it: the parent's all-in cost is unchanged, the fee is
+ * simply the first thing they pay. A plan pays it once, on its first cycle, not
+ * every month.
+ *
+ * Off unless an admin turns it on — unlike split payments, this is a charge, and
+ * a missing row must never invent one.
+ */
+export const MATCHING_FEE_KEY = 'matching_fee';
+
+/** A fee at or above a whole cycle would leave nothing to bill. */
+const MAX_MATCHING_FEE = 100000;
+
+export interface MatchingFeeConfig {
+  enabled: boolean;
+  /** Rupees, tax-inclusive — it is carved out of an already-taxed total. */
+  amount: number;
+}
 
 /** Two weeks, the terms we advertise before an admin narrows them. */
 const DEFAULT_ADVANCE_PAYMENT_DAYS = 14;
@@ -192,6 +219,39 @@ export class PricingEngineService {
       enabled,
       ratioPercent: ADVANCE_PAYMENT_PERCENT,
       dueDays: usable ? Math.round(parsedDays) : DEFAULT_ADVANCE_PAYMENT_DAYS,
+    };
+  }
+
+  /**
+   * The matching fee currently in force.
+   *
+   * Defaults to *off*: an absent or malformed row means no fee, never a guessed
+   * one. A fee configured as zero or negative is also treated as off, so the
+   * amount that reaches the installment split is always something chargeable.
+   */
+  async getMatchingFeeConfig(): Promise<MatchingFeeConfig> {
+    const row = await this.prisma.system_settings.findUnique({
+      where: { key: MATCHING_FEE_KEY },
+    });
+    if (!row) return { enabled: false, amount: 0 };
+
+    const rawEnabled = this.unwrapSetting(row.value, 'enabled');
+    const amount = Number(this.unwrapSetting(row.value, 'amount'));
+
+    const usable = Number.isFinite(amount) && amount > 0 && amount <= MAX_MATCHING_FEE;
+    if (!usable && rawEnabled === true) {
+      this.logger.warn(
+        `${MATCHING_FEE_KEY} is enabled with an unusable amount; charging no fee.`,
+      );
+    }
+
+    // Enabled must be explicit. `rawEnabled == null` here means someone wrote an
+    // amount without switching the fee on — that is not consent to bill it.
+    const enabled = rawEnabled === true || rawEnabled === 'true';
+
+    return {
+      enabled: enabled && usable,
+      amount: enabled && usable ? Math.round(amount * 100) / 100 : 0,
     };
   }
 
@@ -491,13 +551,25 @@ export class PricingEngineService {
     // recomputed at order time or display time, where the two could disagree about
     // what a parent owes. Everything downstream reads the installment rows.
     const { enabled } = await this.getAdvancePaymentConfig();
-    const parts = isSplittable(planType, breakdown.finalAmount, enabled)
-      ? SPLIT_INSTALMENT_COUNT
-      : 1;
+    const splittable = isSplittable(planType, breakdown.finalAmount, enabled);
 
-    const amounts = splitAmount(breakdown.finalAmount, parts);
-    const subtotals = splitAmount(breakdown.subtotalAmount, parts);
-    const gsts = splitAmount(breakdown.gstAmount, parts);
+    // The fee is a placement charge, so a plan pays it once — on its first cycle,
+    // not every month. The `already charged` check is what makes re-snapshotting
+    // an abandoned first checkout safe: it looks for a fee row on the *booking*,
+    // so a second attempt at cycle 1 cannot mint a second fee.
+    const matchingFee = await this.resolveMatchingFeeFor(bookingId, cycleNumber);
+
+    const planned = planInstalments(breakdown.finalAmount, {
+      splittable,
+      matchingFee,
+    });
+    const parts = planned.length;
+
+    // Apportioned by amount rather than split evenly: a matching fee makes the
+    // rows uneven, and the tax lines have to follow the money they belong to.
+    const weights = planned.map((p) => p.amount);
+    const subtotals = apportion(breakdown.subtotalAmount, weights);
+    const gsts = apportion(breakdown.gstAmount, weights);
 
     // Snapshot and installments are one write: a snapshot with no installments
     // would be a cycle nothing can ever charge.
@@ -523,20 +595,22 @@ export class PricingEngineService {
       });
 
       await tx.payment_installments.createMany({
-        data: amounts.map((amount, i) => ({
+        data: planned.map((part, i) => ({
           booking_id: bookingId,
           price_snapshot_id: created.id,
           payment_plan_id: paymentPlanId ?? null,
           cycle_number: cycleNumber,
           installment_no: i + 1,
           total_installments: parts,
-          amount,
+          kind: part.kind,
+          amount: part.amount,
           subtotal_amount: subtotals[i],
           gst_amount: gsts[i],
-          // Only the advance is due on sight. The balance's date is set when the
-          // advance is actually paid, so the clock starts from the parent's money
-          // leaving, not from a checkout screen they may never have completed.
-          due_date: i === 0 ? new Date() : null,
+          // Only what's payable on sight gets a date. The balance's is set when
+          // the advance is actually paid, so the clock starts from the parent's
+          // money leaving, not from a checkout screen they may never have
+          // completed.
+          due_date: part.dueNow ? new Date() : null,
           status: 'pending',
         })),
       });
@@ -554,6 +628,30 @@ export class PricingEngineService {
       finalAmount: breakdown.finalAmount,
       breakdown,
     };
+  }
+
+  /**
+   * The matching fee to carve out of this cycle, or 0.
+   *
+   * Only ever the first cycle, and only if this booking has never had a fee row
+   * written before — a parent who abandons the first checkout and comes back must
+   * not be charged for the same placement twice.
+   */
+  private async resolveMatchingFeeFor(
+    bookingId: string,
+    cycleNumber: number,
+  ): Promise<number> {
+    if (cycleNumber !== 1) return 0;
+
+    const { enabled, amount } = await this.getMatchingFeeConfig();
+    if (!enabled) return 0;
+
+    const alreadyCharged = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, kind: MATCHING_FEE_KIND },
+      select: { id: true },
+    });
+
+    return alreadyCharged ? 0 : amount;
   }
 
   /**

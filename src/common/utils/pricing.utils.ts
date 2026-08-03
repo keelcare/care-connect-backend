@@ -2,6 +2,7 @@ import {
   RAZORPAY_MIN_AMOUNT_PAISE,
   RAZORPAY_PAISE_MULTIPLIER,
 } from '../constants/constants';
+import { TimeUtils } from './time.utils';
 
 // ─── Pricing Mode ────────────────────────────────────────────────────────────
 // 'standard'        → use the service rate card
@@ -29,6 +30,118 @@ export function weeksInCycleFor(planType?: string | null): number {
 
 /** A schedule can only repeat on the seven days that exist. */
 const clampDays = (n: number) => Math.min(7, Math.max(1, Math.round(n)));
+
+// ─── Natural monthly cycles ───────────────────────────────────────────────────
+//
+// A "month" of a plan is the calendar month that follows its start date, not a
+// flat 28 days: a plan starting 1 Aug runs to 31 Aug, one starting 4 Sep runs to
+// 3 Oct. February is a shorter month and August a longer one, and the schedule
+// says so.
+//
+// The *price* is deliberately not derived from this. A cycle is billed at the
+// flat `WEEKS_PER_MONTH` monthly figure however many dates the calendar happens
+// to yield, so a parent pays the same every month and a long month is simply a
+// month with more sessions in it. Keep the two apart: `cycleWindow` answers "what
+// is scheduled", `weeksInCycleFor` answers "what is charged".
+
+/**
+ * The half-open date window `[start, end)` covered by cycle `cycleNumber`
+ * (1-based) of a plan that began on `planStart`.
+ *
+ * Anchored on the plan's start date rather than on calendar month boundaries, so
+ * cycle 2 of a plan that began on the 4th starts on the 4th. `TimeUtils.addMonths`
+ * clamps a day that the target month doesn't have (31 Jan + 1 month → 28 Feb).
+ */
+export function cycleWindow(
+  planStart: Date | string,
+  cycleNumber: number,
+): { start: Date; end: Date } {
+  const anchor = new Date(planStart);
+  const index = Math.max(1, Math.round(cycleNumber)) - 1;
+  return {
+    start: index === 0 ? anchor : TimeUtils.addMonths(anchor, index),
+    end: TimeUtils.addMonths(anchor, index + 1),
+  };
+}
+
+/** Weekday name → `Date.getDay()` index, matching the pattern JSON parents send. */
+const DAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/**
+ * How many sessions a recurrence pattern actually produces between two dates,
+ * counted off the real calendar. `end` is exclusive.
+ *
+ * This is what the progress bar and the "N scheduled" label must use. The old
+ * `daysPerWeek × 4 × months` was a billing factor borrowed as a session count,
+ * which is why a six-day plan always read "24" no matter how long the month was
+ * and disagreed with the rows generation had actually written.
+ */
+export function countSessionsBetween(
+  start: Date,
+  end: Date,
+  recurrenceType: string,
+  pattern: unknown,
+): number {
+  const p = (pattern ?? {}) as { days?: unknown; dates?: unknown };
+
+  const weekdays =
+    Array.isArray(p.days)
+      ? p.days.map((d) => DAY_INDEX[String(d)]).filter((d) => d !== undefined)
+      : [];
+  const monthDates = Array.isArray(p.dates) ? p.dates.map(Number) : [];
+
+  const matches =
+    recurrenceType === 'SPECIFIC_DATES'
+      ? (d: Date) => monthDates.includes(d.getDate())
+      : (d: Date) => weekdays.includes(d.getDay());
+
+  if (recurrenceType === 'SPECIFIC_DATES' ? monthDates.length === 0 : weekdays.length === 0) {
+    return 0;
+  }
+
+  // Iterate at midday so a DST shift can never move a date onto the day before.
+  const cursor = new Date(start);
+  cursor.setHours(12, 0, 0, 0);
+  const limit = new Date(end);
+  limit.setHours(12, 0, 0, 0);
+
+  let count = 0;
+  while (cursor < limit) {
+    if (matches(cursor)) count++;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return count;
+}
+
+/**
+ * Sessions across a plan's whole term, summed cycle by cycle so each month
+ * contributes the number of dates that month really has.
+ *
+ * Only the current cycle is ever generated into `bookings`, so this cannot be a
+ * row count — a six-month plan would otherwise report itself as "0 of 24".
+ */
+export function countSessionsInTerm(
+  planStart: Date | string,
+  planMonths: number,
+  recurrenceType: string,
+  pattern: unknown,
+): number {
+  const months = Math.max(1, Math.round(planMonths || 1));
+  let total = 0;
+  for (let cycle = 1; cycle <= months; cycle++) {
+    const { start, end } = cycleWindow(planStart, cycle);
+    total += countSessionsBetween(start, end, recurrenceType, pattern);
+  }
+  return total;
+}
 
 /**
  * How many days a week a booking runs — the factor that was silently missing
@@ -113,6 +226,110 @@ export function splitAmount(total: number, count = SPLIT_INSTALMENT_COUNT): numb
   return Array.from({ length: count }, (_, i) =>
     (base + (i === 0 ? remainder : 0)) / RAZORPAY_PAISE_MULTIPLIER,
   );
+}
+
+/**
+ * Split `total` across parts sized in proportion to `weights`, summing back to it
+ * exactly. Used to apportion the subtotal and GST lines across installments once
+ * a matching fee has made the halves uneven — deriving them by ratio at read time
+ * instead would let rounding re-state a settled caregiver payout.
+ *
+ * The remainder lands on the first part, matching `splitAmount`.
+ */
+export function apportion(total: number, weights: number[]): number[] {
+  const totalPaise = Math.round(total * RAZORPAY_PAISE_MULTIPLIER);
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+
+  if (weightSum <= 0) return splitAmount(total, weights.length);
+
+  const parts = weights.map((w) => Math.floor((totalPaise * w) / weightSum));
+  parts[0] += totalPaise - parts.reduce((a, b) => a + b, 0);
+
+  return parts.map((p) => p / RAZORPAY_PAISE_MULTIPLIER);
+}
+
+// ─── Matching fee ─────────────────────────────────────────────────────────────
+
+/** What an installment row is collecting. Mirrors `payment_installments.kind`. */
+export type InstalmentKind = 'cycle' | 'matching_fee';
+
+export interface PlannedInstalment {
+  kind: InstalmentKind;
+  amount: number;
+  /** True for anything payable on sight; false for the deferred balance. */
+  dueNow: boolean;
+}
+
+/**
+ * How a cycle is collected, once the matching fee is taken into account.
+ *
+ * The fee is **carved out of** the cycle total, never added to it: the parent's
+ * all-in cost is identical whether the fee is on or off, it is just the first
+ * thing they pay. So the amounts always sum back to `total` exactly.
+ *
+ * For a splittable cycle with a fee, that means three rows — the fee and the
+ * remainder of the advance, both due immediately, then the balance:
+ *
+ *     total 10,000, fee 500  →  500 (fee, now) + 4,500 (advance, now) + 5,000 (balance)
+ *
+ * The advance half is still 50% of the cycle; the fee is simply part of it. If the
+ * fee is large enough to swallow the whole advance the remainder row is dropped
+ * rather than written as zero — Razorpay cannot charge ₹0, and a permanently
+ * unpayable row would keep the cycle open forever.
+ */
+export function planInstalments(
+  total: number,
+  opts: { splittable: boolean; matchingFee?: number },
+): PlannedInstalment[] {
+  const fee = Math.min(
+    Math.max(0, Math.round((opts.matchingFee ?? 0) * RAZORPAY_PAISE_MULTIPLIER)),
+    Math.round(total * RAZORPAY_PAISE_MULTIPLIER),
+  );
+  const totalPaise = Math.round(total * RAZORPAY_PAISE_MULTIPLIER);
+  const toRupees = (paise: number) => paise / RAZORPAY_PAISE_MULTIPLIER;
+
+  // Anything below the gateway floor cannot be its own charge, so it stays folded
+  // into the row beside it instead of becoming a row nothing can settle.
+  const chargeable = (paise: number) => paise >= RAZORPAY_MIN_AMOUNT_PAISE;
+
+  if (!opts.splittable) {
+    if (!chargeable(fee) || !chargeable(totalPaise - fee)) {
+      return [{ kind: 'cycle', amount: total, dueNow: true }];
+    }
+    return [
+      { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
+      { kind: 'cycle', amount: toRupees(totalPaise - fee), dueNow: true },
+    ];
+  }
+
+  // Split in paise off the total, so advance + balance reconcile to the cent
+  // regardless of what the fee does to the first half.
+  const [advance, balance] = splitAmount(total).map((n) =>
+    Math.round(n * RAZORPAY_PAISE_MULTIPLIER),
+  );
+
+  if (!chargeable(fee)) {
+    return [
+      { kind: 'cycle', amount: toRupees(advance), dueNow: true },
+      { kind: 'cycle', amount: toRupees(balance), dueNow: false },
+    ];
+  }
+
+  const advanceRemainder = advance - fee;
+  if (!chargeable(advanceRemainder)) {
+    // The fee covers the advance outright. Whatever it doesn't cover joins the
+    // balance rather than becoming an uncollectable sliver.
+    return [
+      { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
+      { kind: 'cycle', amount: toRupees(totalPaise - fee), dueNow: false },
+    ];
+  }
+
+  return [
+    { kind: 'matching_fee', amount: toRupees(fee), dueNow: true },
+    { kind: 'cycle', amount: toRupees(advanceRemainder), dueNow: true },
+    { kind: 'cycle', amount: toRupees(balance), dueNow: false },
+  ];
 }
 
 // ─── Input ────────────────────────────────────────────────────────────────────

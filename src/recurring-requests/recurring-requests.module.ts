@@ -7,9 +7,18 @@ import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AddressesModule } from '../addresses/addresses.module';
 import { CommonModule } from '../common/common.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, NotificationsModule, AddressesModule, CommonModule],
+  imports: [
+    PrismaModule,
+    AuthModule,
+    NotificationsModule,
+    AddressesModule,
+    CommonModule,
+    // The nightly cron opens each plan's next billing cycle before its month begins.
+    PaymentsModule,
+  ],
   controllers: [RecurringRequestsController],
   providers: [RecurringRequestsService, RecurringRequestsCron]
 })

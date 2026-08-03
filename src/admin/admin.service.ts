@@ -19,6 +19,7 @@ import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PricingEngineService } from "../common/pricing.service";
 import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
+import { PaymentsService } from "../payments/payments.service";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
@@ -42,6 +43,7 @@ export class AdminService {
     private auditService: AdminAuditService,
     private pricingService: PricingEngineService,
     private encryptionService: EncryptionService,
+    private paymentsService: PaymentsService,
   ) {}
 
   // Manual Assignment Management
@@ -678,6 +680,15 @@ export class AdminService {
       },
       { isolationLevel: "ReadCommitted" },
     );
+
+    // A monthly plan becomes billable the moment someone is serving it — the 50%
+    // advance (and the matching fee, when configured) is due now, not after the
+    // first session is delivered. Deliberately outside the transaction and
+    // non-fatal: a pricing problem must not undo a placement that has already
+    // been communicated to the caregiver.
+    if (isRecurring) {
+      await this.paymentsService.openFirstCycleForPlan(requestId);
+    }
 
     // Send Confirmation Emails (Outside transaction but after success)
     const parent = (request as any).users;

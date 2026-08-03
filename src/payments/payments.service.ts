@@ -13,7 +13,11 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
-import { AdvancePaymentConfig, PricingEngineService } from "../common/pricing.service";
+import {
+  AdvancePaymentConfig,
+  MATCHING_FEE_KIND,
+  PricingEngineService,
+} from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
 import {
   MANUAL_PENDING_PROVIDER,
@@ -129,12 +133,89 @@ export class PaymentsService {
     });
   }
 
+  /**
+   * Open the first billing cycle of a recurring plan the moment a caregiver is
+   * assigned, so the advance (and the matching fee, if one is configured) is
+   * payable immediately instead of waiting for a session to be delivered.
+   *
+   * Billing for a plan anchors to its **earliest live session**: a cycle is priced
+   * as a whole month, so it must hang off one booking rather than each session
+   * snapshotting a month of its own. The earliest one is the stable choice —
+   * later sessions come and go as the rolling generator runs.
+   *
+   * Best-effort by design. This runs after the assignment transaction has already
+   * committed; a pricing failure here must leave the caregiver assigned and let
+   * `createOrder` snapshot lazily as it always has, not roll back a placement.
+   */
+  async openCycleForPlan(recurringRequestId: string, cycleNumber: number): Promise<void> {
+    const anchor = await this.planBillingAnchor(recurringRequestId);
+
+    if (!anchor) {
+      this.logger.warn(
+        `Plan ${recurringRequestId} has no assigned session to anchor billing to; skipping cycle ${cycleNumber}.`,
+      );
+      return;
+    }
+
+    // Assignment can be retried and the cron runs daily, so re-opening a cycle
+    // the parent may already be paying must be a no-op rather than a second bill.
+    const existing = await this.prisma.price_snapshots.findFirst({
+      where: { booking_id: anchor, cycle_number: cycleNumber },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    try {
+      const { finalAmount } = await this.pricingService.calculateAndSnapshot({
+        bookingId: anchor,
+        cycleNumber,
+      });
+      this.logger.log(
+        `Opened cycle ${cycleNumber} for plan ${recurringRequestId} on booking ${anchor} (${finalAmount})`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Could not open cycle ${cycleNumber} for plan ${recurringRequestId}; it will be snapshotted at checkout instead.`,
+        err as Error,
+      );
+    }
+  }
+
+  /** Cycle 1, opened the moment a caregiver is assigned. */
+  async openFirstCycleForPlan(recurringRequestId: string): Promise<void> {
+    return this.openCycleForPlan(recurringRequestId, 1);
+  }
+
+  /**
+   * The booking a plan's cycles are billed against — its earliest live session.
+   *
+   * Every cycle of a plan hangs off this one booking, because a cycle is priced
+   * as a whole month and `price_snapshots` are keyed by `(booking_id, cycle_number)`.
+   * Anchoring on the earliest session keeps that key stable as the rolling
+   * generator adds later ones.
+   */
+  private async planBillingAnchor(recurringRequestId: string): Promise<string | null> {
+    const anchor = await this.prisma.bookings.findFirst({
+      where: {
+        recurring_request_id: recurringRequestId,
+        status: { not: BookingStatus.CANCELLED },
+        nanny_id: { not: null },
+      },
+      orderBy: { start_time: "asc" },
+      select: { id: true },
+    });
+    return anchor?.id ?? null;
+  }
+
   /** "Payment for Booking #x", plus which half when the cycle is split. */
   private orderDescription(
     bookingId: string,
-    installment: { installment_no: number; total_installments: number },
+    installment: { installment_no: number; total_installments: number; kind: string },
   ): string {
     const base = `Payment for Booking #${bookingId}`;
+    // The fee is a placement charge, not the nth share of a cycle price. Calling
+    // it "Instalment 1 of 3" on the gateway screen would misdescribe it.
+    if (installment.kind === MATCHING_FEE_KIND) return `Matching fee for Booking #${bookingId}`;
     return installment.total_installments > 1
       ? `${base} (Instalment ${installment.installment_no} of ${installment.total_installments})`
       : base;
@@ -148,7 +229,12 @@ export class PaymentsService {
    * from what we actually charge.
    */
   private splitDisclosure(
-    installment: { id: string; installment_no: number; total_installments: number },
+    installment: {
+      id: string;
+      installment_no: number;
+      total_installments: number;
+      kind: string;
+    },
     snapshot: { final_amount: Prisma.Decimal | number },
     config: AdvancePaymentConfig,
   ) {
@@ -156,6 +242,8 @@ export class PaymentsService {
       installmentId: installment.id,
       installmentNo: installment.installment_no,
       totalInstallments: installment.total_installments,
+      /** Lets the client label this charge as the placement fee rather than a share. */
+      kind: installment.kind,
       cycleTotal: Number(snapshot.final_amount),
       /** Days from paying this half to the balance falling due; null when nothing follows. */
       balanceDueInDays:
@@ -195,7 +283,19 @@ export class PaymentsService {
     }
 
     const paymentPlan = booking.payment_plans;
-    const cycleNumber = paymentPlan ? paymentPlan.cycles_completed + 1 : 1;
+
+    // The oldest cycle that still has something owed on it wins, whatever the
+    // plan counter says. A recurring plan has no `payment_plans` row, so this
+    // used to resolve to cycle 1 forever: once cycle 1 settled, month 2 was
+    // reported as "already paid" and could not be charged at all.
+    const openCycle = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, status: INSTALMENT_PENDING },
+      orderBy: [{ cycle_number: "asc" }, { installment_no: "asc" }],
+      select: { cycle_number: true },
+    });
+
+    const cycleNumber =
+      openCycle?.cycle_number ?? (paymentPlan ? paymentPlan.cycles_completed + 1 : 1);
 
     // Check if we already took a snapshot for this cycle that is pending
     let snapshot = await this.prisma.price_snapshots.findFirst({
@@ -1081,7 +1181,7 @@ export class PaymentsService {
             nanny_id: true,
             start_time: true,
             service_requests: { select: { category: true } },
-            recurring_service_requests: { select: { category: true } },
+            recurring_service_requests: { select: { id: true, category: true } },
             users_bookings_nanny_idTousers: {
               select: {
                 profiles: {
@@ -1125,6 +1225,10 @@ export class PaymentsService {
           null,
         sessionStart: row.bookings?.start_time ?? null,
         payable: !!row.bookings?.nanny_id,
+        /** `cycle` or `matching_fee` — the client labels the charge from this. */
+        kind: row.kind,
+        /** True when this is a recurring plan's cycle rather than a single session. */
+        isPlan: !!row.bookings?.recurring_service_requests,
       };
     });
   }

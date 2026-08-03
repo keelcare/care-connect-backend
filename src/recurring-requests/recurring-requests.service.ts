@@ -8,10 +8,17 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
-import { resolveDaysPerWeek, WEEKS_PER_MONTH } from "../common/utils/pricing.utils";
+import {
+  countSessionsInTerm,
+  cycleWindow,
+  resolveDaysPerWeek,
+} from "../common/utils/pricing.utils";
 import { PricingEngineService } from "../common/pricing.service";
 import { AddressesService } from "../addresses/addresses.service";
 import { NotificationsService } from "../notifications/notifications.service";
+
+/** One day, used only to make an inclusive end date exclusive. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class RecurringRequestsService {
@@ -25,20 +32,36 @@ export class RecurringRequestsService {
   ) {}
 
   /**
-   * Helper to generate a list of dates based on recurrence pattern
+   * Every date a recurrence pattern lands on within a window.
+   *
+   * The window is a *natural* month by default, not a flat 28 or 30 days: a plan
+   * starting 1 Aug generates through 31 Aug, one starting 4 Sep through 3 Oct. So
+   * a 6-day-a-week plan yields 27 sessions in August and 24 in February — the
+   * calendar decides, and the flat monthly price does not change with it.
+   *
+   * The derived end is exclusive (`[start, start+1 month)`), which is what keeps
+   * the boundary day out. It used to be inclusive *and* a full month away, so an
+   * August plan generated 1 Aug – 1 Sep and quietly billed a 32-day month.
+   *
+   * `endDateStr` — the parent's own plan end date — is inclusive instead: they
+   * chose that last day and expect care on it.
    */
   public generateDates(
     startDateStr: string | Date,
     endDateStr: string | Date | undefined,
     recurrenceType: RecurrenceType,
     pattern: any,
-    maxMonths: number = 1 // Generate bookings for up to 1 month by default
+    maxMonths: number = 1 // Generate bookings for one natural month by default
   ): Date[] {
     const dates: Date[] = [];
     const start = new Date(startDateStr);
-    
-    // Default end date is 3 months from start if not provided
-    let end = endDateStr ? new Date(endDateStr) : TimeUtils.addMonths(start, maxMonths);
+
+    // An explicit end date is a day the parent still gets care on; a derived
+    // window stops the instant the next cycle begins.
+    const explicitEnd = endDateStr ? new Date(endDateStr) : null;
+    let end = explicitEnd
+      ? new Date(explicitEnd.getTime() + DAY_MS)
+      : cycleWindow(start, maxMonths).end;
 
     // Limit generation to max 6 months to prevent massive DB inserts at once
     const maxEnd = TimeUtils.addMonths(start, 6);
@@ -46,11 +69,11 @@ export class RecurringRequestsService {
       end = maxEnd;
     }
 
-    const current = new Date(start);
-    
     // Normalize hours to prevent timezone shift issues during day iteration
-    current.setHours(12, 0, 0, 0); 
-    end.setHours(23, 59, 59, 999);
+    const current = new Date(start);
+    current.setHours(12, 0, 0, 0);
+    const limit = new Date(end);
+    limit.setHours(12, 0, 0, 0);
 
     if (recurrenceType === RecurrenceType.WEEKLY) {
       const targetDays: string[] = pattern.days || [];
@@ -59,7 +82,7 @@ export class RecurringRequestsService {
       };
       const targetInts = targetDays.map(d => dayMap[d]).filter(d => d !== undefined);
 
-      while (current <= end) {
+      while (current < limit) {
         if (targetInts.includes(current.getDay())) {
           dates.push(new Date(current));
         }
@@ -67,7 +90,7 @@ export class RecurringRequestsService {
       }
     } else if (recurrenceType === RecurrenceType.SPECIFIC_DATES) {
       const targetDates: number[] = pattern.dates || [];
-      while (current <= end) {
+      while (current < limit) {
         if (targetDates.includes(current.getDate())) {
           dates.push(new Date(current));
         }
@@ -270,11 +293,22 @@ export class RecurringRequestsService {
           /** Sessions actually on the calendar — only the first month is generated upfront. */
           total_bookings: _count.bookings,
           /**
-           * Sessions the plan was sold as, across its whole term. The progress bar
-           * measures against this: counting generated rows would show a six-month
-           * plan as "0 of 24" when it runs to roughly 120 sessions.
+           * Sessions across the plan's whole term, counted off the real calendar
+           * month by month. The progress bar measures against this: counting
+           * generated rows would show a six-month plan as "0 of 24" when it runs
+           * to roughly 130 sessions.
+           *
+           * Not `daysPerWeek × 4 × months` — that is the *billing* factor, and
+           * borrowing it here is what pinned every six-day plan at "24" no matter
+           * whether the month had 28 days or 31, disagreeing with the sessions
+           * generation had actually written.
            */
-          total_sessions: daysPerWeek * WEEKS_PER_MONTH * planMonths,
+          total_sessions: countSessionsInTerm(
+            req.start_date,
+            planMonths,
+            req.recurrence_type,
+            req.recurrence_pattern,
+          ),
           next_upcoming_date: upcoming ? upcoming.start_time : null,
           nanny: nanny ?? null,
           hourly_rate: appliedRate || null,
@@ -318,10 +352,25 @@ export class RecurringRequestsService {
       throw new NotFoundException("Recurring request not found");
     }
 
+    const { _count, ...rest } = req;
+
     return {
-      ...req,
+      ...rest,
       status: this.effectiveStatus(req.status, !!req.nanny_id),
-      start_time_formatted: TimeUtils.formatShortTime(req.start_time)
+      start_time_formatted: TimeUtils.formatShortTime(req.start_time),
+      /** Sessions on the calendar today — only the current cycle is generated. */
+      total_bookings: _count.bookings,
+      /**
+       * Sessions over the whole term, off the real calendar. The detail screen
+       * showed `total_bookings` but this endpoint never sent it, so the header
+       * silently counted whatever page of sessions happened to be loaded.
+       */
+      total_sessions: countSessionsInTerm(
+        req.start_date,
+        Number(req.plan_duration_months || 1),
+        req.recurrence_type,
+        req.recurrence_pattern,
+      ),
     };
   }
 

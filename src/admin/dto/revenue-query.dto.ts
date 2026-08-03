@@ -1,4 +1,12 @@
-import { IsDateString, IsInt, IsNumber, IsOptional, Max, Min } from "class-validator";
+import {
+  IsBoolean,
+  IsDateString,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  Max,
+  Min,
+} from "class-validator";
 import { Type } from "class-transformer";
 
 export class RevenueQueryDto {
@@ -32,4 +40,16 @@ export class UpdateCommissionDto {
   @Min(0)
   @Max(100)
   percent: number;
+}
+
+export class UpdateMatchingFeeDto {
+  /** Explicit — a fee is never switched on as a side effect of setting an amount. */
+  @IsBoolean()
+  enabled: boolean;
+
+  /** Rupees, tax-inclusive. Ignored while `enabled` is false. */
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amount: number;
 }
