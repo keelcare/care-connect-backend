@@ -18,6 +18,7 @@ import { DisputesService } from "../disputes/disputes.service";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { PricingEngineService } from "../common/pricing.service";
+import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
@@ -121,7 +122,11 @@ export class AdminService {
         Number(req.duration_hours),
         Number((req as any).plan_duration_months || 1),
         (req as any).plan_type || "ONE_TIME",
-        (req as any).sessions_per_month,
+        resolveDaysPerWeek({
+          planType: (req as any).plan_type,
+          daysPerWeek: (req as any).days_per_week,
+          sessionsPerMonth: (req as any).sessions_per_month,
+        }),
       );
 
       return {
@@ -231,7 +236,12 @@ export class AdminService {
         Number(req.duration_hours),
         Number(req.plan_duration_months || 1),
         req.plan_type || "ONE_TIME",
-        req.sessions_per_month || req.bookings.length,
+        resolveDaysPerWeek({
+          planType: req.plan_type,
+          daysPerWeek: (req as any).days_per_week,
+          recurrencePattern: req.recurrence_pattern,
+          sessionsPerMonth: req.sessions_per_month,
+        }),
       );
 
       return {

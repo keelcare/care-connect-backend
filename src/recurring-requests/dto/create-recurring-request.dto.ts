@@ -152,6 +152,17 @@ export class CreateRecurringRequestDto {
   sessions_per_month?: number;
 
   @ApiPropertyOptional({
+    example: 5,
+    description:
+      "Days a week the schedule runs. Defaults to the length of recurrence_pattern.days. Drives recurring pricing — hourly rate × hours per day × this × 4 weeks × plan months.",
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(7)
+  days_per_week?: number;
+
+  @ApiPropertyOptional({
     example: 50.0,
     description: "Maximum hourly rate parent is willing to pay",
   })

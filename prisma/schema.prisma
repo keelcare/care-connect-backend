@@ -244,6 +244,9 @@ model service_requests {
   plan_duration_months  Int?                @default(1)
   plan_type             String?             @db.VarChar(50)
   sessions_per_month    Int?
+  /// Days a week the schedule runs. The pricing factor `sessions_per_month` could
+  /// only ever approximate; recurring plans are priced off this.
+  days_per_week         Int?
   max_hourly_rate       Decimal?            @db.Decimal(10, 2)
   assignments           assignments[]
   bookings              bookings?
@@ -949,6 +952,9 @@ model recurring_service_requests {
   plan_duration_months Int?      @default(1)
   plan_type            String?   @db.VarChar(50)
   sessions_per_month   Int?
+  /// Days a week the schedule runs — mirrors `recurrence_pattern.days.length`,
+  /// stored explicitly so pricing never has to re-parse the pattern JSON.
+  days_per_week        Int?
   max_hourly_rate      Decimal?  @db.Decimal(10, 2)
   created_at           DateTime? @default(now()) @db.Timestamptz(6)
   updated_at           DateTime? @default(now()) @db.Timestamptz(6)

@@ -18,6 +18,7 @@ import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { PricingEngineService } from "../common/pricing.service";
+import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { AddressesService } from "../addresses/addresses.service";
 
@@ -57,6 +58,14 @@ export class RequestsService {
         "Add a saved address before requesting a caregiver.",
       );
     }
+
+    // Priced off the schedule the parent chose, not off a guess: this is the
+    // factor that decides whether a monthly plan is four sessions or twenty.
+    const daysPerWeek = resolveDaysPerWeek({
+      planType: createRequestDto.plan_type || "ONE_TIME",
+      daysPerWeek: createRequestDto.days_per_week,
+      sessionsPerMonth: createRequestDto.sessions_per_month,
+    });
 
     try {
       // 2. Wrap creation in a transaction to ensure atomicity
@@ -102,6 +111,7 @@ export class RequestsService {
               plan_type: createRequestDto.plan_type || "ONE_TIME",
               plan_duration_months: createRequestDto.plan_duration_months || 1,
               sessions_per_month: createRequestDto.sessions_per_month || null,
+              days_per_week: daysPerWeek,
             } as any,
           });
 
@@ -110,7 +120,7 @@ export class RequestsService {
             Number(createRequestDto.duration_hours),
             Number(createRequestDto.plan_duration_months || 1),
             createRequestDto.plan_type || "ONE_TIME",
-            createRequestDto.sessions_per_month,
+            daysPerWeek,
           );
 
           // Create initial booking (Pending Assignment)
@@ -125,9 +135,7 @@ export class RequestsService {
               end_time: bookingEndTime,
               tags: createRequestDto.use_installments ? ["use_installments"] : [],
               hours_per_day: createRequestDto.duration_hours,
-              days_per_week: createRequestDto.sessions_per_month 
-                ? Math.max(1, Math.round(createRequestDto.sessions_per_month / 4)) 
-                : 1,
+              days_per_week: daysPerWeek,
               plan_duration_months: createRequestDto.plan_duration_months || 1,
             },
           });
@@ -790,7 +798,11 @@ export class RequestsService {
       Number(request.duration_hours || 0),
       Number(request["plan_duration_months"] || 1),
       request["plan_type"] || "ONE_TIME",
-      request["sessions_per_month"],
+      resolveDaysPerWeek({
+        planType: request["plan_type"],
+        daysPerWeek: request["days_per_week"],
+        sessionsPerMonth: request["sessions_per_month"],
+      }),
     );
 
     // Resolve the assigned nanny: prefer accepted assignment, fall back to pending
@@ -944,7 +956,11 @@ export class RequestsService {
         Number(req.duration_hours),
         Number(req["plan_duration_months"] || 1),
         req["plan_type"] || "ONE_TIME",
-        req["sessions_per_month"],
+        resolveDaysPerWeek({
+          planType: req["plan_type"],
+          daysPerWeek: req["days_per_week"],
+          sessionsPerMonth: req["sessions_per_month"],
+        }),
       );
 
       // Extract nanny from the first pending assignment for the frontend

@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   calculatePrice,
+  resolveDaysPerWeek,
+  weeksInCycleFor,
   PriceBreakdown,
   PriceInput,
   PricingMode,
@@ -252,8 +254,13 @@ export class PricingEngineService {
       pricingMode: input.pricingMode ?? 'standard',
       baseHourlyRate: Number(rateCard.hourly_rate),
       hoursPerDay,
-      daysPerWeek,
-      weeksInCycle: input.planType === 'ONE_TIME' ? 1 : 4,
+      // Normalised here too: a one-time booking is a single session however many
+      // weekdays the caller happened to pass along.
+      daysPerWeek: resolveDaysPerWeek({
+        planType: input.planType,
+        daysPerWeek,
+      }),
+      weeksInCycle: weeksInCycleFor(input.planType),
       gstPercent: this.effectiveGstPercent(),
       customHourlyRate: input.customHourlyRate,
       customFinalPrice: input.customFinalPrice,
@@ -267,14 +274,20 @@ export class PricingEngineService {
   }
 
   /**
-   * Backward-compatible calculateCost used by bookings.service.ts
+   * The all-in cost of a booking, used by every read path that shows a parent or
+   * an admin what a plan costs.
+   *
+   * `daysPerWeek` is how many days a week the schedule runs — resolve it with
+   * `resolveDaysPerWeek` at the call site rather than passing a raw
+   * `sessions_per_month`, which is a different unit and used to be the reason
+   * recurring plans priced as though they ran a single day a week.
    */
   async calculateCost(
     serviceCategory: string,
     durationHours: number,
     planDurationMonths: number = 1,
     planType: string = 'ONE_TIME',
-    sessionsPerMonth: number = 1,
+    daysPerWeek: number = 1,
   ) {
     const service = await this.serviceByName(serviceCategory);
 
@@ -293,7 +306,7 @@ export class PricingEngineService {
     const preview = await this.getQuotePreview({
       serviceId: service.id,
       hoursPerDay: durationHours,
-      daysPerWeek: planType === 'ONE_TIME' ? 1 : (sessionsPerMonth ? Math.max(1, Math.round(sessionsPerMonth / 4)) : 1),
+      daysPerWeek: resolveDaysPerWeek({ planType, daysPerWeek }),
       planDurationMonths,
       planType,
     });
@@ -330,14 +343,26 @@ export class PricingEngineService {
       where: { id: bookingId },
       include: {
         service_requests: true,
+        // A weekly plan hangs off recurring_service_requests, not service_requests.
+        // Without it the plan type reads as ONE_TIME and the cycle bills a single
+        // session instead of a month of them.
+        recurring_service_requests: true,
       },
     });
 
     if (!booking) throw new NotFoundException(`Booking ${bookingId} not found`);
 
-    // Validate required pricing fields exist on booking or fallback to service_requests
-    const hoursPerDay = booking.hours_per_day ? Number(booking.hours_per_day) : Number(booking.service_requests?.duration_hours || 0);
-    const daysPerWeek = booking.days_per_week ? booking.days_per_week : (booking.service_requests?.sessions_per_month ? Math.max(1, Math.round(booking.service_requests.sessions_per_month / 4)) : 1);
+    const parentRequest = booking.service_requests ?? booking.recurring_service_requests;
+
+    // Validate required pricing fields exist on booking or fallback to the request
+    const hoursPerDay = booking.hours_per_day ? Number(booking.hours_per_day) : Number(parentRequest?.duration_hours || 0);
+    const planType = parentRequest?.plan_type || 'ONE_TIME';
+    const daysPerWeek = resolveDaysPerWeek({
+      planType,
+      daysPerWeek: booking.days_per_week ?? (parentRequest as any)?.days_per_week,
+      recurrencePattern: booking.recurring_service_requests?.recurrence_pattern,
+      sessionsPerMonth: parentRequest?.sessions_per_month,
+    });
 
     if (!hoursPerDay || !daysPerWeek) {
       throw new BadRequestException(
@@ -345,8 +370,8 @@ export class PricingEngineService {
       );
     }
 
-    // Resolve service — look up via service_requests.category or fallback
-    const serviceCategory = booking.service_requests?.category ?? 'CC';
+    // Resolve service — look up via the request's category or fallback
+    const serviceCategory = parentRequest?.category ?? 'CC';
     const service = await this.prisma.services.findFirst({
       where: {
         OR: [
@@ -363,14 +388,12 @@ export class PricingEngineService {
     const asOf = this.resolveRateCardAsOf(booking as any);
     const rateCard = await this.getEffectiveRateCard(service.id, asOf);
 
-    const planType = booking.service_requests?.plan_type || 'ONE_TIME';
-
     const priceInput: PriceInput = {
       pricingMode: (booking.pricing_mode as PricingMode) ?? 'standard',
       baseHourlyRate: Number(rateCard.hourly_rate),
       hoursPerDay: hoursPerDay,
       daysPerWeek: daysPerWeek,
-      weeksInCycle: planType === 'ONE_TIME' ? 1 : 4,
+      weeksInCycle: weeksInCycleFor(planType),
       gstPercent: this.effectiveGstPercent(),
       customHourlyRate: booking.custom_hourly_rate
         ? Number(booking.custom_hourly_rate)

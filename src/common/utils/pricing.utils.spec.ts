@@ -1,4 +1,9 @@
-import { calculatePrice, PriceInput } from './pricing.utils';
+import {
+  calculatePrice,
+  resolveDaysPerWeek,
+  weeksInCycleFor,
+  PriceInput,
+} from './pricing.utils';
 
 const base: PriceInput = {
   pricingMode: 'standard',
@@ -121,5 +126,80 @@ describe('calculatePrice', () => {
         calculatePrice({ ...base, pricingMode: 'custom_override' }),
       ).toThrow(/requires customFinalPrice/);
     });
+  });
+});
+
+describe('weeksInCycleFor', () => {
+  it('bills a one-time booking as a single session', () => {
+    expect(weeksInCycleFor('ONE_TIME')).toBe(1);
+    expect(weeksInCycleFor(null)).toBe(1);
+  });
+
+  it('bills every subscription cycle as four weeks', () => {
+    for (const plan of ['MONTHLY', 'SIX_MONTH', 'YEARLY']) {
+      expect(weeksInCycleFor(plan)).toBe(4);
+    }
+  });
+});
+
+describe('resolveDaysPerWeek', () => {
+  it('prefers the explicit column over everything else', () => {
+    expect(
+      resolveDaysPerWeek({
+        planType: 'MONTHLY',
+        daysPerWeek: 5,
+        recurrencePattern: { days: ['Mon'] },
+        sessionsPerMonth: 12,
+      }),
+    ).toBe(5);
+  });
+
+  it('counts the weekdays the parent actually picked', () => {
+    expect(
+      resolveDaysPerWeek({
+        planType: 'MONTHLY',
+        recurrencePattern: { days: ['Mon', 'Wed', 'Fri'] },
+      }),
+    ).toBe(3);
+  });
+
+  it('falls back to sessions_per_month for rows written before the column existed', () => {
+    expect(resolveDaysPerWeek({ planType: 'MONTHLY', sessionsPerMonth: 20 })).toBe(5);
+  });
+
+  it('ignores a specific_dates pattern that carries no weekday list', () => {
+    expect(
+      resolveDaysPerWeek({ planType: 'MONTHLY', recurrencePattern: { dates: [1, 15] } }),
+    ).toBe(1);
+  });
+
+  it('treats a one-time booking as one session however many days are passed', () => {
+    expect(resolveDaysPerWeek({ planType: 'ONE_TIME', daysPerWeek: 5 })).toBe(1);
+  });
+
+  it('clamps to a week that exists', () => {
+    expect(resolveDaysPerWeek({ planType: 'MONTHLY', daysPerWeek: 99 })).toBe(7);
+    expect(resolveDaysPerWeek({ planType: 'MONTHLY', daysPerWeek: 0 })).toBe(1);
+  });
+});
+
+describe('the days-per-week regression', () => {
+  // A 1 h/day plan used to price at ₹396 (99 × 4 weeks) no matter how many days
+  // the parent selected, because days_per_week was never sent and defaulted to 1.
+  it('scales the monthly subtotal with the number of days selected', () => {
+    const monthly = (hoursPerDay: number, daysPerWeek: number) =>
+      calculatePrice({
+        pricingMode: 'standard',
+        baseHourlyRate: 99,
+        hoursPerDay,
+        daysPerWeek,
+        weeksInCycle: weeksInCycleFor('MONTHLY'),
+        gstPercent: 0,
+      }).finalAmount;
+
+    expect(monthly(1, 1)).toBe(396);
+    expect(monthly(1, 5)).toBe(1980);
+    // 99 × 6 h × 5 d × 4 w — the worked example from the bug report.
+    expect(monthly(6, 5)).toBe(11880);
   });
 });

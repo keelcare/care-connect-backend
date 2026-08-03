@@ -8,6 +8,7 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
+import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { AddressesService } from "../addresses/addresses.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
@@ -113,6 +114,16 @@ export class RecurringRequestsService {
       throw new BadRequestException("The recurrence pattern yielded no valid dates.");
     }
 
+    // The weekday list the parent tapped is what the plan costs: rate × hours per
+    // day × these days × 4 weeks × plan months. Stored on both the plan and each
+    // booking so pricing never has to re-parse the pattern JSON.
+    const daysPerWeek = resolveDaysPerWeek({
+      planType: dto.plan_type || "MONTHLY",
+      daysPerWeek: dto.days_per_week,
+      recurrencePattern: dto.recurrence_pattern,
+      sessionsPerMonth: dto.sessions_per_month,
+    });
+
     // Convert start time string to DateTime for schema
     const startTimeObj = TimeUtils.combineDateAndTime(dto.start_date, dto.start_time);
 
@@ -139,6 +150,7 @@ export class RecurringRequestsService {
           plan_duration_months: dto.plan_duration_months,
           plan_type: dto.plan_type,
           sessions_per_month: dto.sessions_per_month,
+          days_per_week: daysPerWeek,
           max_hourly_rate: dto.max_hourly_rate,
           location_lat: lat,
           location_lng: lng,
@@ -161,9 +173,7 @@ export class RecurringRequestsService {
           end_time: endTimestamp,
           tags: ["recurring", `category:${dto.category}`],
           hours_per_day: dto.duration_hours,
-          days_per_week: dto.sessions_per_month 
-            ? Math.max(1, Math.round(dto.sessions_per_month / 4)) 
-            : (dto.recurrence_type === 'weekly' ? (dto.recurrence_pattern.days?.length || 1) : 1),
+          days_per_week: daysPerWeek,
           plan_duration_months: dto.plan_duration_months || 1,
         };
       });

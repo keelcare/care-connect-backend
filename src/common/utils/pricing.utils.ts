@@ -9,6 +9,55 @@ export type PricingMode = 'standard' | 'custom_rate' | 'custom_override';
 // 'follow_current'→ base rate re-resolved from the current rate card each cycle
 export type PriceLockMode = 'locked' | 'follow_current';
 
+/**
+ * Weeks billed per monthly cycle. A "5 days a week" plan means 5 sessions every
+ * week, so a one-month cycle is 20 sessions — not 5. Every caller that turns a
+ * weekly schedule into a monthly price must go through `weeksInCycleFor` so the
+ * quote, the snapshot and the admin ledger can never disagree about this factor.
+ */
+export const WEEKS_PER_MONTH = 4;
+
+/** Weeks in one billing cycle: a one-time booking is a single session, not a week. */
+export function weeksInCycleFor(planType?: string | null): number {
+  return !planType || planType === 'ONE_TIME' ? 1 : WEEKS_PER_MONTH;
+}
+
+/** A schedule can only repeat on the seven days that exist. */
+const clampDays = (n: number) => Math.min(7, Math.max(1, Math.round(n)));
+
+/**
+ * How many days a week a booking runs — the factor that was silently missing
+ * from every recurring quote, which is why an hour a day priced as `99 × 4`
+ * regardless of how many days the parent had selected.
+ *
+ * Resolved in order of how directly the source states it: the explicit column
+ * first, then the weekday list the parent actually tapped, and only then the
+ * legacy `sessions_per_month` (kept for rows written before `days_per_week`
+ * existed — it is a lossy reverse-derivation, never a preferred source).
+ */
+export function resolveDaysPerWeek(source: {
+  planType?: string | null;
+  daysPerWeek?: number | null;
+  recurrencePattern?: unknown;
+  sessionsPerMonth?: number | null;
+}): number {
+  // A one-time booking is one session on one date; a weekday list is meaningless.
+  if (!source.planType || source.planType === 'ONE_TIME') return 1;
+
+  if (source.daysPerWeek != null && Number.isFinite(Number(source.daysPerWeek))) {
+    return clampDays(Number(source.daysPerWeek));
+  }
+
+  const days = (source.recurrencePattern as { days?: unknown } | null)?.days;
+  if (Array.isArray(days) && days.length > 0) return clampDays(days.length);
+
+  if (source.sessionsPerMonth != null && Number.isFinite(Number(source.sessionsPerMonth))) {
+    return clampDays(Number(source.sessionsPerMonth) / WEEKS_PER_MONTH);
+  }
+
+  return 1;
+}
+
 // ─── Input ────────────────────────────────────────────────────────────────────
 export interface PriceInput {
   pricingMode: PricingMode;

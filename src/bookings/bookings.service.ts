@@ -24,6 +24,7 @@ import {
 } from "./events/booking.events";
 import { BookingStatus } from "../constants";
 import { PricingEngineService } from "../common/pricing.service";
+import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { RequestsService } from "../requests/requests.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { ProgressReportsService } from "../progress-reports/progress-reports.service";
@@ -175,7 +176,11 @@ export class BookingsService {
           : Number(booking.service_requests?.duration_hours || 0),
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
-        booking.service_requests?.["sessions_per_month"] || 1,
+        resolveDaysPerWeek({
+          planType: booking.service_requests?.["plan_type"],
+          daysPerWeek: booking.days_per_week,
+          sessionsPerMonth: booking.service_requests?.["sessions_per_month"],
+        }),
       );
 
     // The request only snapshots coordinates; recover the address text the
@@ -331,7 +336,11 @@ export class BookingsService {
           hours,
           Number(booking.service_requests?.["plan_duration_months"] || 1),
           booking.service_requests?.["plan_type"] || "ONE_TIME",
-          booking.service_requests?.["sessions_per_month"],
+          resolveDaysPerWeek({
+            planType: booking.service_requests?.["plan_type"],
+            daysPerWeek: booking.days_per_week,
+            sessionsPerMonth: booking.service_requests?.["sessions_per_month"],
+          }),
         );
 
       return {
@@ -415,7 +424,11 @@ export class BookingsService {
         hours,
         Number(booking.service_requests?.["plan_duration_months"] || 1),
         booking.service_requests?.["plan_type"] || "ONE_TIME",
-        booking.service_requests?.["sessions_per_month"],
+        resolveDaysPerWeek({
+          planType: booking.service_requests?.["plan_type"],
+          daysPerWeek: booking.days_per_week,
+          sessionsPerMonth: booking.service_requests?.["sessions_per_month"],
+        }),
       );
 
       const parentProfile = booking.users_bookings_parent_idTousers?.profiles;
