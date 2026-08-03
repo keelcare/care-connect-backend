@@ -182,6 +182,43 @@ export class PricingEngineService {
   }
 
   /**
+   * The standard hourly rate a booking would be charged at, or `null` when it
+   * cannot be resolved (unknown service category, or no rate card covering the
+   * booking's effective date).
+   *
+   * Used to value work that has not been charged yet — a session still ahead on the
+   * calendar has no price snapshot to read a rate off. Honours `price_lock_mode`
+   * through `resolveRateCardAsOf`, so a locked booking is valued at the rate it was
+   * locked to and not at whatever the rate card says today.
+   *
+   * Returns null rather than throwing: a projection is a nice-to-have on a screen
+   * whose primary figures must still render, so an unpriceable booking is dropped
+   * from the estimate instead of failing the whole request.
+   */
+  async resolveStandardHourlyRate(booking: {
+    created_at: Date | null;
+    price_lock_mode: string;
+    service_requests: { category: string | null } | null;
+  }): Promise<number | null> {
+    const category = booking.service_requests?.category;
+    if (!category) return null;
+
+    const service = await this.serviceByName(category);
+    if (!service) return null;
+
+    try {
+      const card = await this.getEffectiveRateCard(
+        service.id,
+        this.resolveRateCardAsOf(booking),
+      );
+      return Number(card.hourly_rate);
+    } catch {
+      // getEffectiveRateCard throws when no card covers the date.
+      return null;
+    }
+  }
+
+  /**
    * Resolve the rate-card timestamp to use for a booking based on its price_lock_mode:
    * - 'locked'         → pin to booking creation date (rate never changes)
    * - 'follow_current' → use now() (rate floats with current rate card)

@@ -21,6 +21,7 @@ import { PaymentsService } from "./payments.service";
 import { CreateOrderDto, VerifyPaymentDto } from "./dto/create-payment.dto";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { ParentTransactionsQueryDto } from "./dto/parent-transactions-query.dto";
+import { NannyEarningsAnalyticsQueryDto } from "./dto/nanny-earnings-analytics-query.dto";
 
 @ApiTags("Payments")
 @Controller("payments")
@@ -217,10 +218,23 @@ export class PaymentsController {
     description:
       "Amounts are the caregiver's pre-tax service fee. `commissionPercent` is the " +
       "platform rate in force and `netPayout` is what the caregiver actually receives; " +
-      "clients must display those rather than applying a rate of their own.",
+      "clients must display those rather than applying a rate of their own.\n\n" +
+      "`period` is the *calendar* week (Mon–Sun) or month in IST, not a trailing " +
+      "window, and `trend` spans the whole of it — days still ahead carry " +
+      "`projection` instead of `amount`.\n\n" +
+      "`projectedEarnings` is the net payout the caregiver is on track to reach by " +
+      "the end of that period: earnings so far plus her share of the sessions still " +
+      "booked in it. It counts booked work only and is never extrapolated from past " +
+      "averages, so it is a floor rather than a forecast. It is `null` when no " +
+      "meaningful projection can be made. Note it is period-scoped while " +
+      "`totalEarned`/`netPayout` are all-time — do not present them as directly " +
+      "comparable.",
   })
   @ApiResponse({ status: 200, description: "Earnings analytics returned" })
-  async getNannyEarningsAnalytics(@Req() req: any, @Query("period") period: "week" | "month" = "week") {
-    return this.paymentsService.getNannyEarningsAnalytics(req.user.id, period);
+  async getNannyEarningsAnalytics(
+    @Req() req: any,
+    @Query() query: NannyEarningsAnalyticsQueryDto,
+  ) {
+    return this.paymentsService.getNannyEarningsAnalytics(req.user.id, query.period);
   }
 }

@@ -18,9 +18,12 @@ import { MailService } from "../mail/mail.service";
 import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 import {
   caregiverEarningsWhere,
+  preTaxBookingValue,
   preTaxServiceFee,
+  projectableBookingsWhere,
   round2,
 } from "../common/payout-policy";
+import { daysInWindow, istDateKey, resolvePeriod } from "../common/period";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { TimeUtils } from "../common/utils/time.utils";
 import {
@@ -982,17 +985,16 @@ export class PaymentsService {
    *
    * Windowing is on `created_at` to match the admin ledger — a caregiver querying a
    * day's earnings and an admin auditing that day must land on the same rows.
+   *
+   * The window is the *calendar* week (Mon–Sun) or month, in IST — see
+   * `common/period.ts` for why both of those matter. It deliberately extends past
+   * today: the days between now and the period end are the remainder that
+   * `projectedEarnings` covers.
    */
   async getNannyEarningsAnalytics(nannyId: string, period: "week" | "month" = "week") {
     const now = new Date();
-    const days = period === "week" ? 7 : 30;
-
-    const startDate = new Date(now);
-    startDate.setDate(startDate.getDate() - (days - 1));
-    startDate.setHours(0, 0, 0, 0);
-
-    const lastPeriodStart = new Date(startDate);
-    lastPeriodStart.setDate(lastPeriodStart.getDate() - days);
+    const window = resolvePeriod(period, now);
+    const startDate = window.start;
 
     const earned = caregiverEarningsWhere(nannyId);
     const earningRow = {
@@ -1002,28 +1004,56 @@ export class PaymentsService {
       price_snapshots: { select: { gst_amount: true } },
     } satisfies Prisma.paymentsSelect;
 
-    const [allTime, periodPayments, lastPeriodPayments, jobsCompleted, jobsThisPeriod] =
-      await this.prisma.$transaction([
-        this.prisma.payments.findMany({ where: earned, select: earningRow }),
-        this.prisma.payments.findMany({
-          where: { ...earned, created_at: { gte: startDate } },
-          select: earningRow,
-        }),
-        this.prisma.payments.findMany({
-          where: { ...earned, created_at: { gte: lastPeriodStart, lt: startDate } },
-          select: earningRow,
-        }),
-        this.prisma.bookings.count({
-          where: { nanny_id: nannyId, status: BookingStatus.COMPLETED },
-        }),
-        this.prisma.bookings.count({
-          where: {
-            nanny_id: nannyId,
-            status: BookingStatus.COMPLETED,
-            end_time: { gte: startDate },
+    const [
+      allTime,
+      periodPayments,
+      lastPeriodPayments,
+      jobsCompleted,
+      jobsThisPeriod,
+      upcomingBookings,
+    ] = await this.prisma.$transaction([
+      this.prisma.payments.findMany({ where: earned, select: earningRow }),
+      this.prisma.payments.findMany({
+        where: { ...earned, created_at: { gte: startDate } },
+        select: earningRow,
+      }),
+      this.prisma.payments.findMany({
+        where: {
+          ...earned,
+          created_at: { gte: window.previousStart, lte: window.previousEnd },
+        },
+        select: earningRow,
+      }),
+      this.prisma.bookings.count({
+        where: { nanny_id: nannyId, status: BookingStatus.COMPLETED },
+      }),
+      this.prisma.bookings.count({
+        where: {
+          nanny_id: nannyId,
+          status: BookingStatus.COMPLETED,
+          end_time: { gte: startDate },
+        },
+      }),
+      this.prisma.bookings.findMany({
+        where: projectableBookingsWhere(nannyId, now, window.end),
+        select: {
+          start_time: true,
+          end_time: true,
+          pricing_mode: true,
+          custom_hourly_rate: true,
+          created_at: true,
+          price_lock_mode: true,
+          service_requests: { select: { category: true } },
+          // Newest cycle first: its implied hourly rate is the most recent price
+          // actually agreed for this booking.
+          price_snapshots: {
+            select: { subtotal_amount: true, hours_billed: true },
+            orderBy: { cycle_number: "desc" },
+            take: 1,
           },
-        }),
-      ]);
+        },
+      }),
+    ]);
 
     const sum = (rows: typeof allTime) =>
       round2(rows.reduce((s, p) => s + preTaxServiceFee(p), 0));
@@ -1032,6 +1062,9 @@ export class PaymentsService {
     const periodTotal = sum(periodPayments);
     const lastPeriodTotal = sum(lastPeriodPayments);
 
+    // `lastPeriodPayments` is truncated to the same elapsed offset into the previous
+    // period, so a Monday morning is compared against last Monday morning and not
+    // against a whole finished week.
     const periodChange =
       lastPeriodTotal > 0
         ? Math.round(((periodTotal - lastPeriodTotal) / lastPeriodTotal) * 100)
@@ -1050,29 +1083,71 @@ export class PaymentsService {
     const paidOut = share(sum(allTime.filter((p) => p.released_at != null)));
     const outstanding = round2(netPayout - paidOut);
 
-    // Revenue trend: gross earnings grouped by day, matching `totalEarned`.
+    // ── Projected earnings ───────────────────────────────────────────────────
+    //
+    // Booked work only: the caregiver's share of sessions still on her calendar
+    // before the period ends, on top of what she has already earned in it. Nothing
+    // here is extrapolated from past averages — see `payout-policy.ts`.
+    //
+    // `projectableBookingsWhere` has already dropped any booking whose money is
+    // sitting in `periodPayments`, so adding the two halves cannot double-count a
+    // prepaid session.
+    const bookedByDay = new Map<string, number>();
+    let bookedAhead = 0;
+    let valuedBookings = 0;
+
+    for (const booking of upcomingBookings) {
+      const standardRate = await this.pricingService.resolveStandardHourlyRate(booking);
+      const value = preTaxBookingValue(booking, standardRate);
+      // Null means the booking cannot be valued honestly (no schedule, or a
+      // whole-cycle override with no per-session meaning). Dropping it
+      // under-projects, which is the safe direction to be wrong in.
+      if (value == null) continue;
+
+      valuedBookings++;
+      bookedAhead += value;
+      const key = istDateKey(booking.start_time!);
+      bookedByDay.set(key, round2((bookedByDay.get(key) ?? 0) + value));
+    }
+
+    // Null, not zero: a new caregiver with nothing earned and nothing booked is
+    // told the figure isn't available yet rather than shown ₹0.00 as a forecast.
+    //
+    // Commission is applied once, to the combined pre-tax base, so the projection
+    // is derived exactly the way `netPayout` is and the two stay reconcilable.
+    //
+    // NOTE: this is scoped to the *current period*, while `netPayout` above is
+    // all-time. Both are correct for what they claim, but a client showing them
+    // side by side is comparing different spans — see the endpoint's Swagger note.
+    const projectedEarnings =
+      valuedBookings === 0 && periodTotal === 0
+        ? null
+        : share(round2(periodTotal + bookedAhead));
+
+    // Revenue trend: gross earnings grouped by day, matching `totalEarned`. Days
+    // still ahead in the period carry `projection` instead — the same booked value
+    // the card is built from, so the chart and the card can never disagree.
     const trend: { date: string; amount: number; projection?: number }[] = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const day = new Date(now);
-      day.setDate(day.getDate() - i);
-      const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999);
+    for (const dayStart of daysInWindow(window)) {
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+      const date = istDateKey(dayStart);
+
+      const booked = bookedByDay.get(date);
+
+      if (dayStart > now) {
+        trend.push({ date, amount: 0, ...(booked ? { projection: booked } : {}) });
+        continue;
+      }
 
       const dayPayments = periodPayments.filter((p) => {
         const d = new Date(p.created_at!);
         return d >= dayStart && d <= dayEnd;
       });
 
-      trend.push({
-        date: day.toISOString().slice(0, 10),
-        amount: sum(dayPayments),
-      });
+      // Today can be both: earned this morning, still booked this evening. Carrying
+      // both keeps the trend summing to the same figure the card reports.
+      trend.push({ date, amount: sum(dayPayments), ...(booked ? { projection: booked } : {}) });
     }
-
-    // Average daily projection
-    const activeDays = trend.filter((t) => t.amount > 0).length;
-    const avgDaily = activeDays > 0 ? round2(periodTotal / activeDays) : 0;
-    trend.forEach((t) => { if (t.amount === 0 && new Date(t.date) > now) t.projection = avgDaily; });
 
     return {
       totalEarned,
@@ -1085,6 +1160,7 @@ export class PaymentsService {
       jobsThisPeriod,
       periodTotal,
       periodChange,
+      projectedEarnings,
       trend,
     };
   }
