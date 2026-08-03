@@ -33,8 +33,24 @@ import {
   BOOKING_IN_PROGRESS_MAX_MS,
   PROGRESS_REPORT_DUE_HOURS,
 } from "../common/constants/constants";
-import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
+import {
+  MANUAL_PENDING_PROVIDER,
+  PaymentStatus,
+  INSTALMENT_PENDING,
+} from "../constants";
 import { Prisma } from "@prisma/client";
+
+/**
+ * Payment state as the parent understands it. `partially_paid` is a split cycle
+ * whose advance has been captured while its balance is still outstanding — real
+ * money has arrived, but the booking is not settled.
+ */
+export type PaymentStatusValue =
+  | "paid"
+  | "partially_paid"
+  | "failed"
+  | "refunded"
+  | "unpaid";
 
 
 @Injectable()
@@ -236,17 +252,36 @@ export class BookingsService {
    * records a payout obligation, not a charge the parent made, so it never
    * counts as paid.
    */
-  async derivePaymentStatus(
-    bookingId: string,
-  ): Promise<"paid" | "failed" | "refunded" | "unpaid"> {
-    const rows = await this.prisma.payments.findMany({
-      where: {
-        booking_id: bookingId,
-        provider: { not: MANUAL_PENDING_PROVIDER },
-      },
-      select: { status: true },
+  async derivePaymentStatus(bookingId: string): Promise<PaymentStatusValue> {
+    const [rows, outstanding] = await Promise.all([
+      this.prisma.payments.findMany({
+        where: {
+          booking_id: bookingId,
+          provider: { not: MANUAL_PENDING_PROVIDER },
+        },
+        select: { status: true },
+      }),
+      this.prisma.payment_installments.count({
+        where: { booking_id: bookingId, status: INSTALMENT_PENDING },
+      }),
+    ]);
+    return this.paymentStatusFromRows(
+      rows.map((r) => r.status ?? ""),
+      outstanding > 0,
+    );
+  }
+
+  /**
+   * The set of these bookings that still owe money, for the batched list paths.
+   */
+  private async outstandingBookingIds(bookingIds: string[]): Promise<Set<string>> {
+    if (bookingIds.length === 0) return new Set();
+    const rows = await this.prisma.payment_installments.findMany({
+      where: { booking_id: { in: bookingIds }, status: INSTALMENT_PENDING },
+      select: { booking_id: true },
+      distinct: ["booking_id"],
     });
-    return this.paymentStatusFromRows(rows.map((r) => r.status ?? ""));
+    return new Set(rows.map((r) => r.booking_id));
   }
 
   /**
@@ -254,16 +289,21 @@ export class BookingsService {
    * abandoned attempt AFTER a successful charge must not flip a paid booking
    * back to unpaid. A capture anywhere in the history wins; a refund means the
    * money went back; a failure is retryable; anything else is simply unpaid.
+   *
+   * `hasOutstanding` is what keeps a split cycle honest: its advance is a real
+   * capture, but calling the booking `paid` while the balance is still owed would
+   * hide the amount due from every list and suppress the prompt to pay it.
    */
   private paymentStatusFromRows(
     statuses: string[],
-  ): "paid" | "failed" | "refunded" | "unpaid" {
+    hasOutstanding = false,
+  ): PaymentStatusValue {
     if (
       statuses.some(
         (s) => s === PaymentStatus.CAPTURED || s === PaymentStatus.PENDING_RELEASE,
       )
     ) {
-      return "paid";
+      return hasOutstanding ? "partially_paid" : "paid";
     }
     if (statuses.some((s) => s === PaymentStatus.REFUNDED)) return "refunded";
     if (statuses.some((s) => s === PaymentStatus.FAILED)) return "failed";
@@ -316,8 +356,12 @@ export class BookingsService {
       list.push(row.status ?? "");
       statusesByBooking.set(row.booking_id, list);
     }
+    const outstanding = await this.outstandingBookingIds(bookings.map((b) => b.id));
     const statusOf = (bookingId: string) =>
-      this.paymentStatusFromRows(statusesByBooking.get(bookingId) ?? []);
+      this.paymentStatusFromRows(
+        statusesByBooking.get(bookingId) ?? [],
+        outstanding.has(bookingId),
+      );
 
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
@@ -408,8 +452,12 @@ export class BookingsService {
       list.push(row.status ?? "");
       statusesByBooking.set(row.booking_id, list);
     }
+    const outstanding = await this.outstandingBookingIds(bookings.map((b) => b.id));
     const statusOf = (bookingId: string) =>
-      this.paymentStatusFromRows(statusesByBooking.get(bookingId) ?? []);
+      this.paymentStatusFromRows(
+        statusesByBooking.get(bookingId) ?? [],
+        outstanding.has(bookingId),
+      );
 
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const hours =

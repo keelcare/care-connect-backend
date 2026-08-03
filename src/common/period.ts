@@ -108,6 +108,18 @@ export function resolvePeriod(period: EarningsPeriod, now: Date = new Date()): P
 }
 
 /** The IST calendar date of an instant, as `YYYY-MM-DD` — the trend point's label. */
+/**
+ * The last instant of the IST day containing `at`.
+ *
+ * Anything scheduled against a parent's calendar day has to be bounded in their
+ * timezone — a server-local midnight would count a balance as due a day early or
+ * late depending on where the process happens to run.
+ */
+export function endOfIstDay(at: Date): Date {
+  const { year, month, day } = istParts(at);
+  return new Date(istMidnight(year, month, day).getTime() + DAY_MS - 1);
+}
+
 export function istDateKey(at: Date): string {
   return new Date(at.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
 }

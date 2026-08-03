@@ -1,3 +1,8 @@
+import {
+  RAZORPAY_MIN_AMOUNT_PAISE,
+  RAZORPAY_PAISE_MULTIPLIER,
+} from '../constants/constants';
+
 // ─── Pricing Mode ────────────────────────────────────────────────────────────
 // 'standard'        → use the service rate card
 // 'custom_rate'     → use an admin-set hourly rate
@@ -56,6 +61,58 @@ export function resolveDaysPerWeek(source: {
   }
 
   return 1;
+}
+
+// ─── Split payments ───────────────────────────────────────────────────────────
+//
+// A subscription cycle is charged as an advance half at checkout and a balance
+// half a fixed number of days later. One-time bookings are never split — there is
+// no ongoing relationship to spread the cost across.
+
+/** Share of a cycle taken at checkout. Fixed by policy, not configurable. */
+export const ADVANCE_PAYMENT_PERCENT = 50;
+
+/** Halves per split cycle. Named so the arithmetic below reads as intent. */
+export const SPLIT_INSTALMENT_COUNT = 2;
+
+/**
+ * Whether a cycle of this size and plan type should be split.
+ *
+ * `finalAmount` matters because Razorpay rejects orders under ₹1: a cycle small
+ * enough that its balance half would fall below the floor must be charged whole,
+ * or the second half could never be collected at all.
+ */
+export function isSplittable(
+  planType: string | null | undefined,
+  finalAmount: number,
+  enabled: boolean,
+): boolean {
+  if (!enabled) return false;
+  if (!planType || planType === 'ONE_TIME') return false;
+  if (!Number.isFinite(finalAmount) || finalAmount <= 0) return false;
+
+  const paise = Math.round(finalAmount * RAZORPAY_PAISE_MULTIPLIER);
+  return paise >= SPLIT_INSTALMENT_COUNT * RAZORPAY_MIN_AMOUNT_PAISE;
+}
+
+/**
+ * Divide an amount into `count` parts that sum back to it *exactly*.
+ *
+ * Split in paise rather than by halving a float, and give the remainder to the
+ * first part: the advance is charged today against a live checkout, so a stray
+ * paisa is collected rather than left to fall due on a balance we might never
+ * be able to bill.
+ */
+export function splitAmount(total: number, count = SPLIT_INSTALMENT_COUNT): number[] {
+  if (count < 1) throw new Error('splitAmount requires at least one part');
+
+  const totalPaise = Math.round(total * RAZORPAY_PAISE_MULTIPLIER);
+  const base = Math.floor(totalPaise / count);
+  const remainder = totalPaise - base * count;
+
+  return Array.from({ length: count }, (_, i) =>
+    (base + (i === 0 ? remainder : 0)) / RAZORPAY_PAISE_MULTIPLIER,
+  );
 }
 
 // ─── Input ────────────────────────────────────────────────────────────────────

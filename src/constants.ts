@@ -33,3 +33,16 @@ export enum PaymentStatus {
  * payment attached. It records a payout obligation, not a charge the parent made.
  */
 export const MANUAL_PENDING_PROVIDER = "manual_pending";
+
+/**
+ * `payment_installments.status`. Plain strings rather than a Prisma enum, matching
+ * how `price_snapshots.status` and `payment_plans.status` are already modelled.
+ *
+ * `void` is for money that stopped being owed — a cancelled booking, or the sibling
+ * of a refunded half — so it drops out of the pending list and the dunning cron
+ * without pretending it was ever collected.
+ */
+export const INSTALMENT_PENDING = "pending";
+export const INSTALMENT_PAID = "paid";
+export const INSTALMENT_VOID = "void";
+export const INSTALMENT_REFUNDED = "refunded";

@@ -1,5 +1,6 @@
 import {
   preTaxBookingValue,
+  preTaxServiceFee,
   projectableBookingsWhere,
   sessionHours,
   type ProjectableBooking,
@@ -111,5 +112,45 @@ describe("projectableBookingsWhere", () => {
         },
       },
     });
+  });
+});
+
+describe("preTaxServiceFee with split payments", () => {
+  it("strips the instalment's own GST, not the whole cycle's", () => {
+    // The advance carries half the gross. Stripping the cycle's full GST would
+    // understate the caregiver's fee — and go negative on a small cycle.
+    const advance = preTaxServiceFee({
+      amount: 5940,
+      price_snapshots: [{ gst_amount: 1800 }], // the whole cycle's tax
+      payment_installments: [{ gst_amount: 900 }], // this half's frozen share
+    });
+    expect(advance).toBe(5040);
+  });
+
+  it("falls back to the snapshot for payments written before instalments existed", () => {
+    expect(
+      preTaxServiceFee({ amount: 11880, price_snapshots: [{ gst_amount: 1800 }] }),
+    ).toBe(10080);
+  });
+
+  it("treats a payment with neither as GST-free, as the completion placeholder is", () => {
+    expect(preTaxServiceFee({ amount: 500, price_snapshots: [] })).toBe(500);
+    expect(
+      preTaxServiceFee({ amount: 500, price_snapshots: [], payment_installments: [] }),
+    ).toBe(500);
+  });
+
+  it("keeps both halves summing to the cycle's own pre-tax fee", () => {
+    // What the caregiver is owed cannot depend on how the parent paid.
+    const halves = [
+      { amount: 5940, price_snapshots: [], payment_installments: [{ gst_amount: 900 }] },
+      { amount: 5940, price_snapshots: [], payment_installments: [{ gst_amount: 900 }] },
+    ];
+    const split = halves.reduce((sum, h) => sum + preTaxServiceFee(h), 0);
+    const whole = preTaxServiceFee({
+      amount: 11880,
+      price_snapshots: [{ gst_amount: 1800 }],
+    });
+    expect(split).toBe(whole);
   });
 });

@@ -124,7 +124,11 @@ export class RevenueService {
     return {
       ...this.collectedWhere(from, to),
       provider: { not: MANUAL_PENDING_PROVIDER },
+      // A cancellation fee is the only charge tied to no billing record at all.
+      // A split cycle's halves link through their instalment rather than the
+      // snapshot, so both must be absent before a payment counts as a fee.
       price_snapshots: { none: {} },
+      payment_installments: { none: {} },
     };
   }
 
@@ -260,6 +264,7 @@ export class RevenueService {
         provider: true,
         created_at: true,
         price_snapshots: { select: { gst_amount: true } },
+        payment_installments: { select: { gst_amount: true } },
       },
       orderBy: { created_at: "asc" },
     });
@@ -272,7 +277,9 @@ export class RevenueService {
       const bucket = byDay.get(key) ?? { gross: 0, splittableNet: 0, feeNet: 0 };
       const net = preTaxServiceFee(row);
       const isCancellationFee =
-        row.provider !== MANUAL_PENDING_PROVIDER && row.price_snapshots.length === 0;
+        row.provider !== MANUAL_PENDING_PROVIDER &&
+        row.price_snapshots.length === 0 &&
+        row.payment_installments.length === 0;
 
       bucket.gross += Number(row.amount);
       if (isCancellationFee) bucket.feeNet += net;
@@ -330,6 +337,7 @@ export class RevenueService {
         created_at: true,
         booking_id: true,
         price_snapshots: { select: { gst_amount: true } },
+        payment_installments: { select: { gst_amount: true } },
         bookings: {
           select: {
             nanny_id: true,

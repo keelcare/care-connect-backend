@@ -13,9 +13,16 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentAuditQueryDto } from "./dto/payment-audit-query.dto";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
-import { PricingEngineService } from "../common/pricing.service";
+import { AdvancePaymentConfig, PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
-import { MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
+import {
+  MANUAL_PENDING_PROVIDER,
+  PaymentStatus,
+  INSTALMENT_PAID,
+  INSTALMENT_PENDING,
+  INSTALMENT_REFUNDED,
+  INSTALMENT_VOID,
+} from "../constants";
 import {
   caregiverEarningsWhere,
   preTaxBookingValue,
@@ -47,9 +54,119 @@ export class PaymentsService {
   ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
+  /**
+   * The installment this order should charge.
+   *
+   * Defaults to the earliest unpaid one so a parent tapping "Pay" always settles
+   * the oldest thing they owe; `installmentId` lets the pending-payments screen
+   * name a specific balance. Either way the row must be pending and belong to this
+   * booking — a caller cannot re-charge something settled or reach another
+   * parent's balance by guessing an id.
+   */
+  private async resolveInstallmentToCharge(
+    bookingId: string,
+    snapshotId: string,
+    installmentId?: string,
+  ) {
+    if (installmentId) {
+      const named = await this.prisma.payment_installments.findUnique({
+        where: { id: installmentId },
+      });
+      if (!named || named.booking_id !== bookingId) {
+        throw new NotFoundException("Instalment not found for this booking");
+      }
+      if (named.status !== INSTALMENT_PENDING) {
+        // Same wording the client matches on to distinguish a settled charge from
+        // a real failure — see usePayment's ALREADY_PAID classification.
+        throw new BadRequestException("This instalment has already been paid.");
+      }
+      return named;
+    }
+
+    const next = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, status: INSTALMENT_PENDING },
+      orderBy: [{ cycle_number: "asc" }, { installment_no: "asc" }],
+    });
+    if (next) return next;
+
+    // A snapshot written before installments existed has none; treat it as a
+    // single full-amount charge rather than failing a legacy booking.
+    const legacy = await this.backfillLegacySnapshotInstallment(bookingId, snapshotId);
+    if (legacy) return legacy;
+
+    throw new BadRequestException("This booking has already been paid.");
+  }
+
+  /**
+   * Give a pre-split snapshot the one installment row the rest of the flow assumes.
+   * Only ever called when a snapshot genuinely has none — never to re-split a cycle
+   * whose terms were already agreed with the parent.
+   */
+  private async backfillLegacySnapshotInstallment(
+    bookingId: string,
+    snapshotId: string,
+  ) {
+    const snapshot = await this.prisma.price_snapshots.findUnique({
+      where: { id: snapshotId },
+      include: { payment_installments: { select: { id: true } } },
+    });
+    if (!snapshot || snapshot.payment_installments.length > 0) return null;
+
+    return this.prisma.payment_installments.create({
+      data: {
+        booking_id: bookingId,
+        price_snapshot_id: snapshot.id,
+        payment_plan_id: snapshot.payment_plan_id,
+        cycle_number: snapshot.cycle_number,
+        installment_no: 1,
+        total_installments: 1,
+        amount: snapshot.final_amount,
+        subtotal_amount: snapshot.subtotal_amount,
+        gst_amount: snapshot.gst_amount,
+        due_date: new Date(),
+        status: INSTALMENT_PENDING,
+      },
+    });
+  }
+
+  /** "Payment for Booking #x", plus which half when the cycle is split. */
+  private orderDescription(
+    bookingId: string,
+    installment: { installment_no: number; total_installments: number },
+  ): string {
+    const base = `Payment for Booking #${bookingId}`;
+    return installment.total_installments > 1
+      ? `${base} (Instalment ${installment.installment_no} of ${installment.total_installments})`
+      : base;
+  }
+
+  /**
+   * The terms to show before checkout, computed server-side.
+   *
+   * The client must never derive "50% of X" itself: rounding lands the odd paisa on
+   * the advance, and a client that recomputed it would quote a figure a rupee off
+   * from what we actually charge.
+   */
+  private splitDisclosure(
+    installment: { id: string; installment_no: number; total_installments: number },
+    snapshot: { final_amount: Prisma.Decimal | number },
+    config: AdvancePaymentConfig,
+  ) {
+    return {
+      installmentId: installment.id,
+      installmentNo: installment.installment_no,
+      totalInstallments: installment.total_installments,
+      cycleTotal: Number(snapshot.final_amount),
+      /** Days from paying this half to the balance falling due; null when nothing follows. */
+      balanceDueInDays:
+        installment.installment_no < installment.total_installments ? config.dueDays : null,
+    };
+  }
+
   async createOrder(
     bookingId: string,
     requestingUserId?: string,
+    installmentId?: string,
   ) {
     if (!this.configService.get("RAZORPAY_KEY_ID")) {
       this.logger.error("Cannot create order: RAZORPAY_KEY_ID missing");
@@ -77,33 +194,27 @@ export class PaymentsService {
       );
     }
 
-    // A one-off booking is charged exactly once — refuse a second order so a
-    // stale client screen or a double-tap can't double-charge. Cycle-billed
-    // plan bookings legitimately take one charge per cycle and are skipped.
-    if (!booking.payment_plans) {
-      const alreadyPaid = await this.prisma.payments.findFirst({
-        where: {
-          booking_id: bookingId,
-          provider: { not: MANUAL_PENDING_PROVIDER },
-          status: {
-            in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE],
-          },
-        },
-      });
-      if (alreadyPaid) {
-        throw new BadRequestException("This booking has already been paid.");
-      }
-    }
-
     const paymentPlan = booking.payment_plans;
     const cycleNumber = paymentPlan ? paymentPlan.cycles_completed + 1 : 1;
-    
+
     // Check if we already took a snapshot for this cycle that is pending
     let snapshot = await this.prisma.price_snapshots.findFirst({
         where: { booking_id: bookingId, cycle_number: cycleNumber, status: 'pending' }
     });
-    
+
     if (!snapshot) {
+        // This cycle has already been settled in full. Only a plan advancing its
+        // cycle counter should ever open a new one — snapshotting again here
+        // would bill a second time for work already paid for, which is exactly
+        // what the old "a captured payment exists" guard prevented before split
+        // payments made that guard reject legitimate balances.
+        const settled = await this.prisma.price_snapshots.findFirst({
+          where: { booking_id: bookingId, cycle_number: cycleNumber, status: "charged" },
+        });
+        if (settled) {
+          throw new BadRequestException("This booking has already been paid.");
+        }
+
         // Calculate and snapshot
         const res = await this.pricingService.calculateAndSnapshot({
            bookingId,
@@ -115,12 +226,35 @@ export class PaymentsService {
 
     if (!snapshot) throw new BadRequestException("Failed to generate price snapshot");
 
-    const amountInRupees = Number(snapshot.final_amount);
+    // What is owed, and how much of it, is a stored fact. Note this replaces the
+    // old "already has a captured payment" guard: a split cycle legitimately takes
+    // two charges, and a booking with no payment_plan (a Pay-in-Full multi-month
+    // plan never gets one) would otherwise have its balance half refused as a
+    // duplicate — leaving the booking unpayable while the app said it was settled.
+    const installment = await this.resolveInstallmentToCharge(
+      bookingId,
+      snapshot.id,
+      installmentId,
+    );
+
+    // The oldest unpaid instalment can belong to an earlier cycle than the one we
+    // just resolved — a balance left outstanding holds the plan on its cycle, but
+    // an explicitly named instalment need not. Quote the cycle the charge is
+    // actually part of, not the one we happened to look up.
+    if (installment.price_snapshot_id !== snapshot.id) {
+      snapshot =
+        (await this.prisma.price_snapshots.findUnique({
+          where: { id: installment.price_snapshot_id },
+        })) ?? snapshot;
+    }
+
+    const advanceConfig = await this.pricingService.getAdvancePaymentConfig();
+    const amountInRupees = Number(installment.amount);
     const amountInPaise = Math.round(amountInRupees * RAZORPAY_PAISE_MULTIPLIER); // Razorpay requires paise
 
     this.logger.log(`Creating order for booking: ${bookingId}`);
     this.logger.log(
-      `Cycle: ${cycleNumber}, Amount(Paise): ${amountInPaise}`,
+      `Cycle: ${cycleNumber}, Instalment: ${installment.installment_no}/${installment.total_installments}, Amount(Paise): ${amountInPaise}`,
     );
 
     if (amountInPaise < RAZORPAY_MIN_AMOUNT_PAISE) {
@@ -129,16 +263,15 @@ export class PaymentsService {
       );
     }
 
-    // Idempotency: Check if order already exists for this booking/cycle
-    const existingPayment = await this.prisma.payments.findFirst({
-      where: {
-        booking_id: bookingId,
-        status: "created",
-        price_snapshots: {
-           some: { id: snapshot.id }
-        }
-      },
-    });
+    // Idempotency: has *this instalment* already got an open order? Keyed on the
+    // instalment rather than the snapshot, because both halves of a split cycle
+    // share a snapshot and a snapshot-keyed lookup cannot tell one half's
+    // abandoned checkout from the other's.
+    const existingPayment = installment.payment_id
+      ? await this.prisma.payments.findFirst({
+          where: { id: installment.payment_id, status: PaymentStatus.CREATED },
+        })
+      : null;
 
     if (existingPayment) {
       // A stored order is only safe to replay if Razorpay still recognises it
@@ -171,7 +304,8 @@ export class PaymentsService {
           key: this.configService.get("RAZORPAY_KEY_ID"),
           key_id: this.configService.get("RAZORPAY_KEY_ID"),
           name: "Care Connect",
-          description: `Payment for Booking #${bookingId}`,
+          description: this.orderDescription(bookingId, installment),
+          ...this.splitDisclosure(installment, snapshot, advanceConfig),
         };
       }
 
@@ -185,6 +319,12 @@ export class PaymentsService {
       await this.prisma.payments.update({
         where: { id: existingPayment.id },
         data: { status: PaymentStatus.FAILED, error_description: "Order no longer usable at gateway" },
+      });
+      // Release the instalment from the dead order, or the lookup above keeps
+      // finding it and we never mint the replacement.
+      await this.prisma.payment_installments.update({
+        where: { id: installment.id },
+        data: { payment_id: null },
       });
       await this.audit.writeLog(
         this.prisma,
@@ -215,10 +355,13 @@ export class PaymentsService {
         },
       });
 
-      // Link payment to snapshot
-      await this.prisma.price_snapshots.update({
-          where: { id: snapshot.id },
-          data: { payment_id: createdPayment.id }
+      // Link payment to the instalment it pays for. The snapshot's own payment_id
+      // is left alone until the cycle is fully settled — it can only hold one id,
+      // and pointing it at a half would misreport the cycle to everything that
+      // reads it.
+      await this.prisma.payment_installments.update({
+        where: { id: installment.id },
+        data: { payment_id: createdPayment.id },
       });
 
       await this.audit.writeLog(
@@ -239,7 +382,8 @@ export class PaymentsService {
         key: this.configService.get("RAZORPAY_KEY_ID"),
         key_id: this.configService.get("RAZORPAY_KEY_ID"), // Compatible with Razorpay options
         name: "Care Connect",
-        description: `Payment for Booking #${bookingId}`,
+        description: this.orderDescription(bookingId, installment),
+        ...this.splitDisclosure(installment, snapshot, advanceConfig),
       };
     } catch (error: any) {
       this.logger.error("Error creating Razorpay order", error);
@@ -266,17 +410,15 @@ export class PaymentsService {
       );
     }
 
-    // Check if it's already paid successfully. pending_release counts: that's a
-    // captured charge whose payout is being held, not an unpaid booking.
-    const successPayment = await this.prisma.payments.findFirst({
-      where: {
-        booking_id: bookingId,
-        provider: { not: MANUAL_PENDING_PROVIDER },
-        status: { in: [PaymentStatus.CAPTURED, PaymentStatus.PENDING_RELEASE] },
-      },
+    // Nothing left owed means nothing to retry. Asked of the instalments rather
+    // than "does a captured payment exist": a split cycle has a captured advance
+    // while its balance is still outstanding, and a Pay-in-Full multi-month plan
+    // has no payment_plan to make that distinction any other way.
+    const outstanding = await this.prisma.payment_installments.count({
+      where: { booking_id: bookingId, status: INSTALMENT_PENDING },
     });
 
-    if (successPayment) {
+    if (outstanding === 0) {
       throw new BadRequestException("Booking is already paid successfully.");
     }
 
@@ -434,6 +576,13 @@ export class PaymentsService {
     // that hits an external service (FCM push, email) or touches `this.prisma`
     // instead of `tx` must run AFTER commit — otherwise it holds the interactive
     // transaction open and trips the 5s timeout ("transaction already closed").
+
+    // Read the deferral window before opening the transaction — it is a settings
+    // lookup on `this.prisma` and has no business holding the tx open.
+    const { dueDays: advanceDueDays } =
+      await this.pricingService.getAdvancePaymentConfig();
+    const capturedAt = new Date();
+
     const result = await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payments.findUnique({
         where: { order_id: orderId },
@@ -481,25 +630,120 @@ export class PaymentsService {
         where: { booking_id: payment.booking_id },
       });
 
-      const snapshot = await tx.price_snapshots.findFirst({
+      // ── Settle the instalment this payment was for ─────────────────────────
+      // Claimed with a guarded updateMany rather than read-then-write: the verify
+      // endpoint and the webhook both fire for the same money, and a split cycle
+      // has two orders whose captures can interleave. A second caller updates zero
+      // rows and must then skip every downstream effect — otherwise the plan
+      // advances twice and the parent is billed a cycle they never reached.
+      const installment = await tx.payment_installments.findFirst({
         where: { payment_id: payment.id },
       });
 
-      const newBookingStatus =
-        paymentPlan && paymentPlan.cycles_completed + 1 < paymentPlan.total_cycles
-          ? BookingStatus.CONFIRMED
-          : BookingStatus.COMPLETED;
+      const claimed = installment
+        ? (
+            await tx.payment_installments.updateMany({
+              where: { id: installment.id, status: INSTALMENT_PENDING },
+              data: { status: INSTALMENT_PAID, paid_at: capturedAt, updated_at: capturedAt },
+            })
+          ).count
+        : 0;
 
-      const updatedBooking = await tx.bookings.update({
+      // Legacy rows predating instalments still resolve their snapshot the old way.
+      const snapshot = installment
+        ? await tx.price_snapshots.findUnique({ where: { id: installment.price_snapshot_id } })
+        : await tx.price_snapshots.findFirst({ where: { payment_id: payment.id } });
+
+      if (installment && claimed === 0) {
+        // Someone else already settled this half. The payment row is now CAPTURED
+        // either way, but nothing downstream may run a second time.
+        return {
+          alreadyCaptured: false as const,
+          duplicateInstalment: true as const,
+          payment,
+          paymentPlan,
+          snapshot,
+          installment,
+          cycleSettled: false,
+          updatedBooking: await tx.bookings.findUnique({ where: { id: payment.booking_id } }),
+        };
+      }
+
+      // The balance's clock starts now — from the parent's money actually leaving,
+      // not from a checkout screen. A date already written is a promise made at
+      // checkout and is never moved by a later change to the setting.
+      if (installment && installment.installment_no < installment.total_installments) {
+        const due = new Date(capturedAt);
+        due.setDate(due.getDate() + advanceDueDays);
+        await tx.payment_installments.updateMany({
+          where: {
+            price_snapshot_id: installment.price_snapshot_id,
+            installment_no: installment.installment_no + 1,
+            due_date: null,
+          },
+          data: { due_date: due, updated_at: capturedAt },
+        });
+      }
+
+      // ── Is the whole cycle settled? ────────────────────────────────────────
+      const stillOwed = installment
+        ? await tx.payment_installments.count({
+            where: {
+              price_snapshot_id: installment.price_snapshot_id,
+              status: INSTALMENT_PENDING,
+            },
+          })
+        : 0;
+      const cycleSettled = stillOwed === 0;
+
+      let updatedBooking = await tx.bookings.findUnique({
         where: { id: payment.booking_id },
-        data: { status: newBookingStatus },
       });
+
+      if (cycleSettled) {
+        if (snapshot) {
+          await tx.price_snapshots.updateMany({
+            where: { id: snapshot.id, status: "pending" },
+            data: {
+              status: "charged",
+              payment_id: payment.id,
+              razorpay_payment_id: paymentId,
+            },
+          });
+        }
+
+        if (paymentPlan) {
+          // Guarded on the cycle we believe we just finished, so a racing capture
+          // cannot advance the plan a second time.
+          await this.pricingService.advancePaymentPlanTx(
+            tx,
+            paymentPlan.id,
+            installment ? installment.cycle_number - 1 : undefined,
+          );
+        }
+
+        const newBookingStatus =
+          paymentPlan && paymentPlan.cycles_completed + 1 < paymentPlan.total_cycles
+            ? BookingStatus.CONFIRMED
+            : BookingStatus.COMPLETED;
+
+        updatedBooking = await tx.bookings.update({
+          where: { id: payment.booking_id },
+          data: { status: newBookingStatus },
+        });
+      }
+      // A part-paid cycle deliberately leaves booking status alone: capturing the
+      // advance of a final cycle would otherwise flip the booking to COMPLETED — a
+      // terminal state — with half the money still outstanding.
 
       return {
         alreadyCaptured: false as const,
+        duplicateInstalment: false as const,
         payment,
         paymentPlan,
         snapshot,
+        installment,
+        cycleSettled,
         updatedBooking,
       };
     });
@@ -509,36 +753,34 @@ export class PaymentsService {
     }
 
     // ── Post-commit side effects (outside the transaction) ──────────────────────
-    // The payment is already durably CAPTURED; these are follow-up bookkeeping and
-    // notifications. A failure here must not fail payment verification, so each is
-    // best-effort and logged.
-    const { payment, paymentPlan, snapshot, updatedBooking } = result;
+    // The payment is already durably CAPTURED, the instalment settled, and the plan
+    // advanced — all of that committed atomically above, because a plan left behind
+    // by a failed best-effort retry would stall the booking silently rather than
+    // merely re-charging a cycle. What remains here is notification only: external
+    // calls that must never hold the transaction open or fail verification.
+    const { payment, snapshot, installment, cycleSettled, updatedBooking } = result;
 
-    try {
-      if (paymentPlan) {
-        await this.pricingService.advancePaymentPlan(paymentPlan.id);
-      }
-      if (snapshot) {
-        await this.pricingService.markSnapshotCharged(
-          snapshot.id,
-          paymentId,
-          payment.id,
-        );
-      }
-    } catch (err) {
-      this.logger.error(
-        `Post-capture plan/snapshot update failed for order ${orderId}`,
-        err as Error,
-      );
+    if (result.duplicateInstalment || !updatedBooking) {
+      // Already settled by the racing caller, which sent these notifications.
+      return { alreadyCaptured: false };
     }
+
+    const isPartial = !!installment && installment.total_installments > 1;
+    const balanceDue = isPartial && !cycleSettled
+      ? Number(snapshot?.final_amount ?? 0) - Number(payment.amount)
+      : 0;
 
     // Notify Parent
     await this.notificationsService
       .createNotification(
         updatedBooking.parent_id,
         "Payment Successful",
-        `Your payment of ₹${payment.amount} has been processed successfully.`,
+        balanceDue > 0
+          ? `Your advance payment of ₹${payment.amount} is confirmed. The remaining ₹${round2(balanceDue)} is due in ${advanceDueDays} days.`
+          : `Your payment of ₹${payment.amount} has been processed successfully.`,
         "success",
+        "payment",
+        updatedBooking.id,
       )
       .catch((err) =>
         this.logger.error("Failed to notify parent of payment", err),
@@ -575,11 +817,23 @@ export class PaymentsService {
             currency: payment.currency,
             date: new Date().toLocaleDateString(),
             receiptId: payment.order_id,
-            bookingDetails: `Booking #${updatedBooking.id.substring(0, 8)}`,
-            // Breakup from the immutable price snapshot for this charge.
-            subtotal: snapshot ? Number(snapshot.subtotal_amount) : undefined,
+            bookingDetails: isPartial
+              ? `Booking #${updatedBooking.id.substring(0, 8)} — instalment ${installment!.installment_no} of ${installment!.total_installments}`
+              : `Booking #${updatedBooking.id.substring(0, 8)}`,
+            // Breakup for the amount actually charged. Taken from the instalment,
+            // not the cycle: a receipt for half the money showing the full cycle's
+            // GST line would not add up.
+            subtotal: installment
+              ? Number(installment.subtotal_amount)
+              : snapshot
+                ? Number(snapshot.subtotal_amount)
+                : undefined,
             gstPercent: snapshot ? Number(snapshot.gst_percent_used) : undefined,
-            gstAmount: snapshot ? Number(snapshot.gst_amount) : undefined,
+            gstAmount: installment
+              ? Number(installment.gst_amount)
+              : snapshot
+                ? Number(snapshot.gst_amount)
+                : undefined,
           })
           .catch((err) =>
             this.logger.error("Failed to send payment receipt email", err),
@@ -773,6 +1027,13 @@ export class PaymentsService {
                 order_id: true,
               },
             },
+            // How each cycle is actually collected. The client renders halves from
+            // these rows rather than computing 50% of the cycle itself — rounding
+            // puts the odd paisa on the advance, so a client-side split would quote
+            // a figure that differs from what we charge.
+            payment_installments: {
+              orderBy: { installment_no: "asc" },
+            },
           },
         },
       },
@@ -791,6 +1052,83 @@ export class PaymentsService {
    * them would invent a charge. Also excluded: `created` orders, which are checkouts
    * that were opened and abandoned without money leaving the account.
    */
+  /**
+   * Everything this parent still owes, oldest first.
+   *
+   * Cancelled bookings are excluded outright rather than relying on their
+   * instalments having been voided: a balance that keeps appearing for care that
+   * was called off is the kind of thing a parent reasonably reads as being billed
+   * for nothing.
+   */
+  async getPendingInstallments(userId: string) {
+    const rows = await this.prisma.payment_installments.findMany({
+      where: {
+        status: INSTALMENT_PENDING,
+        bookings: {
+          parent_id: userId,
+          status: { not: BookingStatus.CANCELLED },
+        },
+      },
+      orderBy: [{ due_date: "asc" }, { cycle_number: "asc" }, { installment_no: "asc" }],
+      take: 100,
+      include: {
+        price_snapshots: {
+          select: { final_amount: true, cycle_number: true },
+        },
+        bookings: {
+          select: {
+            id: true,
+            nanny_id: true,
+            start_time: true,
+            service_requests: { select: { category: true } },
+            recurring_service_requests: { select: { category: true } },
+            users_bookings_nanny_idTousers: {
+              select: {
+                profiles: {
+                  select: {
+                    first_name: true,
+                    last_name: true,
+                    profile_image_url: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const now = Date.now();
+
+    return rows.map((row) => {
+      const profile = row.bookings?.users_bookings_nanny_idTousers?.profiles ?? null;
+      const caregiverName =
+        [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || null;
+
+      return {
+        id: row.id,
+        bookingId: row.booking_id,
+        cycleNumber: row.cycle_number,
+        installmentNo: row.installment_no,
+        totalInstallments: row.total_installments,
+        amount: Number(row.amount),
+        cycleTotal: Number(row.price_snapshots?.final_amount ?? row.amount),
+        dueDate: row.due_date,
+        // A balance with no date yet is waiting on its advance being paid, so it
+        // is upcoming rather than late however long it has sat there.
+        overdue: !!row.due_date && row.due_date.getTime() < now,
+        caregiverName,
+        caregiverImageUrl: profile?.profile_image_url ?? null,
+        category:
+          row.bookings?.service_requests?.category ??
+          row.bookings?.recurring_service_requests?.category ??
+          null,
+        sessionStart: row.bookings?.start_time ?? null,
+        payable: !!row.bookings?.nanny_id,
+      };
+    });
+  }
+
   async getParentTransactions(userId: string, page = 1, pageSize = 20) {
     const where: Prisma.paymentsWhereInput = {
       bookings: { parent_id: userId },
@@ -834,6 +1172,17 @@ export class PaymentsService {
             orderBy: { cycle_number: "asc" },
             select: { cycle_number: true, final_amount: true },
           },
+          // The half of a split cycle that does not hold the snapshot's payment_id
+          // still knows its cycle through here — without it, it would render in the
+          // parent's history as a cancellation fee.
+          payment_installments: {
+            orderBy: { installment_no: "asc" },
+            select: {
+              cycle_number: true,
+              installment_no: true,
+              total_installments: true,
+            },
+          },
         },
       }),
       this.prisma.payments.count({ where }),
@@ -850,6 +1199,7 @@ export class PaymentsService {
 
     const items = rows.map((row) => {
       const snapshot = row.price_snapshots[0] ?? null;
+      const installment = row.payment_installments[0] ?? null;
       const profile = row.bookings?.users_bookings_nanny_idTousers?.profiles ?? null;
       const caregiverName =
         [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || null;
@@ -863,8 +1213,17 @@ export class PaymentsService {
         amount: Number(row.amount),
         currency: row.currency,
         status: row.status,
-        kind: snapshot ? "service_cycle" : "cancellation_fee",
-        cycleNumber: snapshot?.cycle_number ?? null,
+        kind: snapshot || installment ? "service_cycle" : "cancellation_fee",
+        cycleNumber: snapshot?.cycle_number ?? installment?.cycle_number ?? null,
+        // Null on an unsplit charge, so the client shows no instalment line at all.
+        installmentNo:
+          installment && installment.total_installments > 1
+            ? installment.installment_no
+            : null,
+        totalInstallments:
+          installment && installment.total_installments > 1
+            ? installment.total_installments
+            : null,
         date: row.created_at,
         caregiverName,
         caregiverImageUrl: profile?.profile_image_url ?? null,
@@ -1002,6 +1361,8 @@ export class PaymentsService {
       created_at: true,
       released_at: true,
       price_snapshots: { select: { gst_amount: true } },
+      // A split cycle's halves carry their own frozen GST; see preTaxServiceFee.
+      payment_installments: { select: { gst_amount: true } },
     } satisfies Prisma.paymentsSelect;
 
     const [
@@ -1198,6 +1559,27 @@ export class PaymentsService {
         status: PaymentStatus.REFUNDED,
       },
     });
+
+    // Money that came back is no longer owed, and nor is the rest of its cycle:
+    // dunning a parent for the balance of a cycle we just refunded would be
+    // indefensible. Both are marked so they leave the pending list and the
+    // reminder cron without ever being counted as collected.
+    const refunded = await this.prisma.payment_installments.findFirst({
+      where: { payment_id: payment.id },
+    });
+    if (refunded) {
+      await this.prisma.payment_installments.update({
+        where: { id: refunded.id },
+        data: { status: INSTALMENT_REFUNDED, updated_at: new Date() },
+      });
+      await this.prisma.payment_installments.updateMany({
+        where: {
+          price_snapshot_id: refunded.price_snapshot_id,
+          status: INSTALMENT_PENDING,
+        },
+        data: { status: INSTALMENT_VOID, updated_at: new Date() },
+      });
+    }
 
     // Write Audit Log
     await this.audit.writeLog(

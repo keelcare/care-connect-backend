@@ -43,6 +43,11 @@ export const CAREGIVER_SHARE_ONLY: Prisma.paymentsWhereInput = {
   OR: [
     { provider: MANUAL_PENDING_PROVIDER },
     { price_snapshots: { some: {} } },
+    // A split cycle's halves link to their instalment, not to the snapshot — the
+    // snapshot's payment_id can only hold one id. Without this arm the half that
+    // does not hold it is read as a cancellation fee and drops out of caregiver
+    // earnings and the revenue ledger entirely.
+    { payment_installments: { some: {} } },
   ],
 };
 
@@ -74,8 +79,20 @@ export function caregiverEarningsWhere(nannyId: string): Prisma.paymentsWhereInp
 export function preTaxServiceFee(payment: {
   amount: Prisma.Decimal | number;
   price_snapshots: { gst_amount: Prisma.Decimal | number }[];
+  payment_installments?: { gst_amount: Prisma.Decimal | number }[];
 }): number {
   const gross = Number(payment.amount);
+
+  // Prefer the instalment's own frozen GST. A half-cycle payment carries half the
+  // gross, so stripping the *cycle's* GST would understate the fee — and turn it
+  // negative on a small cycle. Both figures are frozen at charge time, so neither
+  // is re-derived by ratio here: a later rounding or rate change must never
+  // re-state a settled payout.
+  const instalments = payment.payment_installments;
+  if (instalments?.length) {
+    return gross - instalments.reduce((sum, i) => sum + Number(i.gst_amount), 0);
+  }
+
   const gst = payment.price_snapshots.reduce((sum, s) => sum + Number(s.gst_amount), 0);
   return gross - gst;
 }

@@ -16,7 +16,11 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { SSE_EVENTS } from "../../events/sse-event.types";
 import { PaymentsService } from "../../payments/payments.service";
 import { BookingStatus } from "../../common/constants/booking-status.enum";
-import { MANUAL_PENDING_PROVIDER } from "../../constants";
+import {
+  MANUAL_PENDING_PROVIDER,
+  INSTALMENT_PENDING,
+  INSTALMENT_VOID,
+} from "../../constants";
 
 @Injectable()
 export class BookingListeners {
@@ -100,17 +104,33 @@ export class BookingListeners {
     const { booking, totalAmount } = event;
     
     // 1. Payment Update (Decoupled from BookingsService core logic)
-    const existingPayment = await this.prisma.payments.findFirst({
-      where: { booking_id: booking.id }
+    // Every captured charge on the booking moves to pending_release, not just one:
+    // a split cycle settles through two payment rows, and releasing only whichever
+    // came back first would leave the caregiver's other half permanently unaccrued.
+    const captured = await this.prisma.payments.findMany({
+      where: {
+        booking_id: booking.id,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+        status: "captured",
+      },
+      orderBy: { created_at: "asc" },
     });
 
-    if (existingPayment && existingPayment.status === "captured") {
-      await this.paymentsService.updatePaymentStatus(
-        existingPayment.id,
-        "pending_release",
-        "bookings:booking_completed",
-        { booking_id: booking.id },
-      ).catch(err => this.logger.error(`Failed to update payment status: ${err.message}`));
+    const existingPayment = await this.prisma.payments.findFirst({
+      where: { booking_id: booking.id },
+      orderBy: { created_at: "asc" },
+    });
+
+    if (captured.length > 0) {
+      // Sequential rather than parallel: each writes its own audit-log entry.
+      for (const payment of captured) {
+        await this.paymentsService.updatePaymentStatus(
+          payment.id,
+          "pending_release",
+          "bookings:booking_completed",
+          { booking_id: booking.id },
+        ).catch(err => this.logger.error(`Failed to update payment status: ${err.message}`));
+      }
     } else if (!existingPayment) {
       await this.prisma.payments.create({
         data: {
@@ -144,12 +164,20 @@ export class BookingListeners {
     }
 
     // 3. SSE. paymentDue tells the parent app to open the pay-now screen —
-    // true unless a real (non-placeholder) payment was already captured.
-    const paymentDue = !(
-      existingPayment &&
-      existingPayment.provider !== MANUAL_PENDING_PROVIDER &&
-      ["captured", "pending_release"].includes(existingPayment.status ?? "")
-    );
+    // true unless a real (non-placeholder) payment was already captured AND
+    // nothing is still owed. A split cycle's captured advance must not suppress
+    // the prompt while its balance is outstanding.
+    const outstanding = await this.prisma.payment_installments.count({
+      where: { booking_id: booking.id, status: INSTALMENT_PENDING },
+    });
+    const paymentDue =
+      outstanding > 0 ||
+      !(
+        captured.length > 0 ||
+        (existingPayment &&
+          existingPayment.provider !== MANUAL_PENDING_PROVIDER &&
+          ["captured", "pending_release"].includes(existingPayment.status ?? ""))
+      );
     this.sseService.emitToUsers(
       [booking.parent_id, booking.nanny_id].filter(Boolean) as string[],
       {
@@ -163,7 +191,21 @@ export class BookingListeners {
   @OnEvent(BOOKING_EVENTS.CANCELLED)
   async handleBookingCancelled(event: BookingCancelledEvent) {
     const { booking, reason, cancelledByUserId } = event;
-    
+
+    // Cancelled care is not owed for. Voiding rather than deleting keeps the
+    // history intact while dropping the balance out of the parent's pending list
+    // and out of the dunning cron — a reminder to pay for care that was called
+    // off reads as being billed for nothing. Any cancellation fee is charged
+    // separately and is unaffected.
+    await this.prisma.payment_installments
+      .updateMany({
+        where: { booking_id: booking.id, status: INSTALMENT_PENDING },
+        data: { status: INSTALMENT_VOID, updated_at: new Date() },
+      })
+      .catch((err) =>
+        this.logger.error(`Failed to void instalments on cancellation: ${err.message}`),
+      );
+
     const [parentUser, nannyUser] = await Promise.all([
       this.prisma.users.findUnique({ where: { id: booking.parent_id }, include: { profiles: true } }),
       booking.nanny_id ? this.prisma.users.findUnique({ where: { id: booking.nanny_id }, include: { profiles: true } }) : null,

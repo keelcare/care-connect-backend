@@ -36,6 +36,7 @@ export class PaymentsController {
     return this.paymentsService.createOrder(
       createOrderDto.bookingId,
       req.user.id,
+      createOrderDto.installmentId,
     );
   }
 
@@ -165,6 +166,21 @@ export class PaymentsController {
   })
   async getPaymentPlans(@Req() req: any) {
     return this.paymentsService.getPaymentPlans(req.user.id);
+  }
+
+  @Get("pending")
+  @Roles(UserRole.PARENT)
+  @UseGuards(AuthGuard("jwt"), RolesGuard)
+  @ApiOperation({
+    summary:
+      "Instalments the authenticated parent still owes, oldest due first",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Pending instalments fetched successfully",
+  })
+  async getPendingInstallments(@Req() req: any) {
+    return this.paymentsService.getPendingInstallments(req.user.id);
   }
 
   @Get("transactions")

@@ -20,10 +20,19 @@ export class PricingController {
   @ApiResponse({
     status: 200,
     schema: {
-      example: { gst: { enabled: false, percent: 18 } },
+      example: {
+        gst: { enabled: false, percent: 18 },
+        splitPayment: { enabled: true, ratioPercent: 50, dueDays: 14 },
+      },
     },
   })
-  getConfig() {
-    return { gst: this.pricingService.getGstConfig() };
+  async getConfig() {
+    return {
+      gst: this.pricingService.getGstConfig(),
+      // Lets the client state the terms before checkout ("50% now, the rest in 14
+      // days"). The amounts themselves still come from the order response — this
+      // is the policy, not the arithmetic.
+      splitPayment: await this.pricingService.getAdvancePaymentConfig(),
+    };
   }
 }

@@ -100,3 +100,76 @@ describe('PricingEngineService — commission config', () => {
     expect(await svc.getCommissionConfig()).toEqual({ percent: 0, configured: true });
   });
 });
+
+/**
+ * The deferral window decides when a parent's balance falls due — and, through the
+ * kill switch, whether cycles are split at all. Both are read on the payment path,
+ * so a malformed value must degrade to sane terms rather than throw.
+ */
+describe('PricingEngineService — advance payment config', () => {
+  async function build(rows: Record<string, unknown>) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        {
+          provide: PrismaService,
+          useValue: {
+            system_settings: {
+              findUnique: async ({ where }: { where: { key: string } }) =>
+                where.key in rows ? { value: rows[where.key] } : null,
+            },
+          },
+        },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('defaults to the two weeks we advertise when nothing is configured', async () => {
+    // Unlike commission, falling back here is safe: a missing window cannot
+    // overcharge anyone, it only decides how long the parent has to pay.
+    const svc = await build({});
+    expect(await svc.getAdvancePaymentConfig()).toEqual({
+      enabled: true,
+      ratioPercent: 50,
+      dueDays: 14,
+    });
+  });
+
+  it('accepts a bare number, which is what the admin settings screen writes', async () => {
+    const svc = await build({ advance_payment_due_days: 1 });
+    expect((await svc.getAdvancePaymentConfig()).dueDays).toBe(1);
+  });
+
+  it('accepts the wrapped form used by the commission key', async () => {
+    const svc = await build({ advance_payment_due_days: { days: 30 } });
+    expect((await svc.getAdvancePaymentConfig()).dueDays).toBe(30);
+  });
+
+  it('falls back rather than honouring an unusable window', async () => {
+    for (const value of ['abc', 0, -5, 91, {}, null]) {
+      const svc = await build({ advance_payment_due_days: value });
+      expect((await svc.getAdvancePaymentConfig()).dueDays).toBe(14);
+    }
+  });
+
+  it('is on unless explicitly switched off', async () => {
+    expect((await (await build({})).getAdvancePaymentConfig()).enabled).toBe(true);
+    expect(
+      (await (await build({ split_payments_enabled: true })).getAdvancePaymentConfig()).enabled,
+    ).toBe(true);
+    expect(
+      (await (await build({ split_payments_enabled: false })).getAdvancePaymentConfig()).enabled,
+    ).toBe(false);
+    // A string "false" is what a hand-edited setting most plausibly contains.
+    expect(
+      (await (await build({ split_payments_enabled: 'false' })).getAdvancePaymentConfig()).enabled,
+    ).toBe(false);
+  });
+
+  it('holds the advance share at 50%', async () => {
+    const svc = await build({});
+    expect((await svc.getAdvancePaymentConfig()).ratioPercent).toBe(50);
+  });
+});

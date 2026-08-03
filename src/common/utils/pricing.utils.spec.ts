@@ -1,6 +1,8 @@
 import {
   calculatePrice,
+  isSplittable,
   resolveDaysPerWeek,
+  splitAmount,
   weeksInCycleFor,
   PriceInput,
 } from './pricing.utils';
@@ -201,5 +203,78 @@ describe('the days-per-week regression', () => {
     expect(monthly(1, 5)).toBe(1980);
     // 99 × 6 h × 5 d × 4 w — the worked example from the bug report.
     expect(monthly(6, 5)).toBe(11880);
+  });
+});
+
+describe('isSplittable', () => {
+  it('splits every subscription plan', () => {
+    for (const plan of ['MONTHLY', 'SIX_MONTH', 'YEARLY']) {
+      expect(isSplittable(plan, 5000, true)).toBe(true);
+    }
+  });
+
+  it('never splits a one-time booking', () => {
+    // There is no ongoing relationship to spread a single session's cost across.
+    expect(isSplittable('ONE_TIME', 5000, true)).toBe(false);
+    expect(isSplittable(null, 5000, true)).toBe(false);
+    expect(isSplittable(undefined, 5000, true)).toBe(false);
+  });
+
+  it('obeys the kill switch', () => {
+    expect(isSplittable('MONTHLY', 5000, false)).toBe(false);
+  });
+
+  it('refuses to split a cycle whose halves would fall under the gateway floor', () => {
+    // Razorpay rejects orders below ₹1, so a ₹1.50 cycle split in two leaves a
+    // balance that could never be collected. Charge it whole instead.
+    expect(isSplittable('MONTHLY', 2, true)).toBe(true);
+    expect(isSplittable('MONTHLY', 1.5, true)).toBe(false);
+    expect(isSplittable('MONTHLY', 0, true)).toBe(false);
+  });
+});
+
+describe('splitAmount', () => {
+  it('halves an even amount', () => {
+    expect(splitAmount(11880, 2)).toEqual([5940, 5940]);
+  });
+
+  it('puts the odd paisa on the advance, never on the balance', () => {
+    // The advance is charged today against a live checkout; a stray paisa left on
+    // the balance is money we might never get a second chance to collect.
+    expect(splitAmount(100.01, 2)).toEqual([50.01, 50]);
+    expect(splitAmount(0.03, 2)).toEqual([0.02, 0.01]);
+  });
+
+  it('always sums back to the total exactly', () => {
+    for (const total of [11880, 100.01, 2970.55, 0.03, 7.77, 99.99]) {
+      const parts = splitAmount(total, 2);
+      const sum = parts.reduce((a, b) => a + b, 0);
+      expect(Math.round(sum * 100)).toBe(Math.round(total * 100));
+    }
+  });
+
+  it('returns the whole amount when not splitting', () => {
+    expect(splitAmount(2970, 1)).toEqual([2970]);
+  });
+
+  it('never halves a float — 0.1 + 0.2 drift must not reach a charge', () => {
+    const parts = splitAmount(0.3, 2);
+    expect(parts).toEqual([0.15, 0.15]);
+  });
+});
+
+describe('the split as a parent experiences it', () => {
+  it('charges half of a 1-month, 5-day, 6-hour plan now and half later', () => {
+    const cycle = calculatePrice({
+      pricingMode: 'standard',
+      baseHourlyRate: 99,
+      hoursPerDay: 6,
+      daysPerWeek: 5,
+      weeksInCycle: weeksInCycleFor('MONTHLY'),
+      gstPercent: 0,
+    }).finalAmount;
+
+    expect(cycle).toBe(11880);
+    expect(splitAmount(cycle, 2)).toEqual([5940, 5940]);
   });
 });

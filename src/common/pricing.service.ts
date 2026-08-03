@@ -1,10 +1,15 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   calculatePrice,
+  isSplittable,
   resolveDaysPerWeek,
+  splitAmount,
   weeksInCycleFor,
+  ADVANCE_PAYMENT_PERCENT,
+  SPLIT_INSTALMENT_COUNT,
   PriceBreakdown,
   PriceInput,
   PricingMode,
@@ -47,6 +52,28 @@ export interface CommissionConfig {
  * the platform bills one rate-card price and the split is internal accounting.
  */
 export const COMMISSION_SETTING_KEY = 'platform_commission_percent';
+
+/** Days after the advance is paid that the balance half falls due. */
+export const ADVANCE_PAYMENT_DAYS_KEY = 'advance_payment_due_days';
+
+/** Kill switch: turn split payments off without a redeploy. */
+export const SPLIT_PAYMENTS_ENABLED_KEY = 'split_payments_enabled';
+
+/** Two weeks, the terms we advertise before an admin narrows them. */
+const DEFAULT_ADVANCE_PAYMENT_DAYS = 14;
+
+/** A window under a day cannot be met; over a quarter is not a deferral. */
+const MIN_ADVANCE_PAYMENT_DAYS = 1;
+const MAX_ADVANCE_PAYMENT_DAYS = 90;
+
+export interface AdvancePaymentConfig {
+  /** Whether new cycles are split at all. */
+  enabled: boolean;
+  /** Share taken at checkout. Fixed by policy. */
+  ratioPercent: number;
+  /** Days from the advance being paid to the balance falling due. */
+  dueDays: number;
+}
 
 export interface CycleChargeInput {
   bookingId: string;
@@ -119,6 +146,61 @@ export class PricingEngineService {
     }
 
     return { percent, configured: true };
+  }
+
+  // ─── Split payments ───────────────────────────────────────────────────────────
+
+  /**
+   * The advance/balance terms currently in force.
+   *
+   * Note where this deliberately differs from `getCommissionConfig`: an unset
+   * commission resolves to 0% rather than a guess, because inventing a rate would
+   * take money off a caregiver no admin ever authorised. An unset *deferral window*
+   * has no such hazard — a missing window cannot overcharge anyone, it only decides
+   * how long a parent has to pay the balance — so it falls back to the 14 days we
+   * advertise rather than refusing to split.
+   *
+   * Accepts the value as either a bare number or `{ days }` / `{ enabled }`: the
+   * admin settings screen writes raw scalars while the commission key uses an
+   * object, and a payment path must not break on which one an admin used.
+   */
+  async getAdvancePaymentConfig(): Promise<AdvancePaymentConfig> {
+    const [daysRow, enabledRow] = await Promise.all([
+      this.prisma.system_settings.findUnique({ where: { key: ADVANCE_PAYMENT_DAYS_KEY } }),
+      this.prisma.system_settings.findUnique({ where: { key: SPLIT_PAYMENTS_ENABLED_KEY } }),
+    ]);
+
+    const rawDays = this.unwrapSetting(daysRow?.value, 'days');
+    const parsedDays = Number(rawDays);
+    const usable =
+      Number.isFinite(parsedDays) &&
+      parsedDays >= MIN_ADVANCE_PAYMENT_DAYS &&
+      parsedDays <= MAX_ADVANCE_PAYMENT_DAYS;
+
+    if (daysRow && !usable) {
+      this.logger.warn(
+        `${ADVANCE_PAYMENT_DAYS_KEY} is set to an unusable value; falling back to ${DEFAULT_ADVANCE_PAYMENT_DAYS} days.`,
+      );
+    }
+
+    // Absent means on: the feature is the default billing behaviour, and the key
+    // exists to switch it *off* in a hurry rather than to opt in.
+    const rawEnabled = this.unwrapSetting(enabledRow?.value, 'enabled');
+    const enabled = rawEnabled == null ? true : rawEnabled !== false && rawEnabled !== 'false';
+
+    return {
+      enabled,
+      ratioPercent: ADVANCE_PAYMENT_PERCENT,
+      dueDays: usable ? Math.round(parsedDays) : DEFAULT_ADVANCE_PAYMENT_DAYS,
+    };
+  }
+
+  /** Read a setting written either as a bare scalar or wrapped as `{ [field]: value }`. */
+  private unwrapSetting(value: unknown, field: string): unknown {
+    if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+      return (value as Record<string, unknown>)[field];
+    }
+    return value;
   }
 
   // ─── Reference-data cache ─────────────────────────────────────────────────────
@@ -405,28 +487,66 @@ export class PricingEngineService {
 
     const breakdown = calculatePrice(priceInput);
 
-    // Write the immutable price snapshot. `gst_percent_used` freezes the rate in
-    // force at charge time, so flipping GST_ENABLED later never rewrites what a
-    // customer was actually charged.
-    const snapshot = await this.prisma.price_snapshots.create({
-      data: {
-        booking_id: bookingId,
-        payment_plan_id: paymentPlanId ?? null,
-        cycle_number: cycleNumber,
-        base_hourly_rate_used: breakdown.baseHourlyRate ?? 0,
-        hours_billed: breakdown.totalHours ?? 0,
-        custom_price_applied: breakdown.customPriceApplied,
-        subtotal_amount: breakdown.subtotalAmount,
-        gst_percent_used: breakdown.gstPercent,
-        gst_amount: breakdown.gstAmount,
-        final_amount: breakdown.finalAmount,
-        calculation_breakdown: breakdown as any,
-        status: 'pending',
-      },
+    // How this cycle will be collected is decided once, here, and stored — never
+    // recomputed at order time or display time, where the two could disagree about
+    // what a parent owes. Everything downstream reads the installment rows.
+    const { enabled } = await this.getAdvancePaymentConfig();
+    const parts = isSplittable(planType, breakdown.finalAmount, enabled)
+      ? SPLIT_INSTALMENT_COUNT
+      : 1;
+
+    const amounts = splitAmount(breakdown.finalAmount, parts);
+    const subtotals = splitAmount(breakdown.subtotalAmount, parts);
+    const gsts = splitAmount(breakdown.gstAmount, parts);
+
+    // Snapshot and installments are one write: a snapshot with no installments
+    // would be a cycle nothing can ever charge.
+    const snapshot = await this.prisma.$transaction(async (tx) => {
+      // Write the immutable price snapshot. `gst_percent_used` freezes the rate in
+      // force at charge time, so flipping GST_ENABLED later never rewrites what a
+      // customer was actually charged.
+      const created = await tx.price_snapshots.create({
+        data: {
+          booking_id: bookingId,
+          payment_plan_id: paymentPlanId ?? null,
+          cycle_number: cycleNumber,
+          base_hourly_rate_used: breakdown.baseHourlyRate ?? 0,
+          hours_billed: breakdown.totalHours ?? 0,
+          custom_price_applied: breakdown.customPriceApplied,
+          subtotal_amount: breakdown.subtotalAmount,
+          gst_percent_used: breakdown.gstPercent,
+          gst_amount: breakdown.gstAmount,
+          final_amount: breakdown.finalAmount,
+          calculation_breakdown: breakdown as any,
+          status: 'pending',
+        },
+      });
+
+      await tx.payment_installments.createMany({
+        data: amounts.map((amount, i) => ({
+          booking_id: bookingId,
+          price_snapshot_id: created.id,
+          payment_plan_id: paymentPlanId ?? null,
+          cycle_number: cycleNumber,
+          installment_no: i + 1,
+          total_installments: parts,
+          amount,
+          subtotal_amount: subtotals[i],
+          gst_amount: gsts[i],
+          // Only the advance is due on sight. The balance's date is set when the
+          // advance is actually paid, so the clock starts from the parent's money
+          // leaving, not from a checkout screen they may never have completed.
+          due_date: i === 0 ? new Date() : null,
+          status: 'pending',
+        })),
+      });
+
+      return created;
     });
 
     this.logger.log(
-      `Price snapshot created: booking=${bookingId} cycle=${cycleNumber} amount=${breakdown.finalAmount}`,
+      `Price snapshot created: booking=${bookingId} cycle=${cycleNumber} ` +
+        `amount=${breakdown.finalAmount} installments=${parts}`,
     );
 
     return {
@@ -494,12 +614,37 @@ export class PricingEngineService {
 
   /**
    * Advance the payment plan to the next cycle after a successful charge.
+   *
+   * Delegates to the transactional form so the two can never drift; callers on a
+   * capture path should use `advancePaymentPlanTx` directly, inside the same
+   * transaction as the capture.
    */
   async advancePaymentPlan(planId: string): Promise<void> {
-    const plan = await this.prisma.payment_plans.findUnique({
-      where: { id: planId },
-    });
-    if (!plan) return;
+    await this.advancePaymentPlanTx(this.prisma, planId);
+  }
+
+  /**
+   * Advance a plan by one cycle, at most once.
+   *
+   * `expectedCyclesCompleted` makes this safe to call from a capture that may run
+   * twice — the webhook and the verify endpoint both fire for the same money, and
+   * a split cycle has two orders whose captures can interleave. The count is part
+   * of the WHERE clause rather than read first and written after, so a second
+   * caller updates zero rows instead of advancing the plan a second time.
+   */
+  async advancePaymentPlanTx(
+    tx: Prisma.TransactionClient | PrismaService,
+    planId: string,
+    expectedCyclesCompleted?: number,
+  ): Promise<boolean> {
+    const plan = await tx.payment_plans.findUnique({ where: { id: planId } });
+    if (!plan) return false;
+    if (
+      expectedCyclesCompleted != null &&
+      plan.cycles_completed !== expectedCyclesCompleted
+    ) {
+      return false;
+    }
 
     const nextCompleted = plan.cycles_completed + 1;
     const isComplete = nextCompleted >= plan.total_cycles;
@@ -508,8 +653,8 @@ export class PricingEngineService {
     const nextDue = new Date(plan.next_due_date);
     nextDue.setMonth(nextDue.getMonth() + 1);
 
-    await this.prisma.payment_plans.update({
-      where: { id: planId },
+    const { count } = await tx.payment_plans.updateMany({
+      where: { id: planId, cycles_completed: plan.cycles_completed },
       data: {
         cycles_completed: nextCompleted,
         next_due_date: isComplete ? plan.next_due_date : nextDue,
@@ -517,6 +662,8 @@ export class PricingEngineService {
         updated_at: new Date(),
       },
     });
+
+    return count === 1;
   }
 
   // ─── Rate Card Admin Helpers ─────────────────────────────────────────────────
