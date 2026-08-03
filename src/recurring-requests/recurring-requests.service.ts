@@ -8,7 +8,8 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateRecurringRequestDto, RecurrenceType } from "./dto/create-recurring-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
-import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
+import { resolveDaysPerWeek, WEEKS_PER_MONTH } from "../common/utils/pricing.utils";
+import { PricingEngineService } from "../common/pricing.service";
 import { AddressesService } from "../addresses/addresses.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
@@ -20,6 +21,7 @@ export class RecurringRequestsService {
     private prisma: PrismaService,
     private addressesService: AddressesService,
     private notificationsService: NotificationsService,
+    private pricingService: PricingEngineService,
   ) {}
 
   /**
@@ -234,46 +236,55 @@ export class RecurringRequestsService {
       orderBy: { created_at: "desc" },
     });
 
-    // Current base hourly rate per category so each series can quote a price.
-    const rateByCategory = new Map<string, number>();
-    const categories = [...new Set(requests.map((r) => r.category ?? "CC"))];
-    for (const category of categories) {
-      const service = await this.prisma.services.findFirst({
-        where: { OR: [{ name: category }, { slug: category.toLowerCase() }] },
-        include: {
-          rate_cards: {
-            where: { effective_to: null },
-            orderBy: { effective_from: "desc" },
-            take: 1,
-          },
-        },
-      });
-      const rate = service?.rate_cards?.[0]?.hourly_rate;
-      if (rate != null) rateByCategory.set(category, Number(rate));
-    }
-
     const now = new Date();
-    return requests.map(req => {
-      const { bookings, _count, ...rest } = req;
-      const upcoming = bookings.find((b) => b.start_time >= now) ?? null;
-      const withNanny = bookings.find((b) => b.nanny_id) ?? null;
-      const hourlyRate = rateByCategory.get(req.category ?? "CC") ?? null;
-      const estimatedTotal =
-        hourlyRate != null
-          ? Math.round(hourlyRate * Number(req.duration_hours) * _count.bookings * 100) / 100
-          : null;
 
-      return {
-        ...rest,
-        status: this.effectiveStatus(rest.status, !!withNanny),
-        start_time_formatted: TimeUtils.formatShortTime(req.start_time),
-        total_bookings: _count.bookings,
-        next_upcoming_date: upcoming ? upcoming.start_time : null,
-        nanny: withNanny?.users_bookings_nanny_idTousers ?? null,
-        hourly_rate: hourlyRate,
-        estimated_total: estimatedTotal,
-      };
-    });
+    return Promise.all(
+      requests.map(async (req) => {
+        const { bookings, _count, ...rest } = req;
+        const upcoming = bookings.find((b) => b.start_time >= now) ?? null;
+        const withNanny = bookings.find((b) => b.nanny_id) ?? null;
+
+        const planType = req.plan_type || "MONTHLY";
+        const planMonths = Number(req.plan_duration_months || 1);
+        const daysPerWeek = resolveDaysPerWeek({
+          planType,
+          daysPerWeek: req.days_per_week,
+          recurrencePattern: req.recurrence_pattern,
+          sessionsPerMonth: req.sessions_per_month,
+        });
+
+        // Priced through the engine, never re-derived here. The old sum was
+        // `rate × hours × <rows generated so far>`, which is a different figure
+        // entirely: generation walks a calendar month inclusive of both ends and
+        // yields 22–24 dates, while the plan is sold as 4 weeks. That is why a
+        // plan quoted at ₹15,840 displayed as ₹19,008.
+        const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
+          req.category || "CC",
+          Number(req.duration_hours || 0),
+          planMonths,
+          planType,
+          daysPerWeek,
+        );
+
+        return {
+          ...rest,
+          status: this.effectiveStatus(rest.status, !!withNanny),
+          start_time_formatted: TimeUtils.formatShortTime(req.start_time),
+          /** Sessions actually on the calendar — only the first month is generated upfront. */
+          total_bookings: _count.bookings,
+          /**
+           * Sessions the plan was sold as, across its whole term. The progress bar
+           * measures against this: counting generated rows would show a six-month
+           * plan as "0 of 24" when it runs to roughly 120 sessions.
+           */
+          total_sessions: daysPerWeek * WEEKS_PER_MONTH * planMonths,
+          next_upcoming_date: upcoming ? upcoming.start_time : null,
+          nanny: withNanny?.users_bookings_nanny_idTousers ?? null,
+          hourly_rate: appliedRate || null,
+          estimated_total: totalAmount || null,
+        };
+      }),
+    );
   }
 
   /**
