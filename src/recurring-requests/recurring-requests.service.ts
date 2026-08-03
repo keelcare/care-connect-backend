@@ -216,22 +216,20 @@ export class RecurringRequestsService {
         _count: {
           select: { bookings: { where: { status: { not: "CANCELLED" } } } }
         },
+        // Only needed to find the next session — staffing now comes off the plan.
         bookings: {
           where: { status: { not: "CANCELLED" } },
           orderBy: { start_time: 'asc' },
+          select: { start_time: true },
+        },
+        nanny: {
           select: {
-            start_time: true,
-            nanny_id: true,
-            users_bookings_nanny_idTousers: {
-              select: {
-                id: true,
-                profiles: {
-                  select: { first_name: true, last_name: true, profile_image_url: true },
-                },
-              },
+            id: true,
+            profiles: {
+              select: { first_name: true, last_name: true, profile_image_url: true },
             },
           },
-        }
+        },
       },
       orderBy: { created_at: "desc" },
     });
@@ -240,9 +238,8 @@ export class RecurringRequestsService {
 
     return Promise.all(
       requests.map(async (req) => {
-        const { bookings, _count, ...rest } = req;
+        const { bookings, _count, nanny, ...rest } = req;
         const upcoming = bookings.find((b) => b.start_time >= now) ?? null;
-        const withNanny = bookings.find((b) => b.nanny_id) ?? null;
 
         const planType = req.plan_type || "MONTHLY";
         const planMonths = Number(req.plan_duration_months || 1);
@@ -268,7 +265,7 @@ export class RecurringRequestsService {
 
         return {
           ...rest,
-          status: this.effectiveStatus(rest.status, !!withNanny),
+          status: this.effectiveStatus(rest.status, !!rest.nanny_id),
           start_time_formatted: TimeUtils.formatShortTime(req.start_time),
           /** Sessions actually on the calendar — only the first month is generated upfront. */
           total_bookings: _count.bookings,
@@ -279,7 +276,7 @@ export class RecurringRequestsService {
            */
           total_sessions: daysPerWeek * WEEKS_PER_MONTH * planMonths,
           next_upcoming_date: upcoming ? upcoming.start_time : null,
-          nanny: withNanny?.users_bookings_nanny_idTousers ?? null,
+          nanny: nanny ?? null,
           hourly_rate: appliedRate || null,
           estimated_total: totalAmount || null,
         };
@@ -304,7 +301,13 @@ export class RecurringRequestsService {
       include: {
         _count: {
           select: { bookings: { where: { status: { not: "CANCELLED" } } } }
-        }
+        },
+        nanny: {
+          select: {
+            id: true,
+            profiles: { select: { first_name: true, last_name: true, profile_image_url: true } },
+          },
+        },
       }
     });
 
@@ -315,14 +318,9 @@ export class RecurringRequestsService {
       throw new NotFoundException("Recurring request not found");
     }
 
-    const assigned = await this.prisma.bookings.findFirst({
-      where: { recurring_request_id: id, status: { not: "CANCELLED" }, nanny_id: { not: null } },
-      select: { id: true },
-    });
-
     return {
       ...req,
-      status: this.effectiveStatus(req.status, !!assigned),
+      status: this.effectiveStatus(req.status, !!req.nanny_id),
       start_time_formatted: TimeUtils.formatShortTime(req.start_time)
     };
   }
@@ -365,7 +363,9 @@ export class RecurringRequestsService {
     const [, cancelledBookings] = await this.prisma.$transaction([
       this.prisma.recurring_service_requests.update({
         where: { id },
-        data: { status: "cancelled", updated_at: now },
+        // Release the caregiver — the plan is closed, so nothing should keep
+        // generating sessions against them.
+        data: { status: "cancelled", nanny_id: null, updated_at: now },
       }),
       this.prisma.bookings.updateMany({
         where: {

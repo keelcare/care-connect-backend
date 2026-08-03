@@ -182,8 +182,9 @@ export class AdminService {
       // Plans awaiting their first assignment are created as "pending" and only
       // flip to "active" once a nanny is attached (see manualAssign), so both
       // states can still hold unassigned sessions. Cancelled/expired/errored
-      // plans are excluded outright.
-      where: { status: { in: ["pending", "active"] } },
+      // plans are excluded outright. Staffing is a plan-level fact now, so an
+      // unassigned plan is simply one with no nanny_id.
+      where: { status: { in: ["pending", "active"] }, nanny_id: null },
       include: {
         users: {
           select: {
@@ -212,13 +213,12 @@ export class AdminService {
       orderBy: { created_at: "desc" },
     });
 
-    // Only plans with at least one *future* session still waiting on a nanny.
-    // Past sessions can no longer be served, so a plan made up entirely of them
-    // is not something an admin can act on.
+    // Only plans with at least one *future* session. Past sessions can no longer
+    // be served, so a plan made up entirely of them is not something an admin can
+    // act on.
     const unassignedRecurring = recurringRequests.filter(req =>
       req.bookings.some(
         b =>
-          !b.nanny_id &&
           b.status === BookingStatus.REQUESTED &&
           b.start_time !== null &&
           b.start_time > now,
@@ -570,64 +570,30 @@ export class AdminService {
     if (!nanny || nanny.role !== "nanny")
       throw new NotFoundException("Nanny not found");
 
+    // --- Availability precheck (read-only, so it stays OUT of the transaction) ---
+    // A recurring plan can hold dozens of sessions; checking them one-by-one used
+    // to run 3 queries per session and blow the 5s interactive-transaction budget.
+    // Everything the check needs is loaded in two queries and compared in memory.
+    const windows: { start: Date; end: Date }[] = isRecurring
+      ? recurringBookings.map((b) => ({ start: b.start_time, end: b.end_time }))
+      : [{ start: actualStartTime!, end: requestEndTime! }];
+
+    const overlaps = windows.length
+      ? await this.findUnavailableWindows(nannyId, windows)
+      : [];
+
+    if (overlaps.length > 0 && !force) {
+      throw new BadRequestException({
+        message: isRecurring
+          ? "Nanny has overlapping bookings or is unavailable on some days in this recurring plan."
+          : "Nanny is already booked or unavailable for this time slot.",
+        overlaps,
+        warning: true,
+      });
+    }
+
     const result = await this.prisma.$transaction(
       async (tx) => {
-        let overlaps: string[] = [];
-
-        if (isRecurring) {
-           for (const b of recurringBookings) {
-             const bStart = b.start_time;
-             const bEnd = b.end_time;
-             const overlap = await tx.bookings.findFirst({
-               where: {
-                 nanny_id: nannyId,
-                 status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
-                 AND: [
-                   { start_time: { lt: bEnd } },
-                   { end_time: { gt: bStart } },
-                 ],
-               },
-             });
-             const isAvail = await this.availabilityService.isNannyAvailable(nannyId, bStart, bEnd);
-             if (overlap || !isAvail) {
-                overlaps.push(bStart.toISOString().split('T')[0]);
-             }
-           }
-        } else {
-           // 1. Double check availability
-           const overlap = await tx.bookings.findFirst({
-             where: {
-               nanny_id: nannyId,
-               status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
-               AND: [
-                 { start_time: { lt: requestEndTime! } },
-                 { end_time: { gt: actualStartTime! } },
-               ],
-             },
-           });
-
-           if (overlap) {
-             overlaps.push(actualStartTime!.toISOString().split('T')[0]);
-           } else {
-             const isAvailable = await this.availabilityService.isNannyAvailable(
-               nannyId,
-               actualStartTime!,
-               requestEndTime!,
-             );
-             if (!isAvailable) overlaps.push(actualStartTime!.toISOString().split('T')[0]);
-           }
-        }
-
-        if (overlaps.length > 0 && !force) {
-           throw new BadRequestException({
-             message: isRecurring 
-               ? "Nanny has overlapping bookings or is unavailable on some days in this recurring plan."
-               : "Nanny is already booked or unavailable for this time slot.",
-             overlaps,
-             warning: true
-           });
-        }
-
         let assignmentId = "recurring-assignment";
 
         if (!isRecurring) {
@@ -677,14 +643,17 @@ export class AdminService {
             },
           });
         } else if (isRecurring) {
+          // The caregiver is attached to the plan, not just to the sessions that
+          // happen to exist today — the rolling generator reads this so future
+          // sessions come out already staffed. The plan also goes live only now
+          // that someone is serving it.
+          await tx.recurring_service_requests.update({
+            where: { id: requestId },
+            data: { status: "active", nanny_id: nannyId },
+          });
           await tx.bookings.updateMany({
             where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },
             data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED }
-          });
-          // The plan goes live only now that someone is serving it.
-          await tx.recurring_service_requests.update({
-            where: { id: requestId },
-            data: { status: "active" },
           });
         } else if (bookingId) {
           await tx.bookings.update({
@@ -812,6 +781,60 @@ export class AdminService {
     }
 
     return result;
+  }
+
+  /**
+   * Batched availability check for a set of time windows belonging to one nanny.
+   *
+   * Loads the nanny's clashing bookings and availability blocks in two queries
+   * spanning the whole range, then evaluates every window in memory. Replaces the
+   * per-window N+1 that made assigning a long recurring plan exceed Prisma's
+   * interactive-transaction timeout.
+   *
+   * Returns the `YYYY-MM-DD` dates of windows the nanny can't serve.
+   */
+  private async findUnavailableWindows(
+    nannyId: string,
+    windows: { start: Date; end: Date }[],
+  ): Promise<string[]> {
+    const rangeStart = new Date(Math.min(...windows.map((w) => w.start.getTime())));
+    const rangeEnd = new Date(Math.max(...windows.map((w) => w.end.getTime())));
+
+    const [existingBookings, blocks] = await Promise.all([
+      this.prisma.bookings.findMany({
+        where: {
+          nanny_id: nannyId,
+          status: {
+            in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED],
+          },
+          start_time: { lt: rangeEnd },
+          end_time: { gt: rangeStart },
+        },
+        select: { start_time: true, end_time: true },
+      }),
+      // Recurring blocks can sit outside the range and still apply to days inside
+      // it, so they can't be filtered by date here.
+      this.prisma.availability_blocks.findMany({
+        where: { nanny_id: nannyId },
+      }),
+    ]);
+
+    const unavailable = new Set<string>();
+
+    for (const { start, end } of windows) {
+      const clashes = existingBookings.some(
+        (b) => b.start_time! < end && b.end_time! > start,
+      );
+      const blocked =
+        clashes ||
+        blocks.some((block) => this.availabilityService.doesBlockOverlap(block, start, end));
+
+      if (blocked) {
+        unavailable.add(start.toISOString().split("T")[0]);
+      }
+    }
+
+    return [...unavailable];
   }
 
   // Category Request Management

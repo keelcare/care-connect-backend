@@ -5,6 +5,7 @@ import { RecurringRequestsService } from './recurring-requests.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TimeUtils } from '../common/utils/time.utils';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
+import { BookingStatus } from '../common/constants/booking-status.enum';
 
 // If generation has been stuck (latest booking further in the past than this)
 // for a plan, stop retrying it automatically and flag it for the parent.
@@ -34,10 +35,8 @@ export class RecurringRequestsCron {
       where: {
         status: { in: ['active', 'pending'] },
         start_date: { lt: startOfToday },
-        // No nanny has ever picked up a single session of this plan.
-        bookings: {
-          none: { nanny_id: { not: null }, status: { not: 'CANCELLED' } },
-        },
+        // Nobody is serving this plan.
+        nanny_id: null,
       },
       select: { id: true, parent_id: true },
     });
@@ -165,7 +164,11 @@ export class RecurringRequestsCron {
                 return {
                   parent_id: req.parent_id,
                   recurring_request_id: req.id,
-                  status: "requested",
+                  // Staffing lives on the plan, so sessions generated after the
+                  // assignment inherit the caregiver instead of coming out
+                  // unassigned and silently dropping off their schedule.
+                  nanny_id: req.nanny_id,
+                  status: req.nanny_id ? BookingStatus.CONFIRMED : "requested",
                   start_time: startTimestamp,
                   end_time: endTimestamp,
                   tags: ["recurring", `category:${req.category}`],

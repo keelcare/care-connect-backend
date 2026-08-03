@@ -82,6 +82,8 @@ describe('RecurringRequestsService', () => {
         recurrence_pattern: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
         _count: { bookings: 24 },
         bookings: [],
+        nanny_id: null,
+        nanny: null,
         ...over,
       };
     }
@@ -125,6 +127,37 @@ describe('RecurringRequestsService', () => {
       await service.findAllByParent('parent-1');
 
       expect(mockPricing.calculateCost).toHaveBeenCalledWith('ST', 8, 1, 'MONTHLY', 5);
+    });
+
+    it('reads staffing off the plan rather than scanning its sessions', async () => {
+      // Staffing used to be inferred from whichever booking happened to carry a
+      // nanny_id, which meant a plan whose generated sessions had drifted back to
+      // unassigned reported itself as pending despite having a caregiver.
+      const caregiver = {
+        id: 'nanny-1',
+        profiles: { first_name: 'Asha', last_name: 'R', profile_image_url: null },
+      };
+      mockPrisma.recurring_service_requests.findMany.mockResolvedValue([
+        plan({ status: 'active', nanny_id: 'nanny-1', nanny: caregiver, bookings: [] }),
+      ]);
+      mockPricing.calculateCost.mockResolvedValue({ totalAmount: 15840, appliedRate: 99 });
+
+      const [result] = await service.findAllByParent('parent-1');
+
+      expect(result.status).toBe('active');
+      expect(result.nanny).toEqual(caregiver);
+    });
+
+    it('still reports an unstaffed plan as pending even when stored active', async () => {
+      mockPrisma.recurring_service_requests.findMany.mockResolvedValue([
+        plan({ status: 'active', nanny_id: null, nanny: null }),
+      ]);
+      mockPricing.calculateCost.mockResolvedValue({ totalAmount: 15840, appliedRate: 99 });
+
+      const [result] = await service.findAllByParent('parent-1');
+
+      expect(result.status).toBe('pending');
+      expect(result.nanny).toBeNull();
     });
   });
 });
