@@ -280,15 +280,48 @@ export class PricingEngineService {
   // services / rate_cards are near-static reference data but are looked up once
   // per booking when enriching list endpoints (getBookingsByParent, admin queues,
   // etc.). Caching them turns an N+1 into a handful of queries per request cycle.
-  private readonly cache = new Map<string, { value: any; expires: number }>();
+  //
+  // The map holds the in-flight *promise*, not the resolved value. A list endpoint
+  // enriches every booking inside one `Promise.all`, so all of them reach this cache
+  // in the same tick: caching values only would let all N miss together and issue N
+  // identical queries, exhausting the connection pool before the first one lands.
+  private readonly cache = new Map<string, { value: Promise<any>; expires: number }>();
   private static readonly REF_TTL_MS = 60_000;
 
-  private async cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  private cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
     const hit = this.cache.get(key);
-    if (hit && hit.expires > Date.now()) return hit.value as T;
-    const value = await loader();
+    if (hit && hit.expires > Date.now()) return hit.value as Promise<T>;
+
+    // A failed load must not be cached, or one transient error poisons the key for
+    // the whole TTL.
+    const value = loader().catch((err) => {
+      this.cache.delete(key);
+      throw err;
+    });
     this.cache.set(key, { value, expires: Date.now() + PricingEngineService.REF_TTL_MS });
     return value;
+  }
+
+  /**
+   * Warm the reference cache for a set of service categories.
+   *
+   * Call this once before enriching a list of bookings so the per-booking pricing
+   * calls resolve from memory: the fan-out then costs a fixed two queries per
+   * distinct category instead of scaling with the number of bookings.
+   */
+  async prefetchServiceCategories(categories: (string | null | undefined)[]): Promise<void> {
+    const distinct = [...new Set(categories.filter((c): c is string => !!c))];
+    await Promise.all(
+      distinct.map(async (name) => {
+        const service = await this.serviceByName(name);
+        if (service) await this.cached(`ratecards:${service.id}`, () =>
+          this.prisma.rate_cards.findMany({
+            where: { service_id: service.id },
+            orderBy: { effective_from: 'desc' },
+          }),
+        );
+      }),
+    );
   }
 
   private serviceByName(name: string) {
@@ -313,21 +346,23 @@ export class PricingEngineService {
   async getEffectiveRateCard(serviceId: string, asOf?: Date) {
     const at = asOf ?? new Date();
 
-    // Cache only the "current" lookup (no explicit asOf). Historical/as-of
-    // resolutions bypass the cache since their effective window is date-specific.
-    const loadCard = () =>
-      this.prisma.rate_cards.findFirst({
-        where: {
-          service_id: serviceId,
-          effective_from: { lte: at },
-          OR: [{ effective_to: null }, { effective_to: { gt: at } }],
-        },
+    // Every card for the service is fetched and cached once, then the effective one
+    // is picked in memory. An as-of lookup is date-specific and so can't share a
+    // per-date cache key — but a *locked* booking resolves against its own
+    // creation date, so a list of N bookings would otherwise mean N distinct
+    // queries. Rate cards per service are a handful of rows; this is one query.
+    const cards = await this.cached(`ratecards:${serviceId}`, () =>
+      this.prisma.rate_cards.findMany({
+        where: { service_id: serviceId },
         orderBy: { effective_from: 'desc' },
-      });
+      }),
+    );
 
-    const card = asOf
-      ? await loadCard()
-      : await this.cached(`ratecard:current:${serviceId}`, loadCard);
+    const card = cards.find(
+      (c) =>
+        c.effective_from <= at &&
+        (c.effective_to == null || c.effective_to > at),
+    );
 
     if (!card) {
       throw new NotFoundException(

@@ -112,6 +112,10 @@ export class AdminService {
       }
     });
 
+    await this.pricingService.prefetchServiceCategories(
+      upcomingRequests.map((r) => r.category || "CC"),
+    );
+
     const standardMapped = await Promise.all(upcomingRequests.map(async (req) => {
       const parent = req.users;
       const profile = parent?.profiles;
@@ -225,6 +229,10 @@ export class AdminService {
           b.start_time !== null &&
           b.start_time > now,
       )
+    );
+
+    await this.pricingService.prefetchServiceCategories(
+      unassignedRecurring.map((r) => r.category || "CC"),
     );
 
     const recurringMapped = await Promise.all(unassignedRecurring.map(async (req) => {

@@ -363,6 +363,12 @@ export class BookingsService {
         outstanding.has(bookingId),
       );
 
+    // Warm the pricing reference cache once so the fan-out below hits memory
+    // rather than opening a connection per booking.
+    await this.pricingService.prefetchServiceCategories(
+      bookings.map((b) => b.service_requests?.category || "CC"),
+    );
+
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const nanny = booking.users_bookings_nanny_idTousers;
       const nannyProfile = nanny?.profiles;
@@ -458,6 +464,10 @@ export class BookingsService {
         statusesByBooking.get(bookingId) ?? [],
         outstanding.has(bookingId),
       );
+
+    await this.pricingService.prefetchServiceCategories(
+      bookings.map((b) => b.service_requests?.category || "CC"),
+    );
 
     const enrichedBookings = await Promise.all(bookings.map(async (booking) => {
       const hours =

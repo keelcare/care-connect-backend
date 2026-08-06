@@ -289,6 +289,10 @@ export class RecurringRequestsService {
 
     const now = new Date();
 
+    await this.pricingService.prefetchServiceCategories(
+      requests.map((r) => r.category || "CC"),
+    );
+
     return Promise.all(
       requests.map(async (req) => {
         const { bookings, _count, nanny, ...rest } = req;
