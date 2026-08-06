@@ -143,6 +143,57 @@ describe("BookingsService", () => {
     });
   });
 
+  /**
+   * What the parent is charged next. The prompt has to name the figure checkout
+   * will name, and the matching fee comes off the first cycle rather than being
+   * asked for twice.
+   */
+  describe("instalmentSummaries", () => {
+    const bookingId = "book_1";
+    const summarise = async (rows: unknown[]) => {
+      mockPrisma.payment_installments.findMany.mockResolvedValue(rows);
+      const summaries = await (service as any).instalmentSummaries([bookingId]);
+      return summaries.get(bookingId);
+    };
+
+    it("credits a paid matching fee while the care is still unpriced", async () => {
+      const summary = await summarise([
+        { booking_id: bookingId, status: "paid", kind: "matching_fee", amount: 249, cycle_number: 0 },
+      ]);
+
+      expect(summary).toEqual({ outstanding: true, feeCredit: 249, pendingCare: null });
+    });
+
+    it("prefers the priced instalment over any estimate once the cycle exists", async () => {
+      // The engine already deducted the fee when it wrote this row; crediting it
+      // again here would discount the same ₹249 twice.
+      const summary = await summarise([
+        { booking_id: bookingId, status: "paid", kind: "matching_fee", amount: 249, cycle_number: 0 },
+        { booking_id: bookingId, status: "pending", kind: "cycle", amount: 5691, cycle_number: 1 },
+      ]);
+
+      expect(summary.pendingCare).toBe(5691);
+    });
+
+    it("spends the credit once care has been settled", async () => {
+      const summary = await summarise([
+        { booking_id: bookingId, status: "paid", kind: "matching_fee", amount: 249, cycle_number: 0 },
+        { booking_id: bookingId, status: "paid", kind: "cycle", amount: 5691, cycle_number: 1 },
+      ]);
+
+      expect(summary).toEqual({ outstanding: false, feeCredit: 0, pendingCare: null });
+    });
+
+    it("sums both halves of a split cycle that is still owed", async () => {
+      const summary = await summarise([
+        { booking_id: bookingId, status: "pending", kind: "cycle", amount: 2970, cycle_number: 1 },
+        { booking_id: bookingId, status: "pending", kind: "cycle", amount: 2970, cycle_number: 1 },
+      ]);
+
+      expect(summary).toEqual({ outstanding: true, feeCredit: 0, pendingCare: 5940 });
+    });
+  });
+
   describe("cancelBooking", () => {
     it("should cancel with fee if < 24 hours", async () => {
       const bookingId = "1";

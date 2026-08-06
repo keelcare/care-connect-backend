@@ -40,6 +40,7 @@ import {
   INSTALMENT_PENDING,
 } from "../constants";
 import { MATCHING_FEE_KIND } from "../common/pricing.service";
+import { round2 } from "../common/payout-policy";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -219,6 +220,11 @@ export class BookingsService {
       serviceAddress = { label: "Home", address: parentProfile.address };
     }
 
+    // Same figures the list path quotes, from the same helper — a parent must not
+    // see one amount on the card and another on the booking they tapped through to.
+    const summary = (await this.instalmentSummaries([booking.id])).get(booking.id);
+    const feeCredit = summary?.feeCredit ?? 0;
+
     return {
       ...booking,
       hourly_rate: appliedRate,
@@ -226,6 +232,9 @@ export class BookingsService {
       subtotal_amount: subtotalAmount,
       gst_amount: gstAmount,
       gst_percent: gstPercent,
+      matching_fee_credit: feeCredit,
+      amount_due:
+        summary?.pendingCare ?? round2(Math.max(0, Number(totalAmount) - feeCredit)),
       payment_status: await this.derivePaymentStatus(booking.id),
       service_address: serviceAddress,
       service_location_lat: reqLat != null ? Number(reqLat) : null,
@@ -255,7 +264,7 @@ export class BookingsService {
    * counts as paid.
    */
   async derivePaymentStatus(bookingId: string): Promise<PaymentStatusValue> {
-    const [rows, outstanding] = await Promise.all([
+    const [rows, summaries] = await Promise.all([
       this.prisma.payments.findMany({
         where: {
           booking_id: bookingId,
@@ -263,17 +272,17 @@ export class BookingsService {
         },
         select: { status: true },
       }),
-      this.outstandingBookingIds([bookingId]),
+      this.instalmentSummaries([bookingId]),
     ]);
     return this.paymentStatusFromRows(
       rows.map((r) => r.status ?? ""),
-      outstanding.has(bookingId),
+      !!summaries.get(bookingId)?.outstanding,
     );
   }
 
   /**
-   * The set of these bookings that are not yet fully paid, for both the single
-   * and the batched list paths — so the two can never disagree.
+   * What each of these bookings still owes, for both the single and the batched
+   * list paths — so the two can never disagree. One query for the page.
    *
    * A booking owes money in two ways. The obvious one is a pending instalment.
    * The subtle one is a booking whose only settled instalment is the matching
@@ -282,32 +291,67 @@ export class BookingsService {
    * raised at all. Nothing is "pending" yet, so the fee alone would otherwise
    * read as `paid` — hiding the real amount due and suppressing the prompt to
    * pay it on every booking the parent has just created.
+   *
+   * `feeCredit` mirrors the engine's own rule (`matchingFeeCreditFor`): the fee
+   * comes off the first cycle rather than being added on top, so a quote that
+   * ignored it would name a figure the parent is never actually charged.
+   * `pendingCare` is that already-credited figure once the cycle has been priced,
+   * and is preferred over any estimate for exactly that reason.
    */
-  private async outstandingBookingIds(bookingIds: string[]): Promise<Set<string>> {
-    if (bookingIds.length === 0) return new Set();
+  private async instalmentSummaries(
+    bookingIds: string[],
+  ): Promise<Map<string, { outstanding: boolean; feeCredit: number; pendingCare: number | null }>> {
+    const summaries = new Map<
+      string,
+      { outstanding: boolean; feeCredit: number; pendingCare: number | null }
+    >();
+    if (bookingIds.length === 0) return summaries;
+
     const rows = await this.prisma.payment_installments.findMany({
       where: { booking_id: { in: bookingIds } },
-      select: { booking_id: true, status: true, kind: true },
+      select: {
+        booking_id: true,
+        status: true,
+        kind: true,
+        amount: true,
+        cycle_number: true,
+      },
     });
 
-    const outstanding = new Set<string>();
     const settledCare = new Set<string>();
     const settledFee = new Set<string>();
+    const at = (bookingId: string) => {
+      const existing = summaries.get(bookingId);
+      if (existing) return existing;
+      const fresh = { outstanding: false, feeCredit: 0, pendingCare: null as number | null };
+      summaries.set(bookingId, fresh);
+      return fresh;
+    };
 
     for (const row of rows) {
       if (!row.booking_id) continue;
+      const summary = at(row.booking_id);
+      const isFee = row.kind === MATCHING_FEE_KIND;
+
+      if (isFee) summary.feeCredit += Number(row.amount);
+
       if (row.status === INSTALMENT_PENDING) {
-        outstanding.add(row.booking_id);
+        summary.outstanding = true;
+        if (!isFee) summary.pendingCare = (summary.pendingCare ?? 0) + Number(row.amount);
       } else if (row.status === INSTALMENT_PAID) {
-        (row.kind === MATCHING_FEE_KIND ? settledFee : settledCare).add(row.booking_id);
+        (isFee ? settledFee : settledCare).add(row.booking_id);
       }
     }
 
     for (const bookingId of settledFee) {
-      if (!settledCare.has(bookingId)) outstanding.add(bookingId);
+      if (!settledCare.has(bookingId)) at(bookingId).outstanding = true;
     }
 
-    return outstanding;
+    // Only the first cycle carries the credit; once care has been settled the fee
+    // has already been deducted and must not discount anything a second time.
+    for (const bookingId of settledCare) at(bookingId).feeCredit = 0;
+
+    return summaries;
   }
 
   /**
@@ -320,7 +364,7 @@ export class BookingsService {
    * advance — or a matching fee paid before the care is even priced — is a real
    * capture, but calling the booking `paid` while the rest is still owed would
    * hide the amount due from every list and suppress the prompt to pay it. See
-   * `outstandingBookingIds` for what counts.
+   * `instalmentSummaries` for what counts.
    */
   private paymentStatusFromRows(
     statuses: string[],
@@ -384,11 +428,11 @@ export class BookingsService {
       list.push(row.status ?? "");
       statusesByBooking.set(row.booking_id, list);
     }
-    const outstanding = await this.outstandingBookingIds(bookings.map((b) => b.id));
+    const summaries = await this.instalmentSummaries(bookings.map((b) => b.id));
     const statusOf = (bookingId: string) =>
       this.paymentStatusFromRows(
         statusesByBooking.get(bookingId) ?? [],
-        outstanding.has(bookingId),
+        !!summaries.get(bookingId)?.outstanding,
       );
 
     // Warm the pricing reference cache once so the fan-out below hits memory
@@ -421,6 +465,15 @@ export class BookingsService {
           }),
         );
 
+      // What the parent will actually be charged next, so the prompt names the
+      // figure the checkout will name. The priced instalment wins when one
+      // exists — it is the engine's own arithmetic, already fee-credited and
+      // split. Before the cycle is priced, the estimate carries the credit itself.
+      const summary = summaries.get(booking.id);
+      const feeCredit = summary?.feeCredit ?? 0;
+      const amountDue =
+        summary?.pendingCare ?? round2(Math.max(0, Number(totalAmount) - feeCredit));
+
       return {
         ...booking,
         hourly_rate: appliedRate,
@@ -428,6 +481,9 @@ export class BookingsService {
         subtotal_amount: subtotalAmount,
         gst_amount: gstAmount,
         gst_percent: gstPercent,
+        /** Deducted from the first cycle, not added on top — 0 once it is spent. */
+        matching_fee_credit: feeCredit,
+        amount_due: amountDue,
         payment_status: statusOf(booking.id),
         has_payment_plan: !!booking.payment_plans,
         title:
@@ -486,11 +542,11 @@ export class BookingsService {
       list.push(row.status ?? "");
       statusesByBooking.set(row.booking_id, list);
     }
-    const outstanding = await this.outstandingBookingIds(bookings.map((b) => b.id));
+    const summaries = await this.instalmentSummaries(bookings.map((b) => b.id));
     const statusOf = (bookingId: string) =>
       this.paymentStatusFromRows(
         statusesByBooking.get(bookingId) ?? [],
-        outstanding.has(bookingId),
+        !!summaries.get(bookingId)?.outstanding,
       );
 
     await this.pricingService.prefetchServiceCategories(
