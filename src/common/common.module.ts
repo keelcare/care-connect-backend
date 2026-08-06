@@ -8,6 +8,7 @@ import { DataCleanupService } from "./services/cleanup/data-cleanup.service";
 import { AuditService } from "./services/audit/audit.service";
 import { PricingEngineService } from "./pricing.service";
 import { PricingController } from "./pricing.controller";
+import { PlanEntitlementService } from "./plan-entitlement.service";
 
 @Global()
 @Module({
@@ -16,7 +17,19 @@ import { PricingController } from "./pricing.controller";
   // be resolvable here.
   imports: [ConfigModule, AuthModule, MailModule],
   controllers: [PricingController],
-  providers: [EncryptionService, DataCleanupService, AuditService, PricingEngineService],
-  exports: [EncryptionService, DataCleanupService, AuditService, PricingEngineService],
+  providers: [
+    EncryptionService,
+    DataCleanupService,
+    AuditService,
+    PricingEngineService,
+    PlanEntitlementService,
+  ],
+  exports: [
+    EncryptionService,
+    DataCleanupService,
+    AuditService,
+    PricingEngineService,
+    PlanEntitlementService,
+  ],
 })
 export class CommonModule {}

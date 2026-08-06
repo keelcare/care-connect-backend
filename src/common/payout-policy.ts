@@ -1,5 +1,10 @@
 import { Prisma } from "@prisma/client";
-import { BookingStatus, MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
+import {
+  BookingStatus,
+  MANUAL_PENDING_PROVIDER,
+  MATCHING_FEE_KIND,
+  PaymentStatus,
+} from "../constants";
 
 /**
  * The single definition of what a caregiver is owed, shared by the caregiver-facing
@@ -49,6 +54,12 @@ export const CAREGIVER_SHARE_ONLY: Prisma.paymentsWhereInput = {
     // earnings and the revenue ledger entirely.
     { payment_installments: { some: {} } },
   ],
+  // The matching fee is what the platform charges for making the match, raised
+  // before a caregiver existed and deducted from the first cycle rather than added
+  // to it. It is not a share of care and carries no payout: without this it rides
+  // in on the instalment arm above and accrues to whoever is later assigned, who
+  // would then be paid twice out of the same first cycle.
+  payment_installments: { none: { kind: MATCHING_FEE_KIND } },
 };
 
 /**

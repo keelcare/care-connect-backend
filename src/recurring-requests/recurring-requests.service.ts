@@ -14,11 +14,39 @@ import {
   resolveDaysPerWeek,
 } from "../common/utils/pricing.utils";
 import { PricingEngineService } from "../common/pricing.service";
+import {
+  DELIVERED_BOOKING_STATUSES,
+  PlanEntitlement,
+  PlanEntitlementService,
+} from "../common/plan-entitlement.service";
+import { BookingStatus } from "../common/constants/booking-status.enum";
+import {
+  PLAN_STATUS,
+  isTerminalPlanStatus,
+} from "../common/constants/plan-status.enum";
 import { AddressesService } from "../addresses/addresses.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { EventEmitter2 } from "@nestjs/event-emitter";
+import {
+  BOOKING_EVENTS,
+  PlanWoundDownEvent,
+} from "../bookings/events/booking.events";
+import { SseService } from "../sse/sse.service";
+import { SSE_EVENTS } from "../events/sse-event.types";
+import {
+  INSTALMENT_PENDING,
+  INSTALMENT_VOID,
+  MATCHING_FEE_KIND,
+} from "../constants";
 
 /** One day, used only to make an inclusive end date exclusive. */
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Sessions still ahead of the parent: on the calendar, neither spent nor dropped. */
+const SCHEDULED_BOOKING_STATUSES = [
+  BookingStatus.REQUESTED,
+  BookingStatus.CONFIRMED,
+];
 
 @Injectable()
 export class RecurringRequestsService {
@@ -29,7 +57,32 @@ export class RecurringRequestsService {
     private addressesService: AddressesService,
     private notificationsService: NotificationsService,
     private pricingService: PricingEngineService,
+    private entitlementService: PlanEntitlementService,
+    private eventEmitter: EventEmitter2,
+    private sseService: SseService,
   ) {}
+
+  /**
+   * The session counters every plan view shows, in one shape so the list and the
+   * detail screen can never disagree.
+   *
+   * `sessions_entitled` comes off the frozen snapshot once a plan has been
+   * cancelled: recomputing it live would let a refund issued afterwards shrink a
+   * number the parent was already promised.
+   */
+  private sessionCounters(
+    entitlement: PlanEntitlement,
+    scheduled: number,
+    entitledAtCancellation: number | null,
+  ) {
+    const sessionsEntitled = entitledAtCancellation ?? entitlement.sessionsEntitled;
+    return {
+      sessions_delivered: entitlement.sessionsDelivered,
+      sessions_scheduled: scheduled,
+      sessions_entitled: sessionsEntitled,
+      sessions_remaining: Math.max(0, sessionsEntitled - entitlement.sessionsDelivered),
+    };
+  }
 
   /**
    * Every date a recurrence pattern lands on within a window.
@@ -293,6 +346,31 @@ export class RecurringRequestsService {
       requests.map((r) => r.category || "CC"),
     );
 
+    // Entitlement and the scheduled count are batched across every plan rather
+    // than resolved inside the map below: this list is the parent's home screen,
+    // and a per-plan round trip for each would be two more queries per row.
+    const planIds = requests.map((r) => r.id);
+    const [entitlements, scheduledCounts] = await Promise.all([
+      this.entitlementService.computeEntitlementMany(planIds),
+      this.prisma.bookings.groupBy({
+        by: ["recurring_request_id"],
+        where: {
+          recurring_request_id: { in: planIds },
+          status: { in: SCHEDULED_BOOKING_STATUSES },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    const scheduledByPlan = new Map(
+      scheduledCounts.map((row) => [row.recurring_request_id as string, row._count._all]),
+    );
+    const emptyEntitlement: PlanEntitlement = {
+      sessionsEntitled: 0,
+      sessionsDelivered: 0,
+      sessionsRemaining: 0,
+      cycles: [],
+    };
+
     return Promise.all(
       requests.map(async (req) => {
         const { bookings, _count, nanny, ...rest } = req;
@@ -324,6 +402,11 @@ export class RecurringRequestsService {
           ...rest,
           status: this.effectiveStatus(rest.status, !!rest.nanny_id),
           start_time_formatted: TimeUtils.formatShortTime(req.start_time),
+          ...this.sessionCounters(
+            entitlements.get(req.id) ?? emptyEntitlement,
+            scheduledByPlan.get(req.id) ?? 0,
+            req.sessions_entitled_at_cancellation,
+          ),
           /** Sessions actually on the calendar — only the first month is generated upfront. */
           total_bookings: _count.bookings,
           /**
@@ -388,10 +471,28 @@ export class RecurringRequestsService {
 
     const { _count, ...rest } = req;
 
+    const [entitlement, scheduled] = await Promise.all([
+      this.entitlementService.computeEntitlement(id),
+      this.prisma.bookings.count({
+        where: { recurring_request_id: id, status: { in: SCHEDULED_BOOKING_STATUSES } },
+      }),
+    ]);
+
     return {
       ...rest,
       status: this.effectiveStatus(req.status, !!req.nanny_id),
       start_time_formatted: TimeUtils.formatShortTime(req.start_time),
+      /**
+       * Sessions served, still to come, paid for, and still owed. `total_bookings`
+       * and `total_sessions` below answer a different question — what is on the
+       * calendar and what the term contains — and neither of them moves when a
+       * session is completed, which is why progress never appeared to change.
+       */
+      ...this.sessionCounters(
+        entitlement,
+        scheduled,
+        req.sessions_entitled_at_cancellation,
+      ),
       /** Sessions on the calendar today — only the current cycle is generated. */
       total_bookings: _count.bookings,
       /**
@@ -409,76 +510,292 @@ export class RecurringRequestsService {
   }
 
   /**
-   * Parent-initiated cancellation of a whole plan. Ends the series and cancels
-   * every future session that hasn't already started — sessions that are
-   * completed or currently under way are left untouched (they were delivered
-   * and still need to be paid/settled). Assigned nannies whose future sessions
-   * were dropped are notified.
+   * Parent-initiated cancellation of a whole plan.
+   *
+   * A plan is bought a month at a time, half up front and half later, but was
+   * cancelled as though none of that had happened: every future session went,
+   * regardless of how much of it the parent had already paid for. A parent who
+   * had settled the advance on a twenty-session month and used three of them
+   * lost the other seventeen outright.
+   *
+   * So the plan ends, but the sessions already paid for do not. The earliest
+   * `entitled − delivered` future sessions stay on the calendar with their
+   * caregiver attached; everything past that is cancelled, and the money still
+   * owed for those dropped months is voided rather than chased. The plan sits in
+   * `winding_down` until the last retained session is delivered.
+   *
+   * Sessions already completed or under way are never touched — they were
+   * delivered and still have to settle.
    */
   async cancel(id: string, parentId: string, reason?: string) {
     const req = await this.prisma.recurring_service_requests.findUnique({
       where: { id },
-      select: { id: true, parent_id: true, status: true, category: true },
+      select: {
+        id: true,
+        parent_id: true,
+        nanny_id: true,
+        status: true,
+        category: true,
+        start_date: true,
+        end_date: true,
+        plan_duration_months: true,
+        recurrence_type: true,
+        recurrence_pattern: true,
+        start_time: true,
+        duration_hours: true,
+      },
     });
     if (!req) throw new NotFoundException("Recurring request not found");
     if (req.parent_id !== parentId) {
       throw new ForbiddenException("You can only cancel your own recurring plans");
     }
-    if (["cancelled", "completed", "expired"].includes(req.status)) {
+    if (isTerminalPlanStatus(req.status)) {
       throw new BadRequestException(`This plan is already ${req.status}`);
+    }
+    // Already wound down. A parent double-tapping the button, or retrying after a
+    // dropped response, should see the same answer as the first call rather than
+    // an error about a cancellation that did work.
+    if (req.status === PLAN_STATUS.WINDING_DOWN) {
+      const retained = await this.prisma.bookings.count({
+        where: {
+          recurring_request_id: id,
+          status: { in: SCHEDULED_BOOKING_STATUSES },
+        },
+      });
+      return { success: true, cancelledSessions: 0, retainedSessions: retained };
     }
 
     const now = TimeUtils.nowIST();
     const cancellationReason = reason?.trim() || "Recurring plan cancelled by parent";
 
-    // Capture who loses sessions before the rows flip to CANCELLED.
-    const affected = await this.prisma.bookings.findMany({
+    const entitlement = await this.entitlementService.computeEntitlement(id);
+    let retainCount = entitlement.sessionsRemaining;
+
+    const futureBookings = await this.prisma.bookings.findMany({
       where: {
         recurring_request_id: id,
         start_time: { gt: now },
-        status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
-        nanny_id: { not: null },
+        status: {
+          notIn: [
+            BookingStatus.CANCELLED,
+            BookingStatus.COMPLETED,
+            BookingStatus.IN_PROGRESS,
+          ],
+        },
       },
-      select: { nanny_id: true },
-      distinct: ["nanny_id"],
+      orderBy: { start_time: "asc" },
+      select: { id: true, start_time: true, nanny_id: true },
     });
 
-    const [, cancelledBookings] = await this.prisma.$transaction([
-      this.prisma.recurring_service_requests.update({
-        where: { id },
-        // Release the caregiver — the plan is closed, so nothing should keep
-        // generating sessions against them.
-        data: { status: "cancelled", nanny_id: null, updated_at: now },
-      }),
-      this.prisma.bookings.updateMany({
-        where: {
-          recurring_request_id: id,
-          start_time: { gt: now },
-          status: { notIn: ["CANCELLED", "COMPLETED", "IN_PROGRESS"] },
-        },
-        data: { status: "CANCELLED", cancellation_reason: cancellationReason },
-      }),
-    ]);
+    // The parent has bought more sessions than are on the calendar. Generation
+    // only ever runs a cycle ahead, so this is rare — but clamping to what
+    // happens to be generated would quietly forfeit sessions they have paid for,
+    // which is the whole bug. Write the missing dates instead.
+    let generated: { id: string; start_time: Date; nanny_id: string | null }[] = [];
+    if (retainCount > futureBookings.length) {
+      generated = await this.generateShortfallSessions(
+        req,
+        futureBookings,
+        retainCount - futureBookings.length,
+        now,
+      );
+    }
 
-    for (const { nanny_id } of affected) {
-      await this.notificationsService
-        .createNotification(
-          nanny_id as string,
-          "Recurring plan cancelled",
-          "A parent has cancelled their recurring plan. The upcoming sessions assigned to you have been removed from your schedule.",
-          "warning",
-          "recurring_request",
-          id,
-        )
-        .catch((err) =>
-          this.logger.error(`Failed to notify nanny ${nanny_id} of plan cancellation`, err),
-        );
+    const candidates = [...futureBookings, ...generated].sort(
+      (a, b) => a.start_time.getTime() - b.start_time.getTime(),
+    );
+    // Generation can still fall short (a plan at the end of its term simply has
+    // no more dates to give), so the retained set is what actually exists.
+    retainCount = Math.min(retainCount, candidates.length);
+
+    const retained = candidates.slice(0, retainCount);
+    const toCancel = candidates.slice(retainCount);
+    const toCancelIds = toCancel.map((b) => b.id);
+
+    // Cycles wholly past the last session still being served. A cycle that is
+    // only partly dropped keeps its installments: the parent is being served
+    // part of that month, so what they owe for it stands.
+    const cutoff = retained.length > 0 ? retained[retained.length - 1].start_time : now;
+    const droppedCycles = this.entitlementService.droppedCyclesAfter(
+      req.start_date,
+      Number(req.plan_duration_months || 1),
+      cutoff,
+    );
+
+    const nextStatus =
+      retainCount > 0 ? PLAN_STATUS.WINDING_DOWN : PLAN_STATUS.CANCELLED;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.recurring_service_requests.update({
+        where: { id },
+        data: {
+          status: nextStatus,
+          // The caregiver stays attached while there are sessions left to serve;
+          // releasing them here would orphan the very sessions being retained.
+          // The wind-down cron clears it once the last one lands.
+          nanny_id: retainCount > 0 ? req.nanny_id : null,
+          cancellation_reason: cancellationReason,
+          cancelled_at: now,
+          sessions_entitled_at_cancellation: entitlement.sessionsEntitled,
+          updated_at: now,
+        },
+      });
+
+      if (toCancelIds.length > 0) {
+        await tx.bookings.updateMany({
+          where: { id: { in: toCancelIds } },
+          data: {
+            status: BookingStatus.CANCELLED,
+            cancellation_reason: cancellationReason,
+          },
+        });
+      }
+
+      // Money for care that will never be delivered stops being owed. This is
+      // keyed on the *cycle*, not on the cancelled bookings: every cycle of a
+      // plan is billed against one anchor booking, so voiding by booking id
+      // (as the per-booking cancellation listener does) would find nothing.
+      //
+      // The matching fee is excluded — it bought a placement that was made, and
+      // is not a share of any month's care.
+      if (droppedCycles.length > 0) {
+        await tx.payment_installments.updateMany({
+          where: {
+            bookings: { recurring_request_id: id },
+            cycle_number: { in: droppedCycles },
+            kind: { not: MATCHING_FEE_KIND },
+            status: INSTALMENT_PENDING,
+          },
+          data: { status: INSTALMENT_VOID, updated_at: now },
+        });
+      }
+    });
+
+    // One event for the whole plan. Emitting a per-booking cancellation instead
+    // would email both parties once per dropped session.
+    this.eventEmitter.emit(
+      BOOKING_EVENTS.PLAN_WOUND_DOWN,
+      new PlanWoundDownEvent(
+        id,
+        parentId,
+        req.nanny_id,
+        toCancelIds,
+        retainCount,
+        cancellationReason,
+      ),
+    );
+
+    this.sseService.emitToUsers(
+      [parentId, req.nanny_id].filter(Boolean) as string[],
+      {
+        type: SSE_EVENTS.REQUEST_CANCELLED,
+        data: {
+          planId: id,
+          status: nextStatus,
+          cancelledSessions: toCancelIds.length,
+          retainedSessions: retainCount,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    );
+
+    this.logger.log(
+      `Recurring request ${id} cancelled by parent ${parentId}; ${toCancelIds.length} sessions cancelled, ${retainCount} paid-for sessions retained (entitled ${entitlement.sessionsEntitled}, delivered ${entitlement.sessionsDelivered}).`,
+    );
+    return {
+      success: true,
+      cancelledSessions: toCancelIds.length,
+      retainedSessions: retainCount,
+      status: nextStatus,
+    };
+  }
+
+  /**
+   * Write the sessions a parent has paid for but that generation has not reached
+   * yet, so cancellation can hand them over rather than forfeit them.
+   *
+   * Dates continue on from the last one already on the calendar and follow the
+   * plan's own recurrence, capped by the parent's end date. Staffed with the
+   * plan's caregiver and confirmed outright — this care is already bought.
+   */
+  private async generateShortfallSessions(
+    req: {
+      id: string;
+      parent_id: string;
+      nanny_id: string | null;
+      category: string | null;
+      start_date: Date;
+      end_date: Date | null;
+      recurrence_type: string;
+      recurrence_pattern: unknown;
+      start_time: Date;
+      duration_hours: unknown;
+    },
+    existing: { start_time: Date }[],
+    shortfall: number,
+    now: Date,
+  ): Promise<{ id: string; start_time: Date; nanny_id: string | null }[]> {
+    const lastKnown =
+      existing.length > 0 ? existing[existing.length - 1].start_time : now;
+    const from = new Date(lastKnown.getTime() + DAY_MS);
+
+    // Enough runway to find `shortfall` more dates whatever the pattern's
+    // density, without walking the calendar indefinitely.
+    const horizon = TimeUtils.addMonths(from, Math.max(1, Math.ceil(shortfall / 4) + 1));
+    const until =
+      req.end_date && new Date(req.end_date) < horizon ? new Date(req.end_date) : horizon;
+
+    let dates: Date[];
+    try {
+      dates = this.generateDates(
+        from,
+        until,
+        req.recurrence_type as RecurrenceType,
+        req.recurrence_pattern,
+        1,
+      ).slice(0, shortfall);
+    } catch (err) {
+      this.logger.error(
+        `Could not generate shortfall sessions for plan ${req.id}; retaining only what is already scheduled.`,
+        err as Error,
+      );
+      return [];
+    }
+
+    if (dates.length === 0) return [];
+
+    const startTimeStr =
+      req.start_time instanceof Date
+        ? req.start_time.toLocaleTimeString("en-GB", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          })
+        : String(req.start_time).substring(0, 5);
+
+    const created: { id: string; start_time: Date; nanny_id: string | null }[] = [];
+    for (const date of dates) {
+      const dateStr = date.toISOString().split("T")[0];
+      const startTimestamp = TimeUtils.combineDateAndTime(dateStr, startTimeStr);
+      const booking = await this.prisma.bookings.create({
+        data: {
+          parent_id: req.parent_id,
+          recurring_request_id: req.id,
+          nanny_id: req.nanny_id,
+          status: BookingStatus.CONFIRMED,
+          start_time: startTimestamp,
+          end_time: TimeUtils.getEndTime(startTimestamp, Number(req.duration_hours)),
+          tags: ["recurring", `category:${req.category}`],
+        },
+        select: { id: true, start_time: true, nanny_id: true },
+      });
+      created.push(booking);
     }
 
     this.logger.log(
-      `Recurring request ${id} cancelled by parent ${parentId}; ${cancelledBookings.count} future sessions cancelled.`,
+      `Generated ${created.length} paid-for session(s) for plan ${req.id} that cancellation would otherwise have forfeited.`,
     );
-    return { success: true, cancelledSessions: cancelledBookings.count };
+    return created;
   }
 
   async findBookingsForRequest(

@@ -18,7 +18,8 @@ import {
 } from './utils/pricing.utils';
 
 /** `payment_installments.kind` for the one-off placement fee. */
-export const MATCHING_FEE_KIND = 'matching_fee';
+import { MATCHING_FEE_KIND } from '../constants';
+export { MATCHING_FEE_KIND };
 
 /**
  * The matching fee's cycle number. Deliberately outside the 1..N monthly cycles:

@@ -6,18 +6,24 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { TimeUtils } from '../common/utils/time.utils';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
 import { BookingStatus } from '../common/constants/booking-status.enum';
-import { cycleWindow } from '../common/utils/pricing.utils';
+import {
+  cycleWindow,
+  cycleNumberFor,
+  MAX_CYCLE_LOOKAHEAD,
+} from '../common/utils/pricing.utils';
 import { PaymentsService } from '../payments/payments.service';
+import {
+  PLAN_STATUS,
+  PLAN_STATUSES_GENERATING,
+} from '../common/constants/plan-status.enum';
+import { SseService } from '../sse/sse.service';
+import { SSE_EVENTS } from '../events/sse-event.types';
 
 // If generation has been stuck (latest booking further in the past than this)
 // for a plan, stop retrying it automatically and flag it for the parent.
 const STUCK_GENERATION_DAYS = 14;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-// A plan is not allowed to roll forever while we search for the cycle a date
-// falls in; well past any sold term, so only a corrupt anchor date hits it.
-const MAX_CYCLE_LOOKAHEAD = 120;
 
 // How far ahead a cycle is opened for payment. A parent should be able to settle
 // next month's advance before that month's care begins, not on the morning of.
@@ -32,6 +38,7 @@ export class RecurringRequestsCron {
     private readonly recurringRequestsService: RecurringRequestsService,
     private readonly notificationsService: NotificationsService,
     private readonly paymentsService: PaymentsService,
+    private readonly sseService: SseService,
   ) {}
 
   /**
@@ -47,7 +54,10 @@ export class RecurringRequestsCron {
   async handleCycleBilling() {
     const plans = await this.prisma.recurring_service_requests.findMany({
       where: {
-        status: 'active',
+        // Only a live plan bills. A winding-down plan is excluded deliberately:
+        // its remaining sessions are already paid for, so opening another cycle
+        // would charge a parent who has cancelled for care they never asked for.
+        status: PLAN_STATUS.ACTIVE,
         // Nothing is owed for a plan nobody is serving yet.
         nanny_id: { not: null },
       },
@@ -88,9 +98,10 @@ export class RecurringRequestsCron {
 
     const stale = await this.prisma.recurring_service_requests.findMany({
       where: {
-        status: { in: ['active', 'pending'] },
+        status: { in: PLAN_STATUSES_GENERATING },
         start_date: { lt: startOfToday },
-        // Nobody is serving this plan.
+        // Nobody is serving this plan. A winding-down plan keeps its caregiver
+        // until its last retained session lands, so it can never match here.
         nanny_id: null,
       },
       select: { id: true, parent_id: true },
@@ -101,12 +112,15 @@ export class RecurringRequestsCron {
         await this.prisma.$transaction([
           this.prisma.recurring_service_requests.update({
             where: { id: req.id },
-            data: { status: 'expired' },
+            data: { status: PLAN_STATUS.EXPIRED },
           }),
           // Leave no orphaned sessions behind that can never be served.
           this.prisma.bookings.updateMany({
-            where: { recurring_request_id: req.id, status: { not: 'CANCELLED' } },
-            data: { status: 'CANCELLED' },
+            where: {
+              recurring_request_id: req.id,
+              status: { not: BookingStatus.CANCELLED },
+            },
+            data: { status: BookingStatus.CANCELLED },
           }),
         ]);
 
@@ -126,21 +140,73 @@ export class RecurringRequestsCron {
   }
 
   /**
-   * Which natural cycle of a plan a given date falls in, and that cycle's
-   * exclusive end.
+   * Close out plans that were cancelled but still owed the parent sessions.
    *
-   * Cycles are anchored on the plan's start date — a plan beginning 4 Sep has
-   * cycles 4 Sep–3 Oct, 4 Oct–3 Nov, and so on — so month lengths vary and the
-   * anchor day never drifts.
+   * A wound-down plan keeps its caregiver so the sessions already paid for can
+   * actually be served. Once the last of them is delivered there is nothing left
+   * to serve, so the plan finishes and the caregiver is released.
+   *
+   * Keyed on the last remaining session's *status*, not on its start time having
+   * passed: a session that is still `IN_PROGRESS` is not finished, and completing
+   * the plan out from under it would release the caregiver mid-shift.
    */
-  private cycleFor(planStart: Date, date: Date): { number: number; end: Date } {
-    for (let n = 1; n <= MAX_CYCLE_LOOKAHEAD; n++) {
-      const { end } = cycleWindow(planStart, n);
-      if (date < end) return { number: n, end };
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleWindDownCompletion() {
+    const plans = await this.prisma.recurring_service_requests.findMany({
+      where: { status: PLAN_STATUS.WINDING_DOWN },
+      select: { id: true, parent_id: true },
+    });
+
+    for (const plan of plans) {
+      try {
+        const outstanding = await this.prisma.bookings.count({
+          where: {
+            recurring_request_id: plan.id,
+            status: {
+              in: [
+                BookingStatus.REQUESTED,
+                BookingStatus.CONFIRMED,
+                BookingStatus.IN_PROGRESS,
+              ],
+            },
+          },
+        });
+        if (outstanding > 0) continue;
+
+        await this.prisma.recurring_service_requests.update({
+          where: { id: plan.id },
+          data: {
+            status: PLAN_STATUS.COMPLETED,
+            // Nothing left to serve — the caregiver is free.
+            nanny_id: null,
+            updated_at: new Date(),
+          },
+        });
+
+        await this.notificationsService
+          .createNotification(
+            plan.parent_id,
+            'Recurring plan closed',
+            'The last session on your cancelled plan has been delivered, so the plan is now closed. You can create a new plan at any time.',
+            'info',
+            'recurring_request',
+            plan.id,
+          )
+          .catch((err) =>
+            this.logger.error(`Failed to notify parent of plan ${plan.id} closing`, err),
+          );
+
+        this.sseService.emitToUser(plan.parent_id, {
+          type: SSE_EVENTS.REQUEST_CANCELLED,
+          data: { planId: plan.id, status: PLAN_STATUS.COMPLETED },
+          timestamp: new Date().toISOString(),
+        });
+
+        this.logger.log(`Wound-down plan ${plan.id} completed; caregiver released.`);
+      } catch (err) {
+        this.logger.error(`Failed to complete wound-down plan ${plan.id}`, err as Error);
+      }
     }
-    // Anchor is implausibly far in the past; fall back to a single month from
-    // the date itself so generation still makes progress rather than stalling.
-    return { number: MAX_CYCLE_LOOKAHEAD, end: TimeUtils.addMonths(date, 1) };
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
@@ -150,7 +216,9 @@ export class RecurringRequestsCron {
     try {
       const activeRequests = await this.prisma.recurring_service_requests.findMany({
         where: {
-          status: { in: ['active', 'pending'] }
+          // `winding_down` is absent by design: a cancelled plan keeps the
+          // sessions it has already paid for, but must never grow new ones.
+          status: { in: PLAN_STATUSES_GENERATING },
         },
         include: {
           bookings: {
@@ -179,7 +247,7 @@ export class RecurringRequestsCron {
         if (daysUntilLatestBooking < -STUCK_GENERATION_DAYS) {
           await this.prisma.recurring_service_requests.update({
             where: { id: req.id },
-            data: { status: 'error' },
+            data: { status: PLAN_STATUS.ERROR },
           });
           await this.notificationsService.createNotification(
             req.parent_id,
@@ -201,7 +269,7 @@ export class RecurringRequestsCron {
           // date, not by a flat 30 days. A 30-day step drifts off the anchor —
           // after a few months a plan that began on the 4th is generating from
           // the 1st — and it under-generates every 31-day month.
-          const cycle = this.cycleFor(req.start_date, nextStartDate);
+          const cycle = cycleNumberFor(req.start_date, nextStartDate);
 
           // The sold term is a count of natural months. Plans predating the
           // column (no duration stored) keep rolling indefinitely as before,

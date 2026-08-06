@@ -22,6 +22,10 @@ import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { PaymentsService } from "../payments/payments.service";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import {
+  PLAN_STATUS,
+  PLAN_STATUSES_GENERATING,
+} from "../common/constants/plan-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { PaginationDto } from "./dto/pagination.dto";
 import { AdminAuditService } from "./admin-audit.service";
@@ -189,8 +193,10 @@ export class AdminService {
       // flip to "active" once a nanny is attached (see manualAssign), so both
       // states can still hold unassigned sessions. Cancelled/expired/errored
       // plans are excluded outright. Staffing is a plan-level fact now, so an
-      // unassigned plan is simply one with no nanny_id.
-      where: { status: { in: ["pending", "active"] }, nanny_id: null },
+      // unassigned plan is simply one with no nanny_id — which is also what
+      // keeps a wound-down plan out of this queue: it holds onto its caregiver
+      // until the sessions the parent already paid for have been served.
+      where: { status: { in: PLAN_STATUSES_GENERATING }, nanny_id: null },
       include: {
         users: {
           select: {
@@ -659,7 +665,7 @@ export class AdminService {
           // that someone is serving it.
           await tx.recurring_service_requests.update({
             where: { id: requestId },
-            data: { status: "active", nanny_id: nannyId },
+            data: { status: PLAN_STATUS.ACTIVE, nanny_id: nannyId },
           });
           await tx.bookings.updateMany({
             where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },

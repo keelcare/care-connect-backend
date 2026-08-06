@@ -6,7 +6,8 @@ import {
   BookingCompletedEvent, 
   BookingCancelledEvent, 
   BookingRescheduledEvent,
-  BOOKING_EVENTS 
+  PlanWoundDownEvent,
+  BOOKING_EVENTS
 } from "../events/booking.events";
 import { ChatService } from "../../chat/chat.service";
 import { NotificationsService } from "../../notifications/notifications.service";
@@ -18,9 +19,11 @@ import { PaymentsService } from "../../payments/payments.service";
 import { BookingStatus } from "../../common/constants/booking-status.enum";
 import {
   MANUAL_PENDING_PROVIDER,
+  MATCHING_FEE_KIND,
   INSTALMENT_PENDING,
   INSTALMENT_VOID,
 } from "../../constants";
+import { Prisma } from "@prisma/client";
 
 @Injectable()
 export class BookingListeners {
@@ -107,17 +110,28 @@ export class BookingListeners {
     // Every captured charge on the booking moves to pending_release, not just one:
     // a split cycle settles through two payment rows, and releasing only whichever
     // came back first would leave the caregiver's other half permanently unaccrued.
+    // The matching fee is excluded from both reads. It is the platform's charge for
+    // making the match, collected before the caregiver existed and deducted from the
+    // first cycle — so it is neither care the caregiver is owed for nor evidence the
+    // session has been paid for. Counting it here is what left a one-time booking
+    // silently "settled" on ₹249: the fee accrued as the payout, the placeholder for
+    // the session's real value was never written, and `paymentDue` came out false.
+    const notMatchingFee = {
+      payment_installments: { none: { kind: MATCHING_FEE_KIND } },
+    } satisfies Prisma.paymentsWhereInput;
+
     const captured = await this.prisma.payments.findMany({
       where: {
         booking_id: booking.id,
         provider: { not: MANUAL_PENDING_PROVIDER },
         status: "captured",
+        ...notMatchingFee,
       },
       orderBy: { created_at: "asc" },
     });
 
     const existingPayment = await this.prisma.payments.findFirst({
-      where: { booking_id: booking.id },
+      where: { booking_id: booking.id, ...notMatchingFee },
       orderBy: { created_at: "asc" },
     });
 
@@ -274,6 +288,108 @@ export class BookingListeners {
     await this.chatService.deleteChatByBookingId(booking.id).catch(err =>
       this.logger.error(`Failed to delete chat for cancelled booking ${booking.id}: ${err.message}`)
     );
+  }
+
+  /**
+   * A whole recurring plan wound down: the sessions the parent had not paid for
+   * were cancelled, the ones they had are kept.
+   *
+   * The per-booking cancellation handler above is deliberately *not* reused here.
+   * It emails both parties and deletes a chat per booking, which for a plan
+   * dropping forty sessions means forty emails to the same two people. This says
+   * it once, and cleans up the chats in a single pass.
+   */
+  @OnEvent(BOOKING_EVENTS.PLAN_WOUND_DOWN)
+  async handlePlanWoundDown(event: PlanWoundDownEvent) {
+    const { planId, parentId, nannyId, cancelledBookingIds, retainedCount, reason } = event;
+    this.logger.log(
+      `Handling plan.wound_down for plan ${planId}: ${cancelledBookingIds.length} cancelled, ${retainedCount} retained.`,
+    );
+
+    const dropped = cancelledBookingIds.length;
+    const kept =
+      retainedCount > 0
+        ? ` The ${retainedCount} session${retainedCount === 1 ? "" : "s"} you have already paid for ${retainedCount === 1 ? "remains" : "remain"} scheduled.`
+        : "";
+
+    // The parent was never told their own plan had ended — only the caregiver
+    // was. They get the summary, and the reassurance that paid-for care stands.
+    await this.notificationsService
+      .createNotification(
+        parentId,
+        "Recurring plan cancelled",
+        `Your recurring plan has been cancelled and ${dropped} upcoming session${dropped === 1 ? "" : "s"} removed.${kept}`,
+        retainedCount > 0 ? "info" : "warning",
+        "recurring_request",
+        planId,
+      )
+      .catch((err) =>
+        this.logger.error(`Failed to notify parent of plan wind-down: ${err.message}`),
+      );
+
+    if (nannyId) {
+      await this.notificationsService
+        .createNotification(
+          nannyId,
+          "Recurring plan cancelled",
+          retainedCount > 0
+            ? `A parent has cancelled their recurring plan. ${dropped} upcoming session${dropped === 1 ? "" : "s"} were removed from your schedule; ${retainedCount} already-paid session${retainedCount === 1 ? "" : "s"} remain assigned to you.`
+            : `A parent has cancelled their recurring plan. The ${dropped} upcoming session${dropped === 1 ? "" : "s"} assigned to you have been removed from your schedule.`,
+          "warning",
+          "recurring_request",
+          planId,
+        )
+        .catch((err) =>
+          this.logger.error(`Failed to notify nanny of plan wind-down: ${err.message}`),
+        );
+    }
+
+    const [parentUser, nannyUser] = await Promise.all([
+      this.prisma.users.findUnique({ where: { id: parentId }, include: { profiles: true } }),
+      nannyId
+        ? this.prisma.users.findUnique({ where: { id: nannyId }, include: { profiles: true } })
+        : null,
+    ]);
+
+    const parentName =
+      `${parentUser?.profiles?.first_name || ""} ${parentUser?.profiles?.last_name || ""}`.trim() ||
+      "Parent";
+    const nannyName =
+      `${nannyUser?.profiles?.first_name || ""} ${nannyUser?.profiles?.last_name || ""}`.trim() ||
+      "Nanny";
+    const summaryReason = reason || "Recurring plan cancelled by parent";
+
+    // One email each, describing the plan — not one per dropped session.
+    if (nannyUser?.email) {
+      this.mailService
+        .sendCancellationEmail(nannyUser.email, nannyName, "nanny", {
+          date: `${dropped} upcoming session${dropped === 1 ? "" : "s"}`,
+          reason: summaryReason,
+          otherPartyName: parentName,
+          cancelledBy: "parent",
+        })
+        .catch((err) => this.logger.error(`Email fail: ${err.message}`));
+    }
+    if (parentUser?.email) {
+      this.mailService
+        .sendCancellationEmail(parentUser.email, parentName, "parent", {
+          date: `${dropped} upcoming session${dropped === 1 ? "" : "s"}`,
+          reason: summaryReason,
+          otherPartyName: nannyName,
+          cancelledBy: "parent",
+        })
+        .catch((err) => this.logger.error(`Email fail: ${err.message}`));
+    }
+
+    // Chats belong to the dropped sessions only — a retained session still needs
+    // its thread, because the caregiver is still turning up for it.
+    for (const bookingId of cancelledBookingIds) {
+      await this.chatService
+        .deleteChatByBookingId(bookingId)
+        .catch((err) =>
+          this.logger.error(`Failed to delete chat for cancelled booking ${bookingId}: ${err.message}`),
+        );
+    }
   }
 
   @OnEvent(BOOKING_EVENTS.RESCHEDULED)

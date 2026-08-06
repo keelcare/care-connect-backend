@@ -1019,6 +1019,21 @@ model recurring_service_requests {
   /// stored explicitly so pricing never has to re-parse the pattern JSON.
   days_per_week        Int?
   max_hourly_rate      Decimal?  @db.Decimal(10, 2)
+
+  /// Why and when the plan was ended. Previously only written onto the individual
+  /// `bookings` rows, so "when was this plan cancelled" could not be answered
+  /// without joining sessions that eventually age out of relevance.
+  cancellation_reason  String?
+  cancelled_at         DateTime? @db.Timestamptz(6)
+  /// Sessions the parent had paid for at the instant of cancellation, frozen.
+  ///
+  /// Entitlement is otherwise derived live from `payment_installments`, which is
+  /// correct right up until cancellation and wrong immediately after: a later
+  /// refund flips a captured installment and would retroactively shrink a number
+  /// the parent was already promised. The retained sessions themselves need no
+  /// separate record — the surviving non-CANCELLED bookings are that record.
+  sessions_entitled_at_cancellation Int?
+
   created_at           DateTime? @default(now()) @db.Timestamptz(6)
   updated_at           DateTime? @default(now()) @db.Timestamptz(6)
 

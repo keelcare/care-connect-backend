@@ -4,22 +4,63 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AddressesService } from '../addresses/addresses.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PricingEngineService } from '../common/pricing.service';
+import { PlanEntitlementService } from '../common/plan-entitlement.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { SseService } from '../sse/sse.service';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
 
 describe('RecurringRequestsService', () => {
   let service: RecurringRequestsService;
 
   const mockPrisma = {
-    recurring_service_requests: { findMany: jest.fn() },
-    bookings: { findFirst: jest.fn() },
+    recurring_service_requests: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    bookings: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      create: jest.fn(),
+      updateMany: jest.fn(),
+      groupBy: jest.fn(),
+    },
+    payment_installments: { updateMany: jest.fn() },
+    $transaction: jest.fn(),
   };
 
   const mockPricing = {
     calculateCost: jest.fn(),
+    prefetchServiceCategories: jest.fn(),
   };
+
+  const noEntitlement = {
+    sessionsEntitled: 0,
+    sessionsDelivered: 0,
+    sessionsRemaining: 0,
+    cycles: [],
+  };
+
+  const mockEntitlement = {
+    computeEntitlement: jest.fn(),
+    computeEntitlementMany: jest.fn(),
+    countDelivered: jest.fn(),
+    droppedCyclesAfter: jest.fn(),
+  };
+
+  const mockEmitter = { emit: jest.fn() };
+  const mockSse = { emitToUser: jest.fn(), emitToUsers: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockPricing.prefetchServiceCategories.mockResolvedValue(undefined);
+    mockEntitlement.computeEntitlementMany.mockResolvedValue(new Map());
+    mockEntitlement.computeEntitlement.mockResolvedValue(noEntitlement);
+    mockEntitlement.droppedCyclesAfter.mockReturnValue([]);
+    mockPrisma.bookings.groupBy.mockResolvedValue([]);
+    mockPrisma.bookings.count.mockResolvedValue(0);
+    // The cancel path runs its writes inside an interactive transaction.
+    mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+      typeof fn === 'function' ? fn(mockPrisma) : Promise.all(fn),
+    );
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RecurringRequestsService,
@@ -27,6 +68,9 @@ describe('RecurringRequestsService', () => {
         { provide: AddressesService, useValue: { resolveForUser: jest.fn() } },
         { provide: NotificationsService, useValue: { createNotification: jest.fn() } },
         { provide: PricingEngineService, useValue: mockPricing },
+        { provide: PlanEntitlementService, useValue: mockEntitlement },
+        { provide: EventEmitter2, useValue: mockEmitter },
+        { provide: SseService, useValue: mockSse },
       ],
     }).compile();
 
@@ -195,6 +239,248 @@ describe('RecurringRequestsService', () => {
 
       expect(result.status).toBe('pending');
       expect(result.nanny).toBeNull();
+    });
+
+    it('reports delivered sessions from the server, not from the booking rows', async () => {
+      // This endpoint selects only `start_time` on its bookings, so the client
+      // could never count COMPLETED ones itself — its progress bar sat at zero
+      // for the life of every plan. The count has to come off the entitlement.
+      mockPrisma.recurring_service_requests.findMany.mockResolvedValue([plan()]);
+      mockPricing.calculateCost.mockResolvedValue({ totalAmount: 15840, appliedRate: 99 });
+      mockEntitlement.computeEntitlementMany.mockResolvedValue(
+        new Map([
+          ['plan-1', { sessionsEntitled: 11, sessionsDelivered: 3, sessionsRemaining: 8, cycles: [] }],
+        ]),
+      );
+      mockPrisma.bookings.groupBy.mockResolvedValue([
+        { recurring_request_id: 'plan-1', _count: { _all: 19 } },
+      ]);
+
+      const [result] = await service.findAllByParent('parent-1');
+
+      expect(result.sessions_delivered).toBe(3);
+      expect(result.sessions_entitled).toBe(11);
+      expect(result.sessions_remaining).toBe(8);
+      expect(result.sessions_scheduled).toBe(19);
+    });
+  });
+
+  describe('cancel', () => {
+    const NOW = new Date('2026-09-10T00:00:00.000Z');
+
+    function planRow(over: Record<string, unknown> = {}) {
+      return {
+        id: 'plan-1',
+        parent_id: 'parent-1',
+        nanny_id: 'nanny-1',
+        status: 'active',
+        category: 'ST',
+        start_date: new Date('2026-09-01'),
+        end_date: null,
+        plan_duration_months: 1,
+        recurrence_type: 'WEEKLY',
+        recurrence_pattern: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
+        start_time: new Date('2026-09-01T04:30:00.000Z'),
+        duration_hours: 8,
+        ...over,
+      };
+    }
+
+    /** `n` future sessions, a day apart, ordered as the query returns them. */
+    function futureSessions(n: number) {
+      return Array.from({ length: n }, (_, i) => ({
+        id: `b${i + 1}`,
+        start_time: new Date(NOW.getTime() + (i + 1) * 24 * 60 * 60 * 1000),
+        nanny_id: 'nanny-1',
+      }));
+    }
+
+    function setup(over: {
+      plan?: Record<string, unknown>;
+      entitled?: number;
+      delivered?: number;
+      future?: number;
+    } = {}) {
+      const entitled = over.entitled ?? 0;
+      const delivered = over.delivered ?? 0;
+      mockPrisma.recurring_service_requests.findUnique.mockResolvedValue(
+        planRow(over.plan),
+      );
+      mockEntitlement.computeEntitlement.mockResolvedValue({
+        sessionsEntitled: entitled,
+        sessionsDelivered: delivered,
+        sessionsRemaining: Math.max(0, entitled - delivered),
+        cycles: [],
+      });
+      mockPrisma.bookings.findMany.mockResolvedValue(futureSessions(over.future ?? 0));
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.recurring_service_requests.update.mockResolvedValue({});
+    }
+
+    it('keeps the sessions the parent already paid for', async () => {
+      // The bug this replaces: 20 sessions, 3 delivered, the advance paid — the
+      // parent lost all 17 remaining instead of keeping the 7 they had bought.
+      setup({ entitled: 10, delivered: 3, future: 17 });
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(result.retainedSessions).toBe(7);
+      expect(result.cancelledSessions).toBe(10);
+      expect(result.status).toBe('winding_down');
+    });
+
+    it('cancels the sessions beyond the retained ones, earliest kept first', async () => {
+      setup({ entitled: 10, delivered: 3, future: 17 });
+
+      await service.cancel('plan-1', 'parent-1');
+
+      const cancelled = mockPrisma.bookings.updateMany.mock.calls[0][0];
+      // b1..b7 are the seven earliest and stay; b8 onwards go.
+      expect(cancelled.where.id.in).toEqual([
+        'b8', 'b9', 'b10', 'b11', 'b12', 'b13', 'b14', 'b15', 'b16', 'b17',
+      ]);
+      expect(cancelled.data.status).toBe('CANCELLED');
+    });
+
+    it('keeps the caregiver attached while sessions remain to be served', async () => {
+      // Releasing the caregiver here would orphan the very sessions being kept.
+      setup({ entitled: 10, delivered: 3, future: 17 });
+
+      await service.cancel('plan-1', 'parent-1');
+
+      const update = mockPrisma.recurring_service_requests.update.mock.calls[0][0];
+      expect(update.data.nanny_id).toBe('nanny-1');
+      expect(update.data.status).toBe('winding_down');
+      expect(update.data.sessions_entitled_at_cancellation).toBe(10);
+      expect(update.data.cancellation_reason).toBeTruthy();
+      expect(update.data.cancelled_at).toBeInstanceOf(Date);
+    });
+
+    it('cancels outright and releases the caregiver when nothing was paid for', async () => {
+      setup({ entitled: 0, delivered: 0, future: 12 });
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(result.retainedSessions).toBe(0);
+      expect(result.cancelledSessions).toBe(12);
+      expect(result.status).toBe('cancelled');
+      const update = mockPrisma.recurring_service_requests.update.mock.calls[0][0];
+      expect(update.data.nanny_id).toBeNull();
+    });
+
+    it('keeps everything when the whole plan has been paid for', async () => {
+      setup({ entitled: 22, delivered: 5, future: 17 });
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(result.cancelledSessions).toBe(0);
+      expect(result.retainedSessions).toBe(17);
+      expect(mockPrisma.bookings.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('generates the paid-for sessions that generation had not reached yet', async () => {
+      // Generation only ever runs a cycle ahead. Clamping to what happens to be
+      // on the calendar would forfeit sessions the parent has already bought.
+      setup({ entitled: 12, delivered: 0, future: 8 });
+      let created = 0;
+      mockPrisma.bookings.create.mockImplementation(async () => ({
+        id: `gen${++created}`,
+        start_time: new Date(NOW.getTime() + (100 + created) * 24 * 60 * 60 * 1000),
+        nanny_id: 'nanny-1',
+      }));
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(mockPrisma.bookings.create).toHaveBeenCalledTimes(4);
+      expect(result.retainedSessions).toBe(12);
+      expect(result.cancelledSessions).toBe(0);
+    });
+
+    it('voids what is owed for months that are no longer being served', async () => {
+      setup({ entitled: 10, delivered: 3, future: 17 });
+      mockEntitlement.droppedCyclesAfter.mockReturnValue([2, 3]);
+
+      await service.cancel('plan-1', 'parent-1');
+
+      const voided = mockPrisma.payment_installments.updateMany.mock.calls[0][0];
+      expect(voided.where.cycle_number).toEqual({ in: [2, 3] });
+      expect(voided.where.status).toBe('pending');
+      expect(voided.data.status).toBe('void');
+      // Keyed on the plan, not on the cancelled booking ids: every cycle is
+      // billed against one anchor booking, so voiding by booking id finds nothing.
+      expect(voided.where.bookings).toEqual({ recurring_request_id: 'plan-1' });
+      // The matching fee bought a placement that was made.
+      expect(voided.where.kind).toEqual({ not: 'matching_fee' });
+    });
+
+    it('leaves installments alone when no whole month was dropped', async () => {
+      setup({ entitled: 22, delivered: 0, future: 22 });
+      mockEntitlement.droppedCyclesAfter.mockReturnValue([]);
+
+      await service.cancel('plan-1', 'parent-1');
+
+      expect(mockPrisma.payment_installments.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('announces the wind-down once, not once per cancelled session', async () => {
+      // The per-booking cancellation listener emails both parties. Reusing it
+      // here would send one email per dropped session.
+      setup({ entitled: 10, delivered: 3, future: 17 });
+
+      await service.cancel('plan-1', 'parent-1');
+
+      expect(mockEmitter.emit).toHaveBeenCalledTimes(1);
+      const [eventName, payload] = mockEmitter.emit.mock.calls[0];
+      expect(eventName).toBe('plan.wound_down');
+      expect(payload.cancelledBookingIds).toHaveLength(10);
+      expect(payload.retainedCount).toBe(7);
+      expect(payload.parentId).toBe('parent-1');
+      expect(payload.nannyId).toBe('nanny-1');
+      expect(mockSse.emitToUsers).toHaveBeenCalledTimes(1);
+    });
+
+    it('is idempotent when the plan is already winding down', async () => {
+      // A double-tapped button, or a retry after a dropped response, should see
+      // the same answer as the first call rather than an error about a
+      // cancellation that did in fact work.
+      setup({ plan: { status: 'winding_down' } });
+      mockPrisma.bookings.count.mockResolvedValue(7);
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(result).toEqual({ success: true, cancelledSessions: 0, retainedSessions: 7 });
+      expect(mockPrisma.recurring_service_requests.update).not.toHaveBeenCalled();
+      expect(mockEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it.each(['cancelled', 'completed', 'expired'])(
+      'refuses to cancel a plan that is already %s',
+      async (status) => {
+        setup({ plan: { status } });
+        await expect(service.cancel('plan-1', 'parent-1')).rejects.toThrow(
+          `This plan is already ${status}`,
+        );
+      },
+    );
+
+    it("refuses to cancel someone else's plan", async () => {
+      setup();
+      await expect(service.cancel('plan-1', 'intruder')).rejects.toThrow(
+        'You can only cancel your own recurring plans',
+      );
+    });
+
+    it('never touches sessions that were completed or are under way', async () => {
+      setup({ entitled: 10, delivered: 3, future: 17 });
+
+      await service.cancel('plan-1', 'parent-1');
+
+      const where = mockPrisma.bookings.findMany.mock.calls[0][0].where;
+      expect(where.status.notIn).toEqual(
+        expect.arrayContaining(['CANCELLED', 'COMPLETED', 'IN_PROGRESS']),
+      );
+      expect(where.start_time.gt).toBeInstanceOf(Date);
     });
   });
 });

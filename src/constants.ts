@@ -44,5 +44,14 @@ export const MANUAL_PENDING_PROVIDER = "manual_pending";
  */
 export const INSTALMENT_PENDING = "pending";
 export const INSTALMENT_PAID = "paid";
+/**
+ * `payment_installments.kind` for the one-off placement fee.
+ *
+ * Lives here rather than beside the pricing engine because the payout policy has
+ * to recognise it too: the fee is the platform's charge for making the match, not
+ * a share of anyone's care, and a rule that only the engine knows about is one the
+ * ledger contradicts.
+ */
+export const MATCHING_FEE_KIND = "matching_fee";
 export const INSTALMENT_VOID = "void";
 export const INSTALMENT_REFUNDED = "refunded";

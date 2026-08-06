@@ -1,7 +1,9 @@
 import {
   apportion,
   calculatePrice,
+  cycleNumberFor,
   cycleWindow,
+  MAX_CYCLE_LOOKAHEAD,
   isSplittable,
   planInstalments,
   resolveDaysPerWeek,
@@ -366,5 +368,40 @@ describe('cycleWindow — natural months', () => {
   it('does not drift as cycles roll forward', () => {
     const { start } = cycleWindow('2026-09-04', 7);
     expect(start.toISOString().slice(0, 10)).toBe('2027-03-04');
+  });
+});
+
+/**
+ * The inverse of `cycleWindow`, lifted out of the generation cron so entitlement
+ * can ask the same question in reverse — which cycle paid for this session? Two
+ * implementations would eventually disagree about a boundary date and hand a
+ * parent the wrong number of sessions.
+ */
+describe('cycleNumberFor', () => {
+  it('places the start date itself in cycle 1', () => {
+    expect(cycleNumberFor('2026-09-04', new Date('2026-09-04')).number).toBe(1);
+  });
+
+  it('places the day before the boundary in the cycle that is ending', () => {
+    expect(cycleNumberFor('2026-09-04', new Date('2026-10-03')).number).toBe(1);
+  });
+
+  it('places the boundary day itself in the next cycle', () => {
+    // The window is half-open, so 4 Oct starts cycle 2. Generating it as part of
+    // cycle 1 is what used to bill a month of 32 days.
+    expect(cycleNumberFor('2026-09-04', new Date('2026-10-04')).number).toBe(2);
+  });
+
+  it('round-trips against cycleWindow', () => {
+    for (let n = 1; n <= 6; n++) {
+      const { start } = cycleWindow('2026-09-04', n);
+      expect(cycleNumberFor('2026-09-04', start).number).toBe(n);
+    }
+  });
+
+  it('makes progress rather than stalling on an implausible anchor', () => {
+    const result = cycleNumberFor('1900-01-01', new Date('2026-09-04'));
+    expect(result.number).toBe(MAX_CYCLE_LOOKAHEAD);
+    expect(result.end).toBeInstanceOf(Date);
   });
 });

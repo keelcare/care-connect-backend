@@ -64,6 +64,38 @@ export function cycleWindow(
   };
 }
 
+/**
+ * A plan is not allowed to roll forever while we search for the cycle a date
+ * falls in; well past any sold term, so only a corrupt anchor date hits it.
+ */
+export const MAX_CYCLE_LOOKAHEAD = 120;
+
+/**
+ * The inverse of `cycleWindow`: which natural cycle of a plan a given date falls
+ * in, and that cycle's exclusive end.
+ *
+ * Cycles are anchored on the plan's start date — a plan beginning 4 Sep has
+ * cycles 4 Sep–3 Oct, 4 Oct–3 Nov, and so on — so month lengths vary and the
+ * anchor day never drifts.
+ *
+ * Shared rather than private to the generation cron because entitlement has to
+ * answer the same question in reverse (which cycle paid for this session?), and
+ * two implementations of "which cycle is this" would eventually disagree about
+ * a boundary date and hand a parent the wrong number of sessions.
+ */
+export function cycleNumberFor(
+  planStart: Date | string,
+  date: Date,
+): { number: number; end: Date } {
+  for (let n = 1; n <= MAX_CYCLE_LOOKAHEAD; n++) {
+    const { end } = cycleWindow(planStart, n);
+    if (date < end) return { number: n, end };
+  }
+  // Anchor is implausibly far in the past; fall back to a single month from the
+  // date itself so callers still make progress rather than stalling.
+  return { number: MAX_CYCLE_LOOKAHEAD, end: TimeUtils.addMonths(date, 1) };
+}
+
 /** Weekday name → `Date.getDay()` index, matching the pattern JSON parents send. */
 const DAY_INDEX: Record<string, number> = {
   Sun: 0,
