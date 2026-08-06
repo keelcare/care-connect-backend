@@ -7,6 +7,7 @@ import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
+import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 
 describe("PaymentsService", () => {
   let service: PaymentsService;
@@ -22,6 +23,7 @@ describe("PaymentsService", () => {
     bookings: {
       findUnique: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     payment_audit_log: {
       create: jest.fn(),
@@ -42,6 +44,7 @@ describe("PaymentsService", () => {
     payment_installments: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       updateMany: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
@@ -74,6 +77,10 @@ describe("PaymentsService", () => {
     sendInstallmentReminderEmail: jest.fn().mockResolvedValue(undefined),
   };
 
+  const mockBookingStatusLog = {
+    writeLog: jest.fn().mockResolvedValue(undefined),
+  };
+
   const mockPricingService = {
     calculateCost: jest.fn(),
     calculateAndSnapshot: jest.fn(),
@@ -91,9 +98,13 @@ describe("PaymentsService", () => {
     });
     mockPrisma.payment_installments.findFirst.mockResolvedValue(null);
     mockPrisma.payment_installments.count.mockResolvedValue(0);
+    // Nothing outstanding — so createOrder's "is this a fee-only charge?" probe
+    // does not authorise billing a booking with no caregiver on it.
+    mockPrisma.payment_installments.findMany.mockResolvedValue([]);
     mockPrisma.price_snapshots.findFirst.mockResolvedValue(null);
     mockPrisma.payment_plans.findUnique.mockResolvedValue(null);
     mockPrisma.bookings.findUnique.mockResolvedValue(null);
+    mockPrisma.bookings.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.users.findUnique.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -105,6 +116,7 @@ describe("PaymentsService", () => {
         { provide: PaymentAuditService, useValue: mockPaymentAuditService },
         { provide: PricingEngineService, useValue: mockPricingService },
         { provide: MailService, useValue: mockMailService },
+        { provide: BookingStatusLogService, useValue: mockBookingStatusLog },
         {
           provide: ConfigService,
           useValue: {
@@ -137,10 +149,11 @@ describe("PaymentsService", () => {
       status: "created",
     });
 
-    mockPrisma.bookings.update.mockResolvedValue({
+    mockPrisma.bookings.findUnique.mockResolvedValue({
       id: bookingId,
       parent_id: "parent-1",
       nanny_id: "nanny-1",
+      status: "CONFIRMED",
     });
 
     await (service as any).capturePaymentSuccess(
@@ -287,7 +300,7 @@ describe("PaymentsService", () => {
       );
 
       expect(mockPricingService.advancePaymentPlanTx).not.toHaveBeenCalled();
-      expect(mockPrisma.bookings.update).not.toHaveBeenCalled();
+      expect(mockPrisma.bookings.updateMany).not.toHaveBeenCalled();
       expect(mockPrisma.price_snapshots.updateMany).not.toHaveBeenCalled();
       // The parent is told what is left and when, not just that money arrived.
       expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
@@ -348,11 +361,11 @@ describe("PaymentsService", () => {
       mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.price_snapshots.findUnique.mockResolvedValue({ id: snapshotId, final_amount: 11880 });
       mockPrisma.payment_installments.count.mockResolvedValue(0);
-      mockPrisma.bookings.findUnique.mockResolvedValue({ id: bookingId, parent_id: "parent-1" });
-      mockPrisma.bookings.update.mockResolvedValue({
+      mockPrisma.bookings.findUnique.mockResolvedValue({
         id: bookingId,
         parent_id: "parent-1",
         nanny_id: "nanny-1",
+        status: "REQUESTED",
       });
 
       await (service as any).capturePaymentSuccess("order_bal", "p", "s", "api:verify_payment");
@@ -366,7 +379,49 @@ describe("PaymentsService", () => {
         "plan_1",
         0,
       );
-      expect(mockPrisma.bookings.update).toHaveBeenCalled();
+      // Settling a cycle confirms the booking; it never completes it. COMPLETED is
+      // the nanny's checkout to write, not the parent's card.
+      expect(mockPrisma.bookings.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: bookingId,
+          status: { in: ["requested", "CONFIRMED"] },
+        },
+        data: { status: "CONFIRMED" },
+      });
+      expect(mockPrisma.bookings.update).not.toHaveBeenCalled();
+    });
+
+    it("does not drag an in-progress booking back when a cycle is paid mid-session", async () => {
+      // The guarded where matches nothing, so the session's own status stands.
+      mockPrisma.payments.findUnique.mockResolvedValue({
+        id: "pay_mid",
+        order_id: "order_mid",
+        booking_id: bookingId,
+        amount: 5940,
+        status: "created",
+      });
+      mockPrisma.payment_installments.findFirst.mockResolvedValue(half(2));
+      mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.price_snapshots.findUnique.mockResolvedValue({ id: snapshotId, final_amount: 11880 });
+      mockPrisma.payment_installments.count.mockResolvedValue(0);
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.bookings.findUnique.mockResolvedValue({
+        id: bookingId,
+        parent_id: "parent-1",
+        nanny_id: "nanny-1",
+        status: "IN_PROGRESS",
+      });
+
+      await (service as any).capturePaymentSuccess("order_mid", "p", "s", "api:verify_payment");
+
+      expect(mockPrisma.bookings.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: ["requested", "CONFIRMED"] },
+          }),
+        }),
+      );
+      expect(mockBookingStatusLog.writeLog).not.toHaveBeenCalled();
     });
 
     it("does nothing twice when the webhook and verify race the same capture", async () => {
@@ -497,6 +552,89 @@ describe("PaymentsService", () => {
       await expect(
         service.createOrder(bookingId, "parent-1", "inst_1"),
       ).rejects.toThrow(/not found/i);
+    });
+  });
+
+  /**
+   * The matching fee is charged at request time, on its own cycle 0, against a
+   * booking that has no caregiver and no payment plan yet. It settles instantly —
+   * one instalment, nothing left pending — which used to walk it straight into the
+   * cycle-settled branch and mark the brand-new booking COMPLETED.
+   */
+  describe("matching fee", () => {
+    const bookingId = "book_fee";
+    const feeSnapshotId = "snap_fee";
+
+    const feeInstalment = {
+      id: "inst_fee",
+      booking_id: bookingId,
+      price_snapshot_id: feeSnapshotId,
+      cycle_number: 0,
+      installment_no: 1,
+      total_installments: 1,
+      kind: "matching_fee",
+      amount: 249,
+      subtotal_amount: 211,
+      gst_amount: 38,
+      status: "pending",
+      payment_id: "pay_fee",
+    };
+
+    beforeEach(() => {
+      mockPrisma.payments.findUnique.mockResolvedValue({
+        id: "pay_fee",
+        order_id: "order_fee",
+        booking_id: bookingId,
+        amount: 249,
+        status: "created",
+      });
+      mockPrisma.payment_installments.findFirst.mockResolvedValue(feeInstalment);
+      mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.price_snapshots.findUnique.mockResolvedValue({
+        id: feeSnapshotId,
+        cycle_number: 0,
+        final_amount: 249,
+        subtotal_amount: 211,
+        gst_amount: 38,
+        gst_percent_used: 18,
+      });
+      mockPrisma.payment_installments.count.mockResolvedValue(0);
+      mockPrisma.bookings.findUnique.mockResolvedValue({
+        id: bookingId,
+        parent_id: "parent-1",
+        nanny_id: null,
+        status: "requested",
+      });
+    });
+
+    it("leaves the booking's status alone — a paid fee is not delivered care", async () => {
+      await (service as any).capturePaymentSuccess("order_fee", "p", "s", "api:verify_payment");
+
+      expect(mockPrisma.bookings.updateMany).not.toHaveBeenCalled();
+      expect(mockPrisma.bookings.update).not.toHaveBeenCalled();
+      expect(mockBookingStatusLog.writeLog).not.toHaveBeenCalled();
+    });
+
+    it("does not consume a billing cycle", async () => {
+      // A plan exists by the time a later fee capture is retried; it must not move.
+      mockPrisma.payment_plans.findUnique.mockResolvedValue({
+        id: "plan_fee",
+        booking_id: bookingId,
+        cycles_completed: 0,
+        total_cycles: 6,
+      });
+
+      await (service as any).capturePaymentSuccess("order_fee", "p", "s", "api:verify_payment");
+
+      expect(mockPricingService.advancePaymentPlanTx).not.toHaveBeenCalled();
+    });
+
+    it("still marks its own snapshot charged", async () => {
+      await (service as any).capturePaymentSuccess("order_fee", "p", "s", "api:verify_payment");
+
+      expect(mockPrisma.price_snapshots.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: feeSnapshotId, status: "pending" } }),
+      );
     });
   });
 });

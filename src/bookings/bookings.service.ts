@@ -36,8 +36,10 @@ import {
 import {
   MANUAL_PENDING_PROVIDER,
   PaymentStatus,
+  INSTALMENT_PAID,
   INSTALMENT_PENDING,
 } from "../constants";
+import { MATCHING_FEE_KIND } from "../common/pricing.service";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -261,27 +263,51 @@ export class BookingsService {
         },
         select: { status: true },
       }),
-      this.prisma.payment_installments.count({
-        where: { booking_id: bookingId, status: INSTALMENT_PENDING },
-      }),
+      this.outstandingBookingIds([bookingId]),
     ]);
     return this.paymentStatusFromRows(
       rows.map((r) => r.status ?? ""),
-      outstanding > 0,
+      outstanding.has(bookingId),
     );
   }
 
   /**
-   * The set of these bookings that still owe money, for the batched list paths.
+   * The set of these bookings that are not yet fully paid, for both the single
+   * and the batched list paths — so the two can never disagree.
+   *
+   * A booking owes money in two ways. The obvious one is a pending instalment.
+   * The subtle one is a booking whose only settled instalment is the matching
+   * fee: that fee is raised and charged at request time, before any caregiver
+   * exists and therefore before the instalments for the care itself have been
+   * raised at all. Nothing is "pending" yet, so the fee alone would otherwise
+   * read as `paid` — hiding the real amount due and suppressing the prompt to
+   * pay it on every booking the parent has just created.
    */
   private async outstandingBookingIds(bookingIds: string[]): Promise<Set<string>> {
     if (bookingIds.length === 0) return new Set();
     const rows = await this.prisma.payment_installments.findMany({
-      where: { booking_id: { in: bookingIds }, status: INSTALMENT_PENDING },
-      select: { booking_id: true },
-      distinct: ["booking_id"],
+      where: { booking_id: { in: bookingIds } },
+      select: { booking_id: true, status: true, kind: true },
     });
-    return new Set(rows.map((r) => r.booking_id));
+
+    const outstanding = new Set<string>();
+    const settledCare = new Set<string>();
+    const settledFee = new Set<string>();
+
+    for (const row of rows) {
+      if (!row.booking_id) continue;
+      if (row.status === INSTALMENT_PENDING) {
+        outstanding.add(row.booking_id);
+      } else if (row.status === INSTALMENT_PAID) {
+        (row.kind === MATCHING_FEE_KIND ? settledFee : settledCare).add(row.booking_id);
+      }
+    }
+
+    for (const bookingId of settledFee) {
+      if (!settledCare.has(bookingId)) outstanding.add(bookingId);
+    }
+
+    return outstanding;
   }
 
   /**
@@ -290,9 +316,11 @@ export class BookingsService {
    * back to unpaid. A capture anywhere in the history wins; a refund means the
    * money went back; a failure is retryable; anything else is simply unpaid.
    *
-   * `hasOutstanding` is what keeps a split cycle honest: its advance is a real
-   * capture, but calling the booking `paid` while the balance is still owed would
-   * hide the amount due from every list and suppress the prompt to pay it.
+   * `hasOutstanding` is what keeps a part-paid booking honest: a split cycle's
+   * advance — or a matching fee paid before the care is even priced — is a real
+   * capture, but calling the booking `paid` while the rest is still owed would
+   * hide the amount due from every list and suppress the prompt to pay it. See
+   * `outstandingBookingIds` for what counts.
    */
   private paymentStatusFromRows(
     statuses: string[],

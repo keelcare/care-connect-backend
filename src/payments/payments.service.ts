@@ -15,9 +15,11 @@ import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";
 import {
   AdvancePaymentConfig,
+  MATCHING_FEE_CYCLE,
   MATCHING_FEE_KIND,
   PricingEngineService,
 } from "../common/pricing.service";
+import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 import { MailService } from "../mail/mail.service";
 import {
   MANUAL_PENDING_PROVIDER,
@@ -55,6 +57,7 @@ export class PaymentsService {
     private audit: PaymentAuditService,
     private pricingService: PricingEngineService,
     private mailService: MailService,
+    private bookingStatusLog: BookingStatusLogService,
   ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
@@ -831,6 +834,16 @@ export class PaymentsService {
         : 0;
       const cycleSettled = stillOwed === 0;
 
+      // The matching fee is not care. It is a one-off placement charge raised at
+      // confirmation, on its own cycle 0, against a booking that has no caregiver
+      // yet and usually no payment plan at all. It settles its own snapshot and
+      // stops there: it must not consume a billing cycle, and it must not move the
+      // booking's lifecycle status — which is what sent fee-paid bookings straight
+      // to COMPLETED.
+      const isMatchingFee = installment
+        ? installment.kind === MATCHING_FEE_KIND
+        : snapshot?.cycle_number === MATCHING_FEE_CYCLE;
+
       let updatedBooking = await tx.bookings.findUnique({
         where: { id: payment.booking_id },
       });
@@ -847,7 +860,7 @@ export class PaymentsService {
           });
         }
 
-        if (paymentPlan) {
+        if (paymentPlan && !isMatchingFee) {
           // Guarded on the cycle we believe we just finished, so a racing capture
           // cannot advance the plan a second time.
           await this.pricingService.advancePaymentPlanTx(
@@ -857,19 +870,45 @@ export class PaymentsService {
           );
         }
 
-        const newBookingStatus =
-          paymentPlan && paymentPlan.cycles_completed + 1 < paymentPlan.total_cycles
-            ? BookingStatus.CONFIRMED
-            : BookingStatus.COMPLETED;
+        if (!isMatchingFee) {
+          // Money arriving confirms a booking; it does not deliver the care.
+          // COMPLETED is terminal and belongs to completeBooking() (nanny checkout)
+          // and the stuck-in-progress sweep, which set actual_end_time and emit
+          // BOOKING_EVENTS.COMPLETED for payouts and review prompts. Paying for care
+          // that has not happened yet is not evidence it happened; how much has been
+          // paid is reported separately via the derived payment_status.
+          //
+          // Guarded on the statuses it may move from, so a cycle paid mid-session
+          // cannot drag an IN_PROGRESS booking backwards, and one paid late cannot
+          // resurrect a CANCELLED, EXPIRED or COMPLETED one.
+          const { count } = await tx.bookings.updateMany({
+            where: {
+              id: payment.booking_id,
+              status: { in: [BookingStatus.REQUESTED, BookingStatus.CONFIRMED] },
+            },
+            data: { status: BookingStatus.CONFIRMED },
+          });
 
-        updatedBooking = await tx.bookings.update({
-          where: { id: payment.booking_id },
-          data: { status: newBookingStatus },
-        });
+          if (count === 1 && updatedBooking?.status !== BookingStatus.CONFIRMED) {
+            await this.bookingStatusLog.writeLog(
+              tx,
+              payment.booking_id,
+              updatedBooking?.status ?? null,
+              BookingStatus.CONFIRMED,
+              { actorRole: "system", reason: "Payment captured" },
+            );
+          }
+
+          // Re-read so the post-commit notifications see the status just written —
+          // updateMany returns a count, not the row.
+          updatedBooking = await tx.bookings.findUnique({
+            where: { id: payment.booking_id },
+          });
+        }
       }
       // A part-paid cycle deliberately leaves booking status alone: capturing the
-      // advance of a final cycle would otherwise flip the booking to COMPLETED — a
-      // terminal state — with half the money still outstanding.
+      // advance of a final cycle would otherwise confirm a booking with half the
+      // money still outstanding.
 
       return {
         alreadyCaptured: false as const,

@@ -23,6 +23,10 @@ describe("BookingsService", () => {
     },
     payments: {
       create: jest.fn(),
+      findMany: jest.fn(),
+    },
+    payment_installments: {
+      findMany: jest.fn(),
     },
     jobs: {
       findUnique: jest.fn(),
@@ -65,7 +69,12 @@ describe("BookingsService", () => {
         { provide: MailService, useValue: {} },
         { provide: PaymentsService, useValue: {} },
       ],
-    }).compile();
+    })
+      // The service has grown collaborators this suite does not exercise
+      // (status log, pricing, progress reports, event emitter). Auto-stub them so
+      // adding one more never breaks the module from compiling.
+      .useMocker(() => ({}))
+      .compile();
 
     service = module.get<BookingsService>(BookingsService);
     prisma = module.get<PrismaService>(PrismaService);
@@ -77,6 +86,61 @@ describe("BookingsService", () => {
 
   it("should be defined", () => {
     expect(service).toBeDefined();
+  });
+
+  describe("derivePaymentStatus", () => {
+    const bookingId = "book_1";
+    const captured = [{ status: "captured" }];
+
+    const instalment = (over: Record<string, unknown>) => ({
+      booking_id: bookingId,
+      status: "paid",
+      kind: "cycle",
+      ...over,
+    });
+
+    it("reports a booking whose only settled instalment is the matching fee as partially paid", async () => {
+      // ₹249 has genuinely arrived, but the care itself has not even been priced
+      // yet — the cycle instalments are raised when a caregiver is assigned.
+      // Calling this `paid` would hide the real amount due from every list.
+      mockPrisma.payments.findMany.mockResolvedValue(captured);
+      mockPrisma.payment_installments.findMany.mockResolvedValue([
+        instalment({ kind: "matching_fee" }),
+      ]);
+
+      await expect(service.derivePaymentStatus(bookingId)).resolves.toBe(
+        "partially_paid",
+      );
+    });
+
+    it("reports paid once a care instalment is settled alongside the fee", async () => {
+      mockPrisma.payments.findMany.mockResolvedValue(captured);
+      mockPrisma.payment_installments.findMany.mockResolvedValue([
+        instalment({ kind: "matching_fee" }),
+        instalment({ kind: "cycle" }),
+      ]);
+
+      await expect(service.derivePaymentStatus(bookingId)).resolves.toBe("paid");
+    });
+
+    it("still reports partially paid while a cycle instalment is pending", async () => {
+      mockPrisma.payments.findMany.mockResolvedValue(captured);
+      mockPrisma.payment_installments.findMany.mockResolvedValue([
+        instalment({ kind: "cycle" }),
+        instalment({ kind: "cycle", status: "pending" }),
+      ]);
+
+      await expect(service.derivePaymentStatus(bookingId)).resolves.toBe(
+        "partially_paid",
+      );
+    });
+
+    it("reports paid for a legacy booking with no instalment rows at all", async () => {
+      mockPrisma.payments.findMany.mockResolvedValue(captured);
+      mockPrisma.payment_installments.findMany.mockResolvedValue([]);
+
+      await expect(service.derivePaymentStatus(bookingId)).resolves.toBe("paid");
+    });
   });
 
   describe("cancelBooking", () => {
