@@ -63,8 +63,16 @@ async function bootstrap() {
     "http://localhost",
     "https://localhost",
     "ionic://localhost",
-    "http://192.168.1.38:3000",
-    "http://192.168.0.3:3000",
+    // Developer LAN origins, e.g. "http://192.168.1.38:3000,http://192.168.0.3:3000".
+    // These used to be two hardcoded machines' IPs shipped in the production
+    // allowlist. Env-driven and dev-only now, so one developer's home network is
+    // not a permanent trusted origin in prod.
+    ...(process.env.NODE_ENV !== "production"
+      ? (process.env.DEV_CORS_ORIGINS ?? "")
+          .split(",")
+          .map((o) => o.trim())
+          .filter(Boolean)
+      : []),
   ].filter(Boolean) as string[];
 
   const allowedOriginsSet = new Set(allowedOrigins);

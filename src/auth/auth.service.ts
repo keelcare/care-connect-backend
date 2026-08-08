@@ -2,9 +2,11 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Logger,
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { ConfigService } from "@nestjs/config";
 import { UsersService } from "../users/users.service";
 import { JwtService } from "@nestjs/jwt";
@@ -13,6 +15,7 @@ import * as crypto from "node:crypto";
 import { SignupDto } from "./dto/signup.dto";
 import { PrismaService } from "../prisma/prisma.service";
 import { MailService } from "../mail/mail.service";
+import { OAUTH_ERROR_UNVERIFIED_ACCOUNT } from "../constants";
 
 /**
  * SECURITY: Password Complexity Regex
@@ -119,6 +122,14 @@ export class AuthService {
     };
   }
 
+  /**
+   * Drop the stored refresh-token hash, invalidating every outstanding refresh
+   * token for this account. Used by logout; password reset does the same inline.
+   */
+  async clearRefreshToken(userId: string) {
+    await this.usersService.update(userId, { refresh_token_hash: null });
+  }
+
   async refresh(refreshToken: string) {
     try {
       const refreshSecret = this.configService.get<string>("JWT_REFRESH_SECRET");
@@ -213,6 +224,12 @@ export class AuthService {
       password_hash: hashedPassword,
       reset_password_token: null,
       reset_password_token_expires: null,
+      // Kill every existing session. People reset passwords precisely *because*
+      // they think someone else is in the account; leaving `refresh_token_hash`
+      // intact meant an attacker holding a refresh token kept full API access for
+      // the remaining 7 days, and the reset only locked them out of a login they
+      // were not using anyway.
+      refresh_token_hash: null,
     });
 
     return { message: "Password reset successful" };
@@ -308,26 +325,49 @@ export class AuthService {
       }
     }
 
+    // Reject a duplicate before attempting the insert. Case-insensitive, so
+    // "User@example.com" cannot create a second account alongside
+    // "user@example.com" (the unique index alone is case-sensitive and would
+    // happily allow it).
+    const existing = await this.usersService.findOneByEmail(userDto.email);
+    if (existing) {
+      throw new ConflictException("An account with this email already exists");
+    }
+
     const hashedPassword = await bcrypt.hash(userDto.password, 10);
-    const user = await this.usersService.create({
-      email: userDto.email,
-      password_hash: hashedPassword,
-      role: userDto.role || "parent", // Use provided role or default to parent
-      profiles: {
-        create: {
-          first_name: userDto.firstName,
-          last_name: userDto.lastName,
+    let user: Awaited<ReturnType<typeof this.usersService.create>>;
+    try {
+      user = await this.usersService.create({
+        email: userDto.email,
+        password_hash: hashedPassword,
+        role: userDto.role || "parent", // Use provided role or default to parent
+        profiles: {
+          create: {
+            first_name: userDto.firstName,
+            last_name: userDto.lastName,
+          },
         },
-      },
-      nanny_details:
-        userDto.role === "nanny"
-          ? {
-              create: {
-                categories: userDto.categories,
-              },
-            }
-          : undefined,
-    });
+        nanny_details:
+          userDto.role === "nanny"
+            ? {
+                create: {
+                  categories: userDto.categories,
+                },
+              }
+            : undefined,
+      });
+    } catch (err) {
+      // Two concurrent signups can both pass the check above; the unique index is
+      // what actually decides. Prisma's P2002 was uncaught anywhere in auth/users,
+      // so the loser of that race got an opaque 500 instead of "already registered".
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2002"
+      ) {
+        throw new ConflictException("An account with this email already exists");
+      }
+      throw err;
+    }
 
     // Send verification email
     try {
@@ -353,6 +393,34 @@ export class AuthService {
       user = await this.usersService.findUserForAuth(googleUser.email);
 
       if (user) {
+        // Account pre-hijacking guard.
+        //
+        // Anyone can sign up with an email they do not control and set their own
+        // password — signup does not require proving ownership of the mailbox. If we
+        // then auto-linked a Google identity onto that account by email match, the
+        // squatter's password would keep working on an account the real owner has
+        // just adopted as their own, handing them a permanent second key to the
+        // victim's children, addresses, bookings and payment history.
+        //
+        // Linking is only safe when the existing account is already proven to belong
+        // to whoever holds the mailbox (`is_verified`), or when it has no password to
+        // hijack it with.
+        const canLink = user.is_verified || !user.password_hash;
+        if (!canLink) {
+          // The `code` travels to the client: the OAuth callback is a *redirect*,
+          // so the only channel back to the app is the error query param. Without a
+          // distinguishable code every failure arrives as "auth_failed" and the user
+          // is told to try again, when what they actually need to do is click the
+          // verification email or use their password.
+          throw new UnauthorizedException({
+            code: OAUTH_ERROR_UNVERIFIED_ACCOUNT,
+            message:
+              "An unverified account already exists for this email. Verify it from " +
+              "the link we emailed you, or sign in with your password, before " +
+              "connecting Google.",
+          });
+        }
+
         // Link account. This goes through update()'s Prisma-input branch, which
         // returns the full user row; assert the declared type since update()'s
         // union return now also includes the sanitised findOne() shape.

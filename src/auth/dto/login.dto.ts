@@ -1,5 +1,6 @@
 import { IsEmail, IsString, MinLength, MaxLength } from "class-validator";
 import { ApiProperty } from "@nestjs/swagger";
+import { Transform } from "class-transformer";
 
 /**
  * SECURITY: Login DTO with validation
@@ -14,6 +15,11 @@ export class LoginDto {
     example: "user@example.com",
     description: "The email of the user",
   })
+  // Trimmed but NOT lowercased for matching: historical accounts were stored with
+  // whatever case they were typed in, and `UsersService.resolveEmailWhere` already
+  // resolves those case-insensitively. Lowercasing here would be harmless for new
+  // accounts and is applied on signup, but doing it on lookup adds nothing.
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsEmail({}, { message: "Please provide a valid email address" })
   @MaxLength(255, { message: "Email must not exceed 255 characters" })
   email: string;

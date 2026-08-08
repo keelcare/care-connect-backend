@@ -46,15 +46,60 @@ export class UsersService {
     });
   }
 
-  async findOneByEmail(email: string): Promise<users | null> {
-    return this.prisma.users.findUnique({
-      where: { email },
+  /**
+   * Resolve an account by email, case-insensitively.
+   *
+   * `users.email` is a case-sensitive unique column and nothing ever normalised the
+   * address on the way in, so `victim@gmail.com` and `Victim@Gmail.com` were two
+   * distinct accounts for one real mailbox — and every lookup was an exact match,
+   * so which one you reached depended on exactly how you typed it. New signups are
+   * now lowercased by the DTOs, but historical rows keep whatever case they were
+   * created with, so lookups have to tolerate both.
+   *
+   * Exact match is tried first: it uses the unique index and is the common case.
+   * The insensitive scan is the fallback for those historical rows.
+   */
+  private async resolveEmailWhere(
+    email: string,
+  ): Promise<Prisma.usersWhereInput | null> {
+    const trimmed = email?.trim();
+    if (!trimmed) return null;
+
+    const exact = await this.prisma.users.findUnique({
+      where: { email: trimmed },
+      select: { id: true },
     });
+    if (exact) return { id: exact.id };
+
+    const matches = await this.prisma.users.findMany({
+      where: { email: { equals: trimmed, mode: "insensitive" } },
+      select: { id: true, email: true },
+      take: 2,
+    });
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      // Pre-existing duplicates for one mailbox. Picking arbitrarily would make
+      // login non-deterministic, so refuse and make it visible instead.
+      this.logger.error(
+        `Multiple accounts differ only by email case for "${trimmed}": ` +
+          matches.map((m) => m.id).join(", "),
+      );
+      return null;
+    }
+    return { id: matches[0].id };
+  }
+
+  async findOneByEmail(email: string): Promise<users | null> {
+    const where = await this.resolveEmailWhere(email);
+    if (!where) return null;
+    return this.prisma.users.findFirst({ where });
   }
 
   async findUserForAuth(email: string) {
-    return this.prisma.users.findUnique({
-      where: { email },
+    const where = await this.resolveEmailWhere(email);
+    if (!where) return null;
+    return this.prisma.users.findFirst({
+      where,
       include: {
         profiles: {
           select: {
@@ -263,6 +308,78 @@ export class UsersService {
     }
 
     return result;
+  }
+
+  /**
+   * The public view of a user — what someone who is *not* that user is allowed to
+   * see. This is what `GET /users/:id` returns to everyone except the user
+   * themselves and admins.
+   *
+   * `findOne` was previously served to any authenticated caller, which meant any
+   * logged-in account could read any other account's phone number, home address and
+   * exact lat/lng, plus a caregiver's decrypted `previous_salary` — from nothing but
+   * a user id, and ids are handed out freely on bookings, reviews and requests.
+   *
+   * Excluded deliberately, and none of it should be added back without a specific
+   * need: `email`, `profiles.phone`, `profiles.address`, `profiles.location_address`,
+   * `profiles.lat/lng`, and the whole of `nanny_onboarding_details` (salary history,
+   * documents). A booking's own `service_address` is the correct source for where a
+   * session happens — it is scoped to that booking rather than to the person.
+   */
+  async findPublicProfile(id: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        role: true,
+        is_active: true,
+        is_verified: true,
+        identity_verification_status: true,
+        created_at: true,
+        profiles: {
+          select: {
+            user_id: true,
+            first_name: true,
+            last_name: true,
+            profile_image_url: true,
+          },
+        },
+        nanny_details: {
+          select: {
+            user_id: true,
+            skills: true,
+            experience_years: true,
+            bio: true,
+            categories: true,
+            tags: true,
+            acceptance_rate: true,
+            is_available_now: true,
+            attendance_score: true,
+            attendance_sessions: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+
+    if (user.role !== "nanny") return user;
+
+    const reviews = await this.prisma.reviews.findMany({
+      where: { reviewee_id: id },
+      select: { rating: true },
+    });
+    const totalReviews = reviews.length;
+    const averageRating =
+      totalReviews > 0
+        ? Math.round(
+            (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / totalReviews) * 10,
+          ) / 10
+        : null;
+
+    return { ...user, averageRating, totalReviews };
   }
 
   async findFullUserById(id: string) {

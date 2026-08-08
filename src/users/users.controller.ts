@@ -39,6 +39,7 @@ import {
   ActiveUserGuard,
   SkipActiveCheck,
 } from "../common/guards/active-user.guard";
+import { StrictThrottle } from "../common/decorators/throttle.decorator";
 
 @ApiTags("Users")
 @Controller("users")
@@ -65,8 +66,15 @@ export class UsersController {
     return this.usersService.findAllNannies();
   }
 
+  /**
+   * Throttled: this endpoint answers "is this phone number registered?" for any
+   * number the caller cares to name, which is an account-enumeration oracle gated
+   * only by being logged in. It exists so the profile form can validate before
+   * submitting, which needs a handful of calls, not thousands.
+   */
   @ApiBearerAuth()
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @StrictThrottle()
   @Get("check-phone/:phone")
   @ApiOperation({ summary: "Check if phone number is available" })
   @ApiResponse({ status: 200, description: "Return availability boolean" })
@@ -78,12 +86,27 @@ export class UsersController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
   @Get(":id")
-  @ApiOperation({ summary: "Get user by ID" })
+  @ApiOperation({
+    summary: "Get user by ID",
+    description:
+      "Returns the full record for yourself or to an admin; the public profile " +
+      "(no phone, address, coordinates, email or onboarding/salary details) for " +
+      "anyone else.",
+  })
   @ApiResponse({ status: 200, description: "Return user data" })
   @ApiResponse({ status: 401, description: "Unauthorized" })
   @ApiResponse({ status: 404, description: "User not found" })
-  getUser(@Param("id") id: string) {
-    return this.usersService.findOne(id);
+  getUser(@Param("id") id: string, @Request() req) {
+    // Anyone authenticated used to get the *full* record here — phone, home
+    // address, lat/lng and a caregiver's decrypted previous salary — for any id
+    // they could name, and ids leak freely via bookings, reviews and requests.
+    // Ownership is now decided here rather than by OwnershipGuard because this
+    // route does not deny non-owners outright, it narrows what they receive.
+    const isSelf = req.user?.id === id;
+    const isAdmin = req.user?.role === "admin";
+    return isSelf || isAdmin
+      ? this.usersService.findOne(id)
+      : this.usersService.findPublicProfile(id);
   }
 
   @ApiBearerAuth()

@@ -39,6 +39,8 @@ import {
   PaymentStatus,
   INSTALMENT_PAID,
   INSTALMENT_PENDING,
+  CANCELLATION_FEE_NONE,
+  CANCELLATION_FEE_OWED,
 } from "../constants";
 import { MATCHING_FEE_KIND } from "../common/pricing.service";
 import { round2 } from "../common/payout-policy";
@@ -646,13 +648,22 @@ export class BookingsService {
       }
     }
 
-    const updatedBooking = await this.prisma.bookings.update({
-      where: { id },
+    // Claim the transition instead of assuming the status check above still holds.
+    // A double-tap of "Start" fires two requests that both pass that check before
+    // either write lands; an unguarded `update` let both through and emitted
+    // STARTED twice. Guarding on the expected status makes exactly one win.
+    const claimed = await this.prisma.bookings.updateMany({
+      where: { id, status: BookingStatus.CONFIRMED },
       data: {
         status: BookingStatus.IN_PROGRESS,
         actual_start_time: new Date(), // Use actual_start_time instead of overwriting start_time
       },
     });
+    if (claimed.count === 0) {
+      throw new BadRequestException("Booking must be CONFIRMED to start");
+    }
+
+    const updatedBooking = await this.prisma.bookings.findUnique({ where: { id } });
 
     this.eventEmitter.emit(BOOKING_EVENTS.STARTED, new BookingStartedEvent(updatedBooking));
 
@@ -664,39 +675,68 @@ export class BookingsService {
     return updatedBooking;
   }
 
-  async handleNoShow(id: string, reason: string = "Parent No-Show") {
+  /**
+   * Auto-expire a booking whose start time passed without it ever starting.
+   *
+   * This is the *system sweep* path and its only caller is `checkExpiredBookings`.
+   * A genuine, reported no-show goes through `reportNoShow` instead.
+   *
+   * It always writes `EXPIRED`, never `PARENT_NO_SHOW`. It used to pick between
+   * them on `status === CONFIRMED`, which meant the only other status the cron
+   * feeds it — `REQUESTED`, i.e. a booking **no caregiver was ever assigned to** —
+   * was recorded as the *parent* failing to show up for a session that had nobody
+   * to attend it. That blamed the parent in the audit trail and in the notification
+   * they received, while the reason string passed in said "never started". Nothing
+   * here can tell whose fault an unstarted session was, so it does not guess.
+   */
+  async expireUnstartedBooking(id: string, reason: string = "Booking expired") {
     const booking = await this.prisma.bookings.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException("Booking not found");
 
-    const nextStatus =
-      booking.status === BookingStatus.CONFIRMED
-        ? BookingStatus.EXPIRED
-        : BookingStatus.PARENT_NO_SHOW; // Adaptive status
-    const updatedBooking = await this.prisma.bookings.update({
-      where: { id },
-      data: {
-        status: nextStatus,
-        cancellation_reason: reason,
-      },
+    const nextStatus = BookingStatus.EXPIRED;
+
+    // One transaction: the booking, its request and its assignments describe the
+    // same fact and must not be able to disagree. Previously these were three bare
+    // writes, so a failure between them left the request cancelled while the
+    // booking still read CONFIRMED.
+    const updatedBooking = await this.prisma.$transaction(async (tx) => {
+      // Claim the transition rather than assuming it: `updateMany` with the
+      // expected status makes a concurrent cancel/start win cleanly instead of
+      // both sides writing.
+      const claimed = await tx.bookings.updateMany({
+        where: {
+          id,
+          status: { in: [BookingStatus.CONFIRMED, BookingStatus.REQUESTED] },
+        },
+        data: { status: nextStatus, cancellation_reason: reason },
+      });
+      if (claimed.count === 0) return null;
+
+      // Keep the originating request in step: left as "pending" it would sit in
+      // the admin manual-assignment queue (and the parent's list) forever, for a
+      // slot that has already come and gone.
+      if (booking.request_id) {
+        await tx.service_requests.updateMany({
+          where: { id: booking.request_id, status: { in: ["pending", "accepted"] } },
+          data: { status: "EXPIRED" },
+        });
+        await tx.assignments.updateMany({
+          where: {
+            request_id: booking.request_id,
+            status: { in: ["pending", "accepted"] },
+          },
+          data: { status: "expired", responded_at: new Date() },
+        });
+      }
+
+      return tx.bookings.findUnique({ where: { id } });
     });
 
-    // Keep the originating request in step: left as "pending" it would sit in
-    // the admin manual-assignment queue (and the parent's list) forever, for a
-    // slot that has already come and gone.
-    if (booking.request_id) {
-      await this.prisma.service_requests.updateMany({
-        where: { id: booking.request_id, status: { in: ["pending", "accepted"] } },
-        data: { status: "EXPIRED" },
-      });
-      await this.prisma.assignments.updateMany({
-        where: {
-          request_id: booking.request_id,
-          status: { in: ["pending", "accepted"] },
-        },
-        data: { status: "expired", responded_at: new Date() },
-      });
-    }
+    // Someone else moved this booking first — nothing to announce.
+    if (!updatedBooking) return null;
 
+    // Emitted after commit: listeners re-read the booking, and inside the
+    // transaction they would race the write they are reacting to.
     this.eventEmitter.emit(
       BOOKING_EVENTS.CANCELLED,
       new BookingCancelledEvent(updatedBooking, reason),
@@ -756,14 +796,27 @@ export class BookingsService {
       durationHours
     );
 
-    const updatedBooking = await this.prisma.bookings.update({
-      where: { id },
+    // Claim IN_PROGRESS → COMPLETED atomically. The early return above only covers
+    // a booking that is *already* COMPLETED; two calls racing while both still see
+    // IN_PROGRESS both got past it and both wrote. That fired COMPLETED twice,
+    // which re-ran `handleBookingCompleted` — duplicate parent/caregiver
+    // notifications, a duplicate progress report, and duplicate payment_audit_log
+    // rows. `capturePaymentSuccess` already uses this pattern to claim instalments.
+    const claimed = await this.prisma.bookings.updateMany({
+      where: { id, status: BookingStatus.IN_PROGRESS },
       data: {
         status: BookingStatus.COMPLETED,
         actual_end_time: actualEndTime, // Use actual_end_time instead of overwriting end_time
         is_review_prompted: true,
       },
     });
+    if (claimed.count === 0) {
+      // Someone else completed it between our read and this write. Their call owns
+      // the side effects; return the settled row rather than duplicating them.
+      return this.prisma.bookings.findUnique({ where: { id } });
+    }
+
+    const updatedBooking = await this.prisma.bookings.findUnique({ where: { id } });
 
     this.eventEmitter.emit(BOOKING_EVENTS.COMPLETED, new BookingCompletedEvent(updatedBooking, totalAmount));
 
@@ -820,36 +873,45 @@ export class BookingsService {
         },
       });
 
-      if (assignment) {
-        await this.prisma.assignments.update({
-          where: { id: assignment.id },
+      // One transaction: rejecting the assignment, unassigning the booking and
+      // reopening the request are one fact. Half-applied, the request would be
+      // reopened for matching while the booking still names the caregiver who
+      // just walked away (or vice versa).
+      const updatedBooking = await this.prisma.$transaction(async (tx) => {
+        if (assignment) {
+          await tx.assignments.update({
+            where: { id: assignment.id },
+            data: {
+              status: "rejected",
+              rejection_reason: `Cancelled after booking: ${reason}`,
+              responded_at: new Date(),
+            },
+          });
+        }
+
+        // Revert Booking to Pending and Cleanup Chat
+        const reverted = await tx.bookings.update({
+          where: { id },
           data: {
-            status: "rejected",
-            rejection_reason: `Cancelled after booking: ${reason}`,
-            responded_at: new Date(),
+            status: BookingStatus.REQUESTED,
+            nanny_id: null,
+            cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
           },
         });
-      }
 
-      // 2. Revert Booking to Pending and Cleanup Chat
-      const updatedBooking = await this.prisma.bookings.update({
-        where: { id },
-        data: {
-          status: BookingStatus.REQUESTED,
-          nanny_id: null,
-          cancellation_reason: `Previous Nanny Cancelled: ${reason}`,
-        },
+        // Chat deletion will be handled by the listener on CANCELLED event
+
+        // Update Service Request (set back to pending from assigned)
+        await tx.service_requests.update({
+          where: { id: booking.request_id },
+          data: { status: "pending", current_assignment_id: null },
+        });
+
+        return reverted;
       });
 
-      // Chat deletion will be handled by the listener on CANCELLED event
-
-      // 3. Update Service Request (set back to pending from assigned)
-      await this.prisma.service_requests.update({
-        where: { id: booking.request_id },
-        data: { status: "pending", current_assignment_id: null },
-      });
-
-      // 4. Trigger Re-matching
+      // Re-matching and events only after the transaction commits — the matcher
+      // reads the request it is being asked to rematch.
       this.requestsService.triggerMatching(booking.request_id).catch((err) => {
         this.logger.error("Failed to re-trigger matching after nanny cancellation", err);
       });
@@ -859,38 +921,57 @@ export class BookingsService {
         new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId),
       );
 
+      // This branch used to return without writing a status log, so a
+      // CONFIRMED/IN_PROGRESS → REQUESTED revert with the caregiver cleared was the
+      // one transition invisible in `getHistory()` — despite the log service
+      // documenting that it records every transition.
+      await this.bookingStatusLog.writeLog(
+        null,
+        id,
+        booking.status,
+        BookingStatus.REQUESTED,
+        {
+          changedBy: cancelledByUserId,
+          actorRole: "nanny",
+          reason: `Previous Nanny Cancelled: ${reason}`,
+          metadata: { rematch_triggered: true, previous_nanny_id: booking.nanny_id },
+        },
+      );
+
       return updatedBooking;
     }
 
     // Special Handling: Parent Cancellation
-    if (cancelledByUserId && booking.parent_id === cancelledByUserId) {
+    //
+    // The request/assignment writes are deliberately NOT done here. They used to
+    // be, ahead of the fee calculation below — so when `calculateCost` threw (an
+    // unknown service category is enough), the request and its assignments were
+    // already CANCELLED while the booking still read CONFIRMED. The parent saw an
+    // error, the data disagreed with itself, and retrying re-entered the same code
+    // path and threw again. They now run inside the same transaction as the
+    // booking's own status write, further down.
+    const isParentCancellation =
+      !!cancelledByUserId && booking.parent_id === cancelledByUserId;
+    if (isParentCancellation) {
       this.logger.log(`Parent cancelled booking ${id}.`);
-
-      // 1. If there's an associated service request, cancel it too
-      if (booking.request_id) {
-        await this.prisma.service_requests.update({
-          where: { id: booking.request_id },
-          data: { status: "CANCELLED" },
-        });
-
-        // Also cancel any pending/accepted assignment for this request
-        await this.prisma.assignments.updateMany({
-          where: {
-            request_id: booking.request_id,
-            status: { in: ["pending", "accepted"] },
-          },
-          data: { status: "cancelled", responded_at: new Date() },
-        });
-      }
-
-      // 2. Proceed to standard cancellation (status, fees, notifications)
     }
 
     // Standard Cancellation Logic
 
     // Calculate Cancellation Fee
+    //
+    // The fee is *recorded as owed*, never auto-charged. We hold no mandate and no
+    // saved payment method for a parent, so there is nothing to debit without them
+    // going through checkout. This previously called `chargeCancellationFee`, which
+    // created a Razorpay *order* and then wrote a `payments` row straight to
+    // `captured` ("simulating successful auto-charge") — money that never moved,
+    // booked as revenue, and unrefundable because the row had no gateway payment id.
+    //
+    // `owed` is the honest state: the amount is on the booking, and settlement goes
+    // through the ordinary createOrder → checkout → verify path once a client
+    // surfaces it. See the client handoff doc for the status contract.
     let cancellationFee = 0;
-    let feeStatus = "no_fee";
+    let feeStatus = CANCELLATION_FEE_NONE;
 
     const now = new Date();
     const startTime = booking.start_time;
@@ -905,24 +986,41 @@ export class BookingsService {
         );
 
         cancellationFee = hourlyRate;
-        feeStatus = "pending";
-
-        // Trigger cancellation fee charge
-        const chargeResult = await this.paymentsService.chargeCancellationFee(id, cancellationFee);
-        if (chargeResult.success) {
-          feeStatus = "charged";
-        }
+        feeStatus = CANCELLATION_FEE_OWED;
       }
     }
 
-    const updatedBooking = await this.prisma.bookings.update({
-      where: { id },
-      data: {
-        status: BookingStatus.CANCELLED,
-        cancellation_reason: reason,
-        cancellation_fee: cancellationFee,
-        cancellation_fee_status: feeStatus,
-      },
+    // Everything that makes this booking cancelled, in one transaction. The fee is
+    // computed above, before the transaction opens, so a pricing failure aborts
+    // before anything has been written rather than midway through.
+    const updatedBooking = await this.prisma.$transaction(async (tx) => {
+      const cancelled = await tx.bookings.update({
+        where: { id },
+        data: {
+          status: BookingStatus.CANCELLED,
+          cancellation_reason: reason,
+          cancellation_fee: cancellationFee,
+          cancellation_fee_status: feeStatus,
+        },
+      });
+
+      if (isParentCancellation && booking.request_id) {
+        await tx.service_requests.update({
+          where: { id: booking.request_id },
+          data: { status: "CANCELLED" },
+        });
+
+        // Also cancel any pending/accepted assignment for this request
+        await tx.assignments.updateMany({
+          where: {
+            request_id: booking.request_id,
+            status: { in: ["pending", "accepted"] },
+          },
+          data: { status: "cancelled", responded_at: new Date() },
+        });
+      }
+
+      return cancelled;
     });
 
     this.eventEmitter.emit(BOOKING_EVENTS.CANCELLED, new BookingCancelledEvent(updatedBooking, reason, cancelledByUserId));
@@ -950,8 +1048,15 @@ export class BookingsService {
   const bookings = await this.prisma.bookings.findMany({
     where: {
       ...whereClause,
+      // "pending"/"accepted" were also listed here. Those are `service_requests` /
+      // `assignments` values — `bookings.status` is only ever a BookingStatus, so
+      // they could never match anything.
       status: {
-        in: [BookingStatus.REQUESTED, "pending", "accepted", BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS],
+        in: [
+          BookingStatus.REQUESTED,
+          BookingStatus.CONFIRMED,
+          BookingStatus.IN_PROGRESS,
+        ],
       },
     },
     include: {
@@ -1018,11 +1123,25 @@ export class BookingsService {
     },
   });
 
+  // Per-item isolation: one booking whose expiry throws must not abandon the rest
+  // of the sweep until the next scheduled run.
+  const expiryFailures: { bookingId: string; error: string }[] = [];
+  let expired = 0;
   for (const booking of unstartedBookings) {
-    await this.handleNoShow(
-      booking.id,
-      "System Auto-expiration: Booking never started",
-    );
+    try {
+      const result = await this.expireUnstartedBooking(
+        booking.id,
+        "System Auto-expiration: Booking never started",
+      );
+      // null means another actor moved it between the query and the write.
+      if (result) expired += 1;
+    } catch (err) {
+      expiryFailures.push({ bookingId: booking.id, error: err?.message ?? String(err) });
+      this.logger.error(
+        `Failed to expire unstarted booking ${booking.id}: ${err?.message}`,
+        err?.stack,
+      );
+    }
   }
 
   // 2. Handle Stuck In-Progress (IN_PROGRESS -> COMPLETED)
@@ -1032,16 +1151,25 @@ export class BookingsService {
       end_time: { lt: inProgressCutoff },
     },
   });
+  const failures: { bookingId: string; error: string }[] = [];
+  let autoCompleted = 0;
   for (const booking of stuckBookings) {
     try {
-      // Tag as auto-completed first, then run the pipeline
-      const tagged = await this.prisma.bookings.update({
-        where: { id: booking.id },
-        data: {
-          tags: { push: "auto-completed" },
-          actual_end_time: now,
-        },
-      });
+      // Tag as auto-completed first, then run the pipeline. A failed attempt leaves
+      // the booking IN_PROGRESS for the next sweep to retry, so the tag has to be
+      // idempotent — `push` would otherwise stack a duplicate on every retry.
+      const tagged = booking.tags?.includes("auto-completed")
+        ? await this.prisma.bookings.update({
+            where: { id: booking.id },
+            data: { actual_end_time: now },
+          })
+        : await this.prisma.bookings.update({
+            where: { id: booking.id },
+            data: {
+              tags: { push: "auto-completed" },
+              actual_end_time: now,
+            },
+          });
       // completeBooking handles payments, notifications, and SSE
       await this.completeBooking(booking.id);
 
@@ -1052,23 +1180,53 @@ export class BookingsService {
         BOOKING_EVENTS.AUTO_COMPLETED,
         new BookingAutoCompletedEvent(tagged),
       );
+      autoCompleted += 1;
     } catch (err) {
-      this.logger.error(`Failed to auto-complete booking ${booking.id}: ${err.message}`);
-      // Fallback: at minimum mark it completed in DB
-      await this.prisma.bookings.update({
-        where: { id: booking.id },
-        data: { status: BookingStatus.COMPLETED, actual_end_time: now },
-      });
-      await this.bookingStatusLog.writeLog(null, booking.id, booking.status, BookingStatus.COMPLETED, {
+      // Do NOT force the booking to COMPLETED here.
+      //
+      // `BOOKING_EVENTS.COMPLETED` is emitted only inside `completeBooking`, and it
+      // is the sole trigger for `handleBookingCompleted` — the one place that writes
+      // the `manual_pending` payout accrual, moves a captured payment to
+      // `pending_release`, and notifies both parties. COMPLETED is terminal
+      // everywhere else (`completeBooking` returns early on it, `capturePaymentSuccess`
+      // refuses to promote it), so a booking written straight to COMPLETED could
+      // never re-enter the billing pipeline: the caregiver would simply never be paid
+      // for a session they actually worked, with a log line as the only trace.
+      //
+      // Leaving it IN_PROGRESS is recoverable — the next sweep retries it, and a
+      // transient pricing/DB fault heals on its own. Failing loudly and repeatedly is
+      // the correct outcome for "we could not bill a delivered session".
+      failures.push({ bookingId: booking.id, error: err?.message ?? String(err) });
+      this.logger.error(
+        `Failed to auto-complete booking ${booking.id}; leaving IN_PROGRESS for retry: ${err?.message}`,
+        err?.stack,
+      );
+      await this.bookingStatusLog.writeLog(null, booking.id, booking.status, booking.status, {
         actorRole: "system",
-        reason: "Auto-completed (fallback after pipeline error)",
+        reason: "Auto-completion failed; booking left IN_PROGRESS for retry",
+        metadata: { error: err?.message ?? String(err) },
       });
     }
   }
 
+  // Counts are of work that actually succeeded, not of rows attempted. Reporting
+  // `stuckBookings.length` hid every failure behind a success number.
+  if (failures.length || expiryFailures.length) {
+    this.logger.error(
+      `checkExpiredBookings finished with failures: ${expiryFailures.length} expiry, ` +
+        `${failures.length} auto-completion. Auto-completion failures leave delivered ` +
+        `sessions unbilled and need investigation: ` +
+        `${failures.map((f) => f.bookingId).join(", ")}`,
+    );
+  }
+
   return {
-    expired: unstartedBookings.length,
-    autoCompleted: stuckBookings.length,
+    expired,
+    autoCompleted,
+    failed: {
+      expiry: expiryFailures,
+      autoCompletion: failures,
+    },
   };
 }
 

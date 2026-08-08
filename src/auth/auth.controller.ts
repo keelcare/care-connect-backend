@@ -17,6 +17,7 @@ import { GoogleOauthGuard } from "./guards/google-oauth.guard";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { TokenBlacklistService } from "./token-blacklist.service";
+import { OAUTH_ERROR_GENERIC } from "../constants";
 import { StrictThrottle } from "../common/decorators/throttle.decorator";
 import { Throttle } from "@nestjs/throttler";
 import { SignupDto } from "./dto/signup.dto";
@@ -126,8 +127,24 @@ export class AuthController {
     @Req() req,
     @Res({ passthrough: true }) res: Response,
   ) {
+    // This route is deliberately unguarded (logging out with an already-expired
+    // access token must still work), so the caller's identity has to come from
+    // whichever token they presented rather than from `req.user`.
+    let userId: string | null = null;
+
+    /** Blacklist a token for whatever is left of its lifetime. */
+    const revoke = async (token: string, fallbackSeconds: number) => {
+      const decoded: any = this.jwtService.decode(token);
+      if (decoded?.sub) userId = decoded.sub;
+      const expiresInSeconds = decoded?.exp
+        ? Math.max(0, decoded.exp - Math.floor(Date.now() / 1000))
+        : fallbackSeconds;
+      if (expiresInSeconds > 0) {
+        await this.tokenBlacklist.revokeToken(token, expiresInSeconds);
+      }
+    };
+
     // Revoke the access token so it cannot be reused before its natural expiry.
-    // (Refresh-token rotation/revocation is handled in AuthService.refresh.)
     const accessToken =
       req.cookies?.access_token ||
       (req.headers?.authorization?.startsWith("Bearer ")
@@ -135,15 +152,37 @@ export class AuthController {
         : null);
     if (accessToken) {
       try {
-        const decoded: any = this.jwtService.decode(accessToken);
-        const expiresInSeconds = decoded?.exp
-          ? Math.max(0, decoded.exp - Math.floor(Date.now() / 1000))
-          : 15 * 60;
-        if (expiresInSeconds > 0) {
-          await this.tokenBlacklist.revokeToken(accessToken, expiresInSeconds);
-        }
+        await revoke(accessToken, 15 * 60);
       } catch (err) {
         this.logger.warn(`Failed to revoke access token on logout: ${err.message}`);
+      }
+    }
+
+    // Revoke the refresh token too. Clearing the cookie only removes *our* copy —
+    // a token already captured (device theft, log leak, XSS) was completely
+    // unaffected by logout and could mint fresh sessions for the remaining 7 days.
+    const refreshToken =
+      req.cookies?.refresh_token || req.body?.refresh_token || null;
+    if (refreshToken) {
+      try {
+        await revoke(refreshToken, 7 * 24 * 60 * 60);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to revoke refresh token on logout: ${err.message}`,
+        );
+      }
+    }
+
+    // Blacklisting only stops the exact strings we were handed. Nulling the stored
+    // hash stops every *other* outstanding refresh token for this account, since
+    // `refresh()` bcrypt-compares against it before issuing anything.
+    if (userId) {
+      try {
+        await this.authService.clearRefreshToken(userId);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to clear refresh_token_hash on logout: ${err.message}`,
+        );
       }
     }
 
@@ -216,7 +255,13 @@ export class AuthController {
     return this.authService.resetPassword(dto.token, dto.password);
   }
 
+  /**
+   * SECURITY: Strict rate limiting, matching every other token-consuming route.
+   * This was the one that had none — inconsistent with the file's stated posture
+   * even though the token itself carries enough entropy to make guessing hopeless.
+   */
   @Get("verify")
+  @StrictThrottle()
   async verifyEmail(@Req() req) {
     const token = req.query.token;
     return this.authService.verifyEmail(token);
@@ -344,7 +389,18 @@ export class AuthController {
         } catch (e) {}
       }
 
-      res.redirect(`${frontendUrl}/auth/callback?error=auth_failed`);
+      // A redirect is the only channel back to the app, so the reason has to ride
+      // on the query string. Everything used to collapse to `auth_failed`, which
+      // told a user whose real problem was an unverified account to "try again" —
+      // advice that could never work. Codes are declared in `constants.ts` and are
+      // a public contract with the mobile clients.
+      const code =
+        (error?.response as { code?: string } | undefined)?.code ??
+        OAUTH_ERROR_GENERIC;
+
+      res.redirect(
+        `${frontendUrl}/auth/callback?error=${encodeURIComponent(code)}`,
+      );
     }
   }
 

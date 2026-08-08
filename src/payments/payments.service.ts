@@ -1423,41 +1423,17 @@ export class PaymentsService {
     };
   }
 
-  async chargeCancellationFee(bookingId: string, amount: number) {
-    const amountInPaise = Math.round(amount * RAZORPAY_PAISE_MULTIPLIER);
-    try {
-      const order = await this.gateway.createOrder(amountInPaise, `cancel_${bookingId.substring(0, 10)}`, {
-        booking_id: bookingId,
-        type: 'cancellation_fee'
-      });
-      
-      // Save to DB
-      const createdPayment = await this.prisma.payments.create({
-        data: {
-          booking_id: bookingId,
-          amount: amount,
-          currency: "INR",
-          provider: "razorpay",
-          order_id: order.id,
-          status: PaymentStatus.CAPTURED, // Simulating successful auto-charge
-        },
-      });
-
-      await this.audit.writeLog(
-        this.prisma,
-        createdPayment.id,
-        order.id,
-        null,
-        PaymentStatus.CAPTURED,
-        "api:charge_cancellation_fee",
-      );
-
-      return { success: true, orderId: order.id };
-    } catch (error) {
-      this.logger.error("Failed to charge cancellation fee", error);
-      return { success: false };
-    }
-  }
+  // `chargeCancellationFee` was removed. It created a Razorpay *order* — which does
+  // not debit anyone — and then wrote a `payments` row straight to `captured`,
+  // commented "Simulating successful auto-charge". The result was revenue on the
+  // books that no customer ever paid, with a null `payment_id` that made the row
+  // impossible to refund (`refundPayment` rejects it outright).
+  //
+  // We hold no mandate or saved payment method, so there is nothing to auto-charge
+  // against. `BookingsService.cancelBooking` now records the amount on the booking
+  // as `cancellation_fee_status: "owed"` and creates no payment row. Settlement runs
+  // through the ordinary `createOrder` → checkout → `verifyPayment` path, which
+  // produces a real gateway payment id and is refundable like any other charge.
 
   async getNannyEarnings(nannyId: string) {
     // 1. Calculate total earned. `pending_release` counts: completing a booking flips

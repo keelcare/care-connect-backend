@@ -55,3 +55,35 @@ export const INSTALMENT_PAID = "paid";
 export const MATCHING_FEE_KIND = "matching_fee";
 export const INSTALMENT_VOID = "void";
 export const INSTALMENT_REFUNDED = "refunded";
+
+/**
+ * OAuth callback error codes. These are returned to clients as
+ * `?error=<code>` on the redirect back into the app, so they are a public
+ * contract — clients map them to user-facing copy. Keep them stable.
+ *
+ * `auth_failed` is the catch-all for anything without a specific remedy.
+ */
+export const OAUTH_ERROR_UNVERIFIED_ACCOUNT = "unverified_account_exists";
+export const OAUTH_ERROR_GENERIC = "auth_failed";
+
+/**
+ * `bookings.cancellation_fee_status`.
+ *
+ * `owed` replaces the old `charged`/`pending` pair. `charged` was never true: the
+ * code that set it created a Razorpay order and wrote a `payments` row directly to
+ * `captured` without debiting anyone, so it recorded revenue that did not exist and
+ * could not be refunded (no gateway payment id). `pending` was written on the
+ * failure branch and read by nothing — no dunning job, no retry — so a genuinely
+ * failed charge was abandoned silently.
+ *
+ * A fee is now recorded as `owed` and stays that way until the parent settles it
+ * through the ordinary checkout path. Clients must treat `owed` as an outstanding
+ * amount, never as collected.
+ *
+ * `charged` still appears on historical rows written before this change. Those are
+ * the phantom ones — see the client handoff doc; they must not be read as paid.
+ */
+export const CANCELLATION_FEE_NONE = "no_fee";
+export const CANCELLATION_FEE_OWED = "owed";
+/** @deprecated Historical value only — never written by new code. Not money collected. */
+export const CANCELLATION_FEE_LEGACY_CHARGED = "charged";

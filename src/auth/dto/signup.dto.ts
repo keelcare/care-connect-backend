@@ -38,6 +38,12 @@ export class SignupDto {
     example: "user@example.com",
     description: "Email address of the user",
   })
+  // Normalised before validation and storage. `users.email` is a case-sensitive
+  // unique column, so without this "User@Example.com" and "user@example.com"
+  // become two accounts for one mailbox, splitting login and password reset.
+  @Transform(({ value }) =>
+    typeof value === "string" ? value.trim().toLowerCase() : value,
+  )
   @IsEmail({}, { message: "Please provide a valid email address" })
   @MaxLength(255, { message: "Email must not exceed 255 characters" })
   email: string;

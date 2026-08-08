@@ -33,8 +33,11 @@ export const EARNING_STATUSES = [
 
 /**
  * A cancellation fee is a `payments` row with no price snapshot that is not a
- * completion placeholder — `chargeCancellationFee` writes exactly that shape, and
- * `getParentTransactions` already classifies rows this way.
+ * completion placeholder, and `getParentTransactions` already classifies rows this
+ * way. Cancellation no longer writes such a row at all — the fee is recorded on the
+ * booking as `cancellation_fee_status: "owed"` and only becomes a `payments` row
+ * when the parent actually settles it — but historical rows keep this shape, so the
+ * classification stays.
  *
  * It carries no caregiver share: it is a charge for a booking that never happened,
  * so there is no service fee to split. Both sides must exclude it, otherwise the
