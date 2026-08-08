@@ -11,6 +11,7 @@ import { Server, Socket } from "socket.io";
 import { JwtService } from "@nestjs/jwt";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { AttendanceService } from "../attendance/attendance.service";
 
 @WebSocketGateway({
   namespace: "/location",
@@ -43,6 +44,7 @@ export class LocationGateway implements OnGatewayConnection {
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
     private jwtService: JwtService,
+    private attendanceService: AttendanceService,
   ) {}
 
   /** Authenticate the socket handshake (JWT via cookie, auth.token or header). */
@@ -242,6 +244,20 @@ export class LocationGateway implements OnGatewayConnection {
         "Geofence Alert",
         `The nanny has moved ${Math.round(distance)}m away from the care location (allowed: ${radius}m)`,
         "warning",
+      );
+
+      // The alert above fires on every outside ping, which is right for a live
+      // map and wrong for a record — stepping out to the school gate is ordinary
+      // care. Attendance only keeps the ones where the caregiver stayed away,
+      // and decides that for itself. Not awaited: a position report must not
+      // wait on bookkeeping.
+      void this.attendanceService.evaluateGeofenceBreach(
+        bookingId,
+        booking.nanny_id,
+        Number(booking.care_location_lat),
+        Number(booking.care_location_lng),
+        radius,
+        distance,
       );
     }
 

@@ -84,6 +84,7 @@ model bookings {
   payment_installments            payment_installments[]
   support_tickets                 support_tickets[]
   booking_status_logs             booking_status_log[]
+  attendance_events               nanny_attendance_events[]
 
   @@index([parent_id, status])
   @@index([nanny_id, status])
@@ -109,6 +110,98 @@ model booking_status_log {
 
   @@index([booking_id])
   @@index([created_at])
+}
+
+/// Append-only attendance facts for caregivers. One row per attendance-relevant
+/// thing that happened, almost always tied to the booking it happened on.
+///
+/// The unit of attendance is the *committed session*, not the calendar day: a
+/// caregiver here is rostered onto a plan at a fixed address, so "was she online"
+/// says nothing about whether a child was cared for. What is verifiable is the
+/// geofenced check-in already enforced by `startBooking`, the check-out, and the
+/// GPS trail between them — this table is the durable record of those.
+///
+/// `score_weight` is frozen at write time rather than looked up from policy at
+/// read time, for the same reason `price_snapshots` freezes its GST rate:
+/// retuning the attendance policy must never retroactively rewrite the record a
+/// caregiver was already judged on.
+model nanny_attendance_events {
+  id               String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id         String                @db.Uuid
+  booking_id       String?               @db.Uuid
+  type             attendance_event_type
+  /// IST calendar day this is attributed to — the day the *slot* belonged to, not
+  /// the day the row was written. A 23:00 session flagged at 00:20 by the sweeper
+  /// still belongs to the previous day.
+  attendance_date  DateTime              @db.Date
+  /// Slot start copied at write time, so a later reschedule cannot silently turn a
+  /// late arrival into an on-time one.
+  scheduled_start  DateTime?             @db.Timestamptz(6)
+  occurred_at      DateTime              @default(now()) @db.Timestamptz(6)
+  /// Minutes late (positive) or early (negative) against the scheduled boundary.
+  minutes_delta    Int?
+  /// Distance from the care location when the event fired — geofence events only.
+  distance_meters  Int?
+  /// Contribution to the rolling score, frozen at write time.
+  score_weight     Decimal               @default(0) @db.Decimal(4, 2)
+  /// True for the one terminal event that settles a session (attended / no-show /
+  /// cancelled). Only these form the score's denominator; modifiers such as a
+  /// geofence breach subtract from the numerator without inflating exposure.
+  is_session_outcome Boolean             @default(false)
+  /// 'app' | 'system' | 'admin' — who or what observed it.
+  source           String                @default("system") @db.VarChar(20)
+  notes            String?
+  /// Idempotency key for the once-per-booking events (`<booking_id>:<type>`), null
+  /// for the repeatable ones. Postgres does not collide NULLs in a unique index,
+  /// so one column covers both without a partial index Prisma cannot express.
+  dedupe_key       String?               @unique @db.VarChar(120)
+  /// Set when an admin excuses the event — a family that cancelled at the door, a
+  /// medical emergency, an app failure. Waived events stay visible in the
+  /// caregiver's timeline but drop out of scoring entirely.
+  waived_at        DateTime?             @db.Timestamptz(6)
+  waived_by        String?               @db.Uuid
+  waiver_reason    String?
+  metadata         Json?
+  created_at       DateTime              @default(now()) @db.Timestamptz(6)
+  users            users                 @relation("attendance_events_nanny", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  bookings         bookings?             @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  waived_by_user   users?                @relation("attendance_events_waived_by", fields: [waived_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([nanny_id, attendance_date])
+  @@index([nanny_id, occurred_at])
+  @@index([booking_id])
+}
+
+/// One roll-up row per caregiver per IST calendar day, derived from the events
+/// above by the nightly job. Kept as a table rather than computed on read because
+/// the attendance calendar in the partner app and the admin roster view are both
+/// range scans over months of history, and because an admin override needs
+/// somewhere to live that a replay of the event log will not overwrite.
+model nanny_attendance_days {
+  id                          String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id                    String                 @db.Uuid
+  attendance_date             DateTime               @db.Date
+  status                      attendance_day_status
+  sessions_scheduled          Int                    @default(0)
+  sessions_attended           Int                    @default(0)
+  sessions_late               Int                    @default(0)
+  sessions_missed             Int                    @default(0)
+  sessions_cancelled_by_nanny Int                    @default(0)
+  minutes_late                Int                    @default(0)
+  minutes_worked              Int                    @default(0)
+  /// Set by an admin to correct the derived status — approved leave logged after
+  /// the fact, a session the office cancelled by phone. Read in preference to
+  /// `status` everywhere, and never touched by the nightly recompute.
+  override_status             attendance_day_status?
+  override_reason             String?
+  overridden_by               String?                @db.Uuid
+  overridden_at               DateTime?              @db.Timestamptz(6)
+  computed_at                 DateTime               @default(now()) @db.Timestamptz(6)
+  users                       users                  @relation("attendance_days_nanny", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  overridden_by_user          users?                 @relation("attendance_days_overridden_by", fields: [overridden_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([nanny_id, attendance_date])
+  @@index([attendance_date, status])
 }
 
 model chats {
@@ -181,6 +274,21 @@ model nanny_details {
   auto_accept_bookings  Boolean   @default(true)
   default_start_time    String?   @db.VarChar(5)
   default_end_time      String?   @db.VarChar(5)
+  /// Rolling attendance score, 0–100, recomputed nightly from
+  /// `nanny_attendance_events`. Denormalised onto the profile so matching and
+  /// admin ranking can read one number without replaying the event log — the
+  /// same trade-off `acceptance_rate` already makes. Null until the caregiver
+  /// has enough sessions in the window for the number to mean anything.
+  attendance_score      Decimal?  @db.Decimal(5, 2)
+  /// Session outcomes the score above was computed from. Exposed so a low score
+  /// off three sessions is never presented with the same confidence as one off
+  /// sixty.
+  attendance_sessions   Int       @default(0)
+  attendance_updated_at DateTime? @db.Timestamptz(6)
+  /// Last heartbeat from the partner app. Presence is only ever an attendance
+  /// signal *during* a committed session — a caregiver with nothing rostered is
+  /// off duty, not absent.
+  last_seen_at          DateTime? @db.Timestamptz(6)
   users                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
@@ -450,6 +558,11 @@ model users {
   user_consents           user_consents[]
   rate_cards_created      rate_cards[]              @relation("rate_cards_created_by")
   payouts_released        payments[]                @relation("payments_released_by")
+
+  attendance_events            nanny_attendance_events[] @relation("attendance_events_nanny")
+  attendance_events_waived     nanny_attendance_events[] @relation("attendance_events_waived_by")
+  attendance_days              nanny_attendance_days[]   @relation("attendance_days_nanny")
+  attendance_days_overridden   nanny_attendance_days[]   @relation("attendance_days_overridden_by")
 
   @@unique([oauth_provider, oauth_provider_id])
 }
@@ -989,6 +1102,44 @@ enum report_status {
   PENDING
   SUBMITTED
   OVERDUE
+}
+
+enum attendance_event_type {
+  /// Geo-verified arrival within the on-time grace window.
+  CHECK_IN
+  /// Geo-verified arrival past the grace window.
+  LATE_CHECK_IN
+  /// Session closed by the caregiver.
+  CHECK_OUT
+  /// Closed materially before the scheduled end.
+  EARLY_CHECK_OUT
+  /// Never closed by the caregiver — the system had to auto-close it.
+  MISSED_CHECK_OUT
+  /// Slot start plus the no-show window elapsed with no check-in.
+  NO_SHOW
+  /// Caregiver cancelled inside the short-notice window.
+  LATE_CANCEL
+  /// Caregiver cancelled with enough notice to re-staff.
+  ADVANCE_CANCEL
+  /// Left the care location's geofence for longer than the tolerance mid-session.
+  GEOFENCE_BREACH
+  /// Went offline or stopped reporting while a session was under way.
+  OFFLINE_DURING_SESSION
+}
+
+enum attendance_day_status {
+  /// Every scheduled session attended on time.
+  PRESENT
+  /// All sessions attended, at least one late.
+  LATE
+  /// Some sessions attended, some missed or cancelled.
+  PARTIAL
+  /// Sessions were scheduled and none were served.
+  ABSENT
+  /// Blocked off in advance via `availability_blocks`, or granted by an admin.
+  LEAVE
+  /// Nothing was rostered. Not counted either way.
+  OFF
 }
 
 model recurring_service_requests {

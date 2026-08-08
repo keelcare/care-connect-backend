@@ -7,6 +7,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CreateCategoryRequestDto } from "./dto/create-category-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
 import { BookingStatus } from "../common/constants/booking-status.enum";
+import { AttendanceService } from "../attendance/attendance.service";
 // Date helpers (no external dep needed)
 function startOfDay(d: Date): Date { const r = new Date(d); r.setHours(0,0,0,0); return r; }
 function endOfDay(d: Date): Date { const r = new Date(d); r.setHours(23,59,59,999); return r; }
@@ -14,7 +15,10 @@ function subDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.
 
 @Injectable()
 export class NanniesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private attendance: AttendanceService,
+  ) {}
 
   async createCategoryRequest(userId: string, dto: CreateCategoryRequestDto) {
     // Validate categories exist
@@ -270,20 +274,15 @@ export class NanniesService {
     const neutral = reviews.filter((r) => (r.rating ?? 0) === 3).length;
     const negative = reviews.filter((r) => (r.rating ?? 0) <= 2).length;
 
-    // Derived metric scores (based on rating distribution and data we have)
-    // Punctuality: weighted toward on-time starts (actual_start vs start_time on bookings)
-    const punctualBookings = await this.prisma.bookings.count({
-      where: {
-        nanny_id: nannyId,
-        status: "COMPLETED",
-        actual_start_time: { not: null },
-      },
-    });
-    const totalCompletedWithActual = await this.prisma.bookings.count({
-      where: { nanny_id: nannyId, status: "COMPLETED", actual_start_time: { not: null } },
-    });
-    // For now, derive punctuality from rating and completion data
-    const punctualityScore = Math.min(100, Math.round((averageRating / 5) * 100 * 1.02));
+    // Punctuality is measured, not inferred. It used to be derived from the
+    // average rating, which meant a caregiver could be marked punctual for being
+    // well-liked and late for a bad review about something else entirely — the
+    // attendance record now supplies the real figure, and the old derivation
+    // survives only as a fallback for caregivers without enough sessions yet.
+    const attendance = await this.attendance.getSummary(nannyId);
+    const punctualityScore =
+      attendance.punctuality.onTimeRate ??
+      Math.min(100, Math.round((averageRating / 5) * 100 * 1.02));
     const expertiseScore = Math.min(100, Math.round((averageRating / 5) * 100 * 0.98));
     const professionalismScore = Math.min(100, completionRate);
 
@@ -317,8 +316,44 @@ export class NanniesService {
         neutral: totalReviews > 0 ? Math.round((neutral / totalReviews) * 100) : 0,
         negative: totalReviews > 0 ? Math.round((negative / totalReviews) * 100) : 0,
       },
+      attendance: {
+        score: attendance.score,
+        band: attendance.band,
+        windowDays: attendance.windowDays,
+        sessionsCounted: attendance.sessionsCounted,
+        onTimeRate: attendance.punctuality.onTimeRate,
+        noShows: attendance.sessions.noShows,
+        lateCancellations: attendance.sessions.lateCancellations,
+        currentStreak: attendance.days.currentStreak,
+      },
       recentReviews,
     };
+  }
+
+  /**
+   * Presence heartbeat from the partner app.
+   *
+   * `is_available_now` already gated matching; what was missing was any record of
+   * *when* it was last true, which is what lets the attendance sweeps tell a
+   * caregiver who switched off from one whose app was killed mid-session. Going
+   * offline is never itself an absence — it only counts while a session is
+   * actually running.
+   */
+  async updatePresence(nannyId: string, online: boolean) {
+    return this.prisma.nanny_details.update({
+      where: { user_id: nannyId },
+      data: { is_available_now: online, last_seen_at: new Date() },
+      select: { is_available_now: true, last_seen_at: true },
+    });
+  }
+
+  /** Liveness ping. Touches `last_seen_at` without changing the caregiver's stated availability. */
+  async recordHeartbeat(nannyId: string) {
+    await this.prisma.nanny_details.updateMany({
+      where: { user_id: nannyId },
+      data: { last_seen_at: new Date() },
+    });
+    return { ok: true, at: new Date() };
   }
 
   async getSettings(nannyId: string) {

@@ -28,6 +28,20 @@ export class BookingRescheduledEvent {
 }
 
 /**
+ * A session the system had to close itself because it ran past its limit with no
+ * check-out.
+ *
+ * Separate from `BookingCompletedEvent`, which is still emitted for these: that
+ * event means care finished, and payments and progress reports must treat it the
+ * same either way. This one means nobody closed it — a distinction only
+ * attendance acts on, and folding it into the completion event would force every
+ * other subscriber to learn about it.
+ */
+export class BookingAutoCompletedEvent {
+  constructor(public readonly booking: bookings) {}
+}
+
+/**
  * A recurring plan was cancelled and its unpaid-for sessions dropped in one go.
  *
  * Deliberately one event for the whole plan rather than a `BookingCancelledEvent`
@@ -52,6 +66,7 @@ export const BOOKING_EVENTS = {
   CREATED: "booking.created",
   STARTED: "booking.started",
   COMPLETED: "booking.completed",
+  AUTO_COMPLETED: "booking.auto_completed",
   CANCELLED: "booking.cancelled",
   RESCHEDULED: "booking.rescheduled",
   PLAN_WOUND_DOWN: "plan.wound_down",

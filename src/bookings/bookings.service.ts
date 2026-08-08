@@ -21,6 +21,7 @@ import {
   BookingCompletedEvent,
   BookingCancelledEvent,
   BookingRescheduledEvent,
+  BookingAutoCompletedEvent,
 } from "./events/booking.events";
 import { BookingStatus } from "../constants";
 import { PricingEngineService } from "../common/pricing.service";
@@ -1034,7 +1035,7 @@ export class BookingsService {
   for (const booking of stuckBookings) {
     try {
       // Tag as auto-completed first, then run the pipeline
-      await this.prisma.bookings.update({
+      const tagged = await this.prisma.bookings.update({
         where: { id: booking.id },
         data: {
           tags: { push: "auto-completed" },
@@ -1043,6 +1044,14 @@ export class BookingsService {
       });
       // completeBooking handles payments, notifications, and SSE
       await this.completeBooking(booking.id);
+
+      // Care happened; nobody closed the session. Attendance treats that as a
+      // missed check-out rather than a missed session, which it can only tell
+      // apart from a normal completion via this event.
+      this.eventEmitter.emit(
+        BOOKING_EVENTS.AUTO_COMPLETED,
+        new BookingAutoCompletedEvent(tagged),
+      );
     } catch (err) {
       this.logger.error(`Failed to auto-complete booking ${booking.id}: ${err.message}`);
       // Fallback: at minimum mark it completed in DB

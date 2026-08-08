@@ -44,6 +44,7 @@ import { ProgressReportsModule } from "./progress-reports/progress-reports.modul
 import { RecurringRequestsModule } from './recurring-requests/recurring-requests.module';
 import { AddressesModule } from "./addresses/addresses.module";
 import { CallsModule } from "./calls/calls.module";
+import { AttendanceModule } from "./attendance/attendance.module";
 
 @Module({
   imports: [
@@ -115,6 +116,7 @@ import { CallsModule } from "./calls/calls.module";
     RecurringRequestsModule,
     AddressesModule,
     CallsModule,
+    AttendanceModule,
   ],
   controllers: [AppController, WellKnownController],
   providers: [

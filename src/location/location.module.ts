@@ -6,12 +6,14 @@ import { LocationController } from "./location.controller";
 import { LocationGateway } from "./location.gateway";
 import { PrismaModule } from "../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { AttendanceModule } from "../attendance/attendance.module";
 
 @Module({
   imports: [
     ConfigModule,
     PrismaModule,
     NotificationsModule,
+    AttendanceModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

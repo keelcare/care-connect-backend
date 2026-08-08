@@ -16,6 +16,7 @@ import {
 } from "@nestjs/swagger";
 import { NanniesService } from "./nannies.service";
 import { CreateCategoryRequestDto } from "./dto/create-category-request.dto";
+import { PresenceDto } from "../attendance/dto/attendance.dto";
 import { AuthGuard } from "@nestjs/passport";
 import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
@@ -101,5 +102,29 @@ export class NanniesController {
     },
   ) {
     return this.nanniesService.updateSettings(req.user.id, dto);
+  }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Post("me/presence")
+  @ApiOperation({
+    summary: "Set the caregiver's Online/Away state",
+    description:
+      "The partner app previously kept this only in device storage, so the toggle could not affect matching and the server had no idea who was reachable.",
+  })
+  @ApiResponse({ status: 200, description: "Presence updated" })
+  async updatePresence(@Request() req, @Body() dto: PresenceDto) {
+    return this.nanniesService.updatePresence(req.user.id, dto.online);
+  }
+
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  @Post("me/heartbeat")
+  @ApiOperation({
+    summary: "Liveness ping from the partner app",
+    description:
+      "Touches last-seen without changing stated availability. Lets the attendance sweeps distinguish a caregiver who deliberately went Away from one whose app died mid-session.",
+  })
+  @ApiResponse({ status: 200, description: "Heartbeat recorded" })
+  async heartbeat(@Request() req) {
+    return this.nanniesService.recordHeartbeat(req.user.id);
   }
 }
