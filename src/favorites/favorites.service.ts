@@ -50,16 +50,6 @@ export class FavoritesService {
     });
   }
 
-  async isFavorite(parentId: string, nannyId: string): Promise<boolean> {
-    const favorite = await this.prisma.favorite_nannies.findFirst({
-      where: {
-        parent_id: parentId,
-        nanny_id: nannyId,
-      },
-    });
-    return !!favorite;
-  }
-
   async getFavoriteNannyIds(parentId: string): Promise<string[]> {
     const favorites = await this.prisma.favorite_nannies.findMany({
       where: { parent_id: parentId },

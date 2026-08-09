@@ -115,7 +115,9 @@ export class VerificationService {
 
   async getPendingVerifications() {
     return this.prisma.users.findMany({
-      where: { identity_verification_status: "pending" },
+      // Verification only applies to nannies — a parent can never be in this
+      // queue, so scope the query rather than relying on the status field alone.
+      where: { identity_verification_status: "pending", role: "nanny" },
       select: {
         id: true,
         email: true,
@@ -133,9 +135,39 @@ export class VerificationService {
     });
   }
 
+  /**
+   * Archived verification submissions for a nanny, newest first. These rows are
+   * written by resetVerification() when a user withdraws an application.
+   * `id_number` is deliberately excluded — ops don't need the raw ID to review
+   * a resubmission, and the storage path is enough to fetch the document.
+   */
+  async getVerificationAttempts(userId: string) {
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!user) throw new NotFoundException("User not found");
+
+    return this.prisma.verification_attempts.findMany({
+      where: { user_id: userId },
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        rejection_reason: true,
+        uploaded_at: true,
+        archived_at: true,
+        supabase_storage_path: true,
+      },
+      orderBy: { archived_at: "desc" },
+    });
+  }
+
   async approveVerification(id: string) {
     const user = await this.prisma.users.findUnique({ where: { id } });
     if (!user) throw new NotFoundException("User not found");
+    if (user.role !== "nanny")
+      throw new ForbiddenException("Only nannies can be verified");
 
     return this.prisma.users.update({
       where: { id },
@@ -149,6 +181,8 @@ export class VerificationService {
   async rejectVerification(id: string, dto: RejectVerificationDto) {
     const user = await this.prisma.users.findUnique({ where: { id } });
     if (!user) throw new NotFoundException("User not found");
+    if (user.role !== "nanny")
+      throw new ForbiddenException("Only nannies can be verified");
 
     return this.prisma.users.update({
       where: { id },

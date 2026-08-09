@@ -382,26 +382,6 @@ export class UsersService {
     return { ...user, averageRating, totalReviews };
   }
 
-  async findFullUserById(id: string) {
-    const user = await this.prisma.users.findUnique({
-      where: { id },
-    });
-    this.logger.debug(
-      `findFullUserById(${id}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
-    );
-    return user;
-  }
-
-  async findFullUserByEmail(email: string) {
-    const user = await this.prisma.users.findUnique({
-      where: { email },
-    });
-    this.logger.debug(
-      `findFullUserByEmail(${email}) - refresh_token_hash exists: ${!!user?.refresh_token_hash}`,
-    );
-    return user;
-  }
-
   async update(
     id: string,
     updateUserDto: UpdateUserDto | Prisma.usersUpdateInput,

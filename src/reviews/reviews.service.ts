@@ -331,31 +331,6 @@ export class ReviewsService {
     };
   }
 
-  async getAverageRatingForUser(userId: string) {
-    const reviews = await this.prisma.reviews.findMany({
-      where: { reviewee_id: userId },
-      select: { rating: true },
-    });
-
-    if (reviews.length === 0) {
-      return {
-        averageRating: null,
-        totalReviews: 0,
-      };
-    }
-
-    const totalRating = reviews.reduce(
-      (sum, review) => sum + (review.rating || 0),
-      0,
-    );
-    const averageRating = totalRating / reviews.length;
-
-    return {
-      averageRating: Math.round(averageRating * 10) / 10, // Round to 1 decimal place
-      totalReviews: reviews.length,
-    };
-  }
-
   async getReviewsWrittenByUser(userId: string) {
     return this.prisma.reviews.findMany({
       where: {

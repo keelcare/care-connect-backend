@@ -1,7 +1,6 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { TimeUtils } from "../common/utils/time.utils";
-import { BookingStatus } from "../common/constants/booking-status.enum";
 import { CreateAvailabilityBlockDto } from "./dto/create-availability-block.dto";
 
 @Injectable()
@@ -111,57 +110,6 @@ export class AvailabilityService {
       .sort((a, b) => b.count - a.count);
 
     return { slots, sampleSize: requests.length, windowDays: 90 };
-  }
-
-  /**
-   * Unified check: Is the nanny free for a specific time slot?
-   * Checks both explicit 'availability_blocks' and existing 'bookings'.
-   */
-  async isNannyAvailable(
-    nannyId: string,
-    startTime: Date,
-    endTime: Date,
-  ): Promise<boolean> {
-    // 1. Check for overlapping explicit blocks (Unavailable time)
-    const blocks = await this.prisma.availability_blocks.findMany({
-      where: { nanny_id: nannyId },
-    });
-
-    for (const block of blocks) {
-      if (block.is_recurring && block.recurrence_pattern) {
-        if (this.matchesRecurringPattern(startTime, endTime, block)) {
-          return false;
-        }
-      } else {
-        // Non-recurring block check
-        if (
-          TimeUtils.isOverlapping(
-            startTime,
-            endTime,
-            block.start_time,
-            block.end_time,
-          )
-        ) {
-          return false;
-        }
-      }
-    }
-
-    // 2. Check for overlapping CONFIRMED bookings
-    const bookings = await this.prisma.bookings.findFirst({
-      where: {
-        nanny_id: nannyId,
-        status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
-        AND: [{ start_time: { lt: endTime } }, { end_time: { gt: startTime } }],
-      },
-    });
-
-    if (bookings) {
-      this.logger.debug(`Nanny ${nannyId} is busy with booking ${bookings.id}`);
-      return false;
-    }
-
-    return true;
   }
 
   /**

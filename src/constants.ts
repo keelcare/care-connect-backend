@@ -85,5 +85,3 @@ export const OAUTH_ERROR_GENERIC = "auth_failed";
  */
 export const CANCELLATION_FEE_NONE = "no_fee";
 export const CANCELLATION_FEE_OWED = "owed";
-/** @deprecated Historical value only — never written by new code. Not money collected. */
-export const CANCELLATION_FEE_LEGACY_CHARGED = "charged";

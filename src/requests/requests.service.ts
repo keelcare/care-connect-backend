@@ -311,58 +311,18 @@ export class RequestsService {
     return result;
   }
 
-  async triggerMatching(requestId: string, tx?: Prisma.TransactionClient) {
-    const prisma = tx || this.prisma;
-    const request = await prisma.service_requests.findUnique({
-      where: { id: requestId },
-      include: {
-        assignments: true,
-        users: { include: { profiles: true } },
-      }, // Include previous assignments and parent info
-    });
-
-    if (!request) throw new NotFoundException("Request not found");
-
-    // Skip auto-matching for Shadow Teacher and Special Needs categories
-    // These will be manually assigned by admins
-    if (request.category === "ST" || request.category === "SN") {
-      this.logger.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Awaiting manual assignment.`);
-      
-      try {
-        const admins = await prisma.users.findMany({
-          where: { role: "admin" },
-          select: { id: true },
-        });
-        for (const admin of admins) {
-          await this.notificationsService.createNotification(
-            admin.id,
-            "Manual Assignment Required",
-            `A new ${request.category} request (${requestId.substring(0, 8)}) requires manual nanny assignment.`,
-            "info"
-          );
-        }
-      } catch (err) {
-        this.logger.error("Failed to notify admins for manual matching request", err);
-      }
-
-      return null;
-    }
-
-    // Get IDs of nannies already assigned (rejected or timeout)
-    const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
-
-    // Calculate Request End Time directly from the date object
-    const requestStartTime = TimeUtils.combineDateAndTime(
-      request.date,
-      request.start_time,
-    );
-    const requestEndTime = TimeUtils.getEndTime(
-      requestStartTime,
-      Number(request.duration_hours),
-    );
-
-    this.logger.debug(`[Matching] Checking overlap for request ${requestId}: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`);
-
+  /**
+   * Finds and scores nannies eligible for a request, without assigning anyone.
+   * Shared by triggerMatching() (which then attempts assignment) and
+   * previewMatches() (which just returns the ranked list).
+   */
+  private async findScoredCandidates(
+    prisma: Prisma.TransactionClient | PrismaService,
+    request: any,
+    requestStartTime: Date,
+    requestEndTime: Date,
+    previouslyAssignedIds: string[],
+  ): Promise<any[]> {
     // Find Nannies with overlapping CONFIRMED bookings of any status that blocks availability
     const busyNannies = await prisma.bookings.findMany({
       where: {
@@ -431,8 +391,8 @@ export class RequestsService {
     const skillSearchTerms = [category, ...mappedSkills].filter(Boolean);
 
     const nannies = (await prisma.$queryRaw(Prisma.sql`
-      SELECT 
-        u.id, 
+      SELECT
+        u.id,
         u.email,
         p.first_name,
         p.last_name,
@@ -452,7 +412,7 @@ export class RequestsService {
         skillSearchTerms.length > 0
           ? Prisma.sql`AND (
         EXISTS (SELECT 1 FROM unnest(nd.tags) t WHERE t IN (${Prisma.join(skillSearchTerms)}))
-        OR 
+        OR
         EXISTS (SELECT 1 FROM unnest(nd.skills) s WHERE s IN (${Prisma.join(skillSearchTerms)}))
         OR
         EXISTS (SELECT 1 FROM unnest(nd.categories) c WHERE c IN (${Prisma.join(skillSearchTerms)}))
@@ -470,7 +430,7 @@ export class RequestsService {
       request.parent_id,
     );
 
-    const scoredNannies = nannies
+    return nannies
       .map((nanny) => {
         // Calculate Score
         let score = 0;
@@ -512,6 +472,113 @@ export class RequestsService {
         return { ...nanny, score };
       })
       .sort((a, b) => b.score - a.score); // Sort by Score DESC
+  }
+
+  /**
+   * Read-only preview of the nannies that matching would consider for a request,
+   * ranked exactly as triggerMatching() ranks them. Assigns nobody.
+   */
+  async previewMatches(requestId: string) {
+    const request = await this.prisma.service_requests.findUnique({
+      where: { id: requestId },
+      include: { assignments: true },
+    });
+
+    if (!request) throw new NotFoundException("Request not found");
+
+    const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
+    const requestStartTime = TimeUtils.combineDateAndTime(
+      request.date,
+      request.start_time,
+    );
+    const requestEndTime = TimeUtils.getEndTime(
+      requestStartTime,
+      Number(request.duration_hours),
+    );
+
+    const scored = await this.findScoredCandidates(
+      this.prisma,
+      request,
+      requestStartTime,
+      requestEndTime,
+      previouslyAssignedIds,
+    );
+
+    return {
+      request_id: requestId,
+      count: scored.length,
+      matches: scored.map((n) => ({
+        nanny_id: n.id,
+        first_name: n.first_name,
+        last_name: n.last_name,
+        distance_km: Number(Number(n.distance).toFixed(2)),
+        experience_years: n.experience_years,
+        acceptance_rate: n.acceptance_rate,
+        skills: n.skills,
+        score: Number(n.score.toFixed(1)),
+      })),
+    };
+  }
+
+  async triggerMatching(requestId: string, tx?: Prisma.TransactionClient) {
+    const prisma = tx || this.prisma;
+    const request = await prisma.service_requests.findUnique({
+      where: { id: requestId },
+      include: {
+        assignments: true,
+        users: { include: { profiles: true } },
+      }, // Include previous assignments and parent info
+    });
+
+    if (!request) throw new NotFoundException("Request not found");
+
+    // Skip auto-matching for Shadow Teacher and Special Needs categories
+    // These will be manually assigned by admins
+    if (request.category === "ST" || request.category === "SN") {
+      this.logger.log(`[Matching] Skipping auto-matching for ${request.category} request ${requestId}. Awaiting manual assignment.`);
+      
+      try {
+        const admins = await prisma.users.findMany({
+          where: { role: "admin" },
+          select: { id: true },
+        });
+        for (const admin of admins) {
+          await this.notificationsService.createNotification(
+            admin.id,
+            "Manual Assignment Required",
+            `A new ${request.category} request (${requestId.substring(0, 8)}) requires manual nanny assignment.`,
+            "info"
+          );
+        }
+      } catch (err) {
+        this.logger.error("Failed to notify admins for manual matching request", err);
+      }
+
+      return null;
+    }
+
+    // Get IDs of nannies already assigned (rejected or timeout)
+    const previouslyAssignedIds = request.assignments.map((a) => a.nanny_id);
+
+    // Calculate Request End Time directly from the date object
+    const requestStartTime = TimeUtils.combineDateAndTime(
+      request.date,
+      request.start_time,
+    );
+    const requestEndTime = TimeUtils.getEndTime(
+      requestStartTime,
+      Number(request.duration_hours),
+    );
+
+    this.logger.debug(`[Matching] Checking overlap for request ${requestId}: ${requestStartTime.toISOString()} - ${requestEndTime.toISOString()}`);
+
+    const scoredNannies = await this.findScoredCandidates(
+      prisma,
+      request,
+      requestStartTime,
+      requestEndTime,
+      previouslyAssignedIds,
+    );
 
     if (scoredNannies.length > 0) {
       this.logger.log(`[Matching] Found ${scoredNannies.length} potential matches for request ${requestId}. Attempting assignment...`);

@@ -28,6 +28,7 @@ import {
 } from "../common/constants/plan-status.enum";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { PaginationDto } from "./dto/pagination.dto";
+import { ReviewQueryDto } from "./dto/review-query.dto";
 import { AdminAuditService } from "./admin-audit.service";
 import { EncryptionService } from "../common/services/encryption.service";
 
@@ -1402,14 +1403,19 @@ export class AdminService {
   }
 
   // Review Moderation
-  async getAllReviews(query?: PaginationDto) {
+  async getAllReviews(query?: ReviewQueryDto) {
     const page = query?.page || 1;
     const pageSize = query?.pageSize || 10;
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
+    const where = query?.moderationStatus
+      ? { moderation_status: query.moderationStatus }
+      : {};
+
     const [items, total] = await this.prisma.$transaction([
       this.prisma.reviews.findMany({
+        where,
         skip,
         take,
         orderBy: { created_at: "desc" },
@@ -1429,7 +1435,7 @@ export class AdminService {
           bookings: true,
         },
       }),
-      this.prisma.reviews.count()
+      this.prisma.reviews.count({ where })
     ]);
 
     return {

@@ -31,7 +31,9 @@ export class VerificationController {
 
   constructor(private readonly verificationService: VerificationService) {}
 
-  @UseGuards(AuthGuard("jwt"), ActiveUserGuard)
+  // Identity verification is a nanny-only flow; parents have nothing to submit.
+  @Roles(UserRole.NANNY)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
   @Post("upload")
   @UseInterceptors(
     FileInterceptor("file", {
@@ -87,6 +89,16 @@ export class VerificationController {
   @Get("pending")
   async getPendingVerifications() {
     return this.verificationService.getPendingVerifications();
+  }
+
+  // Archived submissions for one nanny — rows written by resetVerification()
+  // when a user withdraws. Ops need this to see prior attempts and rejection
+  // reasons before approving a resubmission.
+  @Roles(UserRole.ADMIN)
+  @UseGuards(AuthGuard("jwt"), ActiveUserGuard, RolesGuard)
+  @Get("attempts/:userId")
+  async getVerificationAttempts(@Param("userId") userId: string) {
+    return this.verificationService.getVerificationAttempts(userId);
   }
 
   @Roles(UserRole.ADMIN)

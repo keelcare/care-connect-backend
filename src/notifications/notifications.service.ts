@@ -21,14 +21,16 @@ export class NotificationsService {
     private pushService: PushService,
     private sseService: SseService,
   ) {
-    //commented for now till we get credentials
-    // const accountSid = this.configService.get<string>("TWILIO_ACCOUNT_SID");
-    // const authToken = this.configService.get<string>("TWILIO_AUTH_TOKEN");
-    // if (accountSid && authToken) {
-    //   this.twilioClient = new Twilio(accountSid, authToken);
-    // } else {
-    //   this.logger.warn("Twilio credentials not found. SMS notifications will be simulated.");
-    // }
+    const accountSid = this.configService.get<string>("TWILIO_ACCOUNT_SID");
+    const authToken = this.configService.get<string>("TWILIO_AUTH_TOKEN");
+    if (accountSid && authToken) {
+      this.twilioClient = new Twilio(accountSid, authToken);
+      this.logger.log("Twilio client initialised. SMS notifications are live.");
+    } else {
+      this.logger.warn(
+        "Twilio credentials not found. SMS notifications will be simulated.",
+      );
+    }
   }
 
   async createNotification(

@@ -65,10 +65,15 @@ export class RequestsController {
     summary: "Get potential nanny matches for a request (Preview)",
   })
   @ApiResponse({ status: 200, description: "Return potential matches" })
-  async getMatches(@Param("id") id: string) {
-    // This would reuse the matching logic but return list instead of assigning
-    // For now, just a placeholder or reuse triggerMatching logic without saving
-    return { message: "Not implemented yet" };
+  @ApiResponse({ status: 404, description: "Request not found" })
+  async getMatches(@Param("id") id: string, @Request() req) {
+    const request = await this.requestsService.findOne(id);
+    if (!request) throw new NotFoundException("Request not found");
+    // Only the owning parent or an admin may preview candidate nannies.
+    if (request.parent_id !== req.user.id && req.user.role !== "admin") {
+      throw new NotFoundException(`Service request with ID ${id} not found`);
+    }
+    return this.requestsService.previewMatches(id);
   }
 
   @Get(":id")

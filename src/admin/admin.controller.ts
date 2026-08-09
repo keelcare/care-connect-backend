@@ -24,6 +24,9 @@ import {
 } from "./dto/revenue-query.dto";
 import { RevenueService } from "./revenue.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
+import { AdminAuditService } from "./admin-audit.service";
+import { AuditLogQueryDto } from "./dto/audit-log-query.dto";
+import { ReviewQueryDto } from "./dto/review-query.dto";
 
 /** Helper: extract the real client IP from the request */
 function getClientIp(req: any): string {
@@ -42,6 +45,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly revenueService: RevenueService,
     private readonly bookingStatusLog: BookingStatusLogService,
+    private readonly adminAuditService: AdminAuditService,
   ) {}
 
   // Manual Assignment Management
@@ -132,6 +136,13 @@ export class AdminController {
     );
   }
 
+  // Admin action audit trail. Every logAction() write across the admin and
+  // revenue services lands here; this is the read side.
+  @Get("audit-log")
+  async getAuditLog(@Query() query: AuditLogQueryDto) {
+    return this.adminAuditService.findAll(query);
+  }
+
   // Booking Management
   @Get("bookings")
   async getAllBookings(@Query() query: PaginationDto) {
@@ -192,7 +203,7 @@ export class AdminController {
 
   // Review Moderation
   @Get("reviews")
-  async getAllReviews(@Query() query: PaginationDto) {
+  async getAllReviews(@Query() query: ReviewQueryDto) {
     return this.adminService.getAllReviews(query);
   }
 
