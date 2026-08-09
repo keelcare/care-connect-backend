@@ -225,6 +225,7 @@ export class UsersService {
         profiles: true,
         nanny_details: true,
         nanny_onboarding_details: true,
+        identity_documents: true,
         children: {
           where: { deleted_at: null },
           orderBy: { created_at: "desc" },
