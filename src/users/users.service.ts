@@ -236,6 +236,13 @@ export class UsersService {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
 
+    let identity_documents = [];
+    if (user.role === "nanny" && user.identity_verification_status !== "verified") {
+      identity_documents = await this.prisma.identity_documents.findMany({
+        where: { user_id: id },
+      });
+    }
+
     this.decryptOnboardingDetails(user);
 
     // Exclude sensitive fields
@@ -251,7 +258,7 @@ export class UsersService {
       ...result
     } = user;
 
-    return result;
+    return { ...result, identity_documents };
   }
 
   async findOne(id: string) {
