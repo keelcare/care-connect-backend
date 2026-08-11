@@ -26,6 +26,18 @@ export enum PaymentStatus {
   FAILED = "failed",
   REFUNDED = "refunded",
   PENDING_RELEASE = "pending_release",
+  /**
+   * A row that no longer represents anything owed or collected. Only the
+   * `manual_pending` completion placeholder reaches it: once the parent actually
+   * pays for the session the placeholder stood in for, keeping it in an earning
+   * status would pay the caregiver for the same care twice.
+   *
+   * Voided rather than deleted so the audit trail survives. Every payments query is
+   * a status whitelist of `captured` / `pending_release` / `refunded` / `failed`, so
+   * a voided row drops out of earnings, the revenue ledger and parent transactions
+   * without any of them needing to know this status exists.
+   */
+  VOID = "void",
 }
 
 /**

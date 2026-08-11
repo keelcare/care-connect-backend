@@ -30,6 +30,7 @@ import {
   INSTALMENT_VOID,
 } from "../constants";
 import {
+  EARNING_STATUSES,
   caregiverEarningsWhere,
   preTaxBookingValue,
   preTaxServiceFee,
@@ -843,6 +844,54 @@ export class PaymentsService {
       const isMatchingFee = installment
         ? installment.kind === MATCHING_FEE_KIND
         : snapshot?.cycle_number === MATCHING_FEE_CYCLE;
+
+      // ── Retire the completion placeholder ──────────────────────────────────
+      // A booking completed before its cycle was paid gets a `manual_pending`
+      // placeholder for the session's full value, so the caregiver's payout is not
+      // silently zero while the parent still owes. When that money finally arrives
+      // the placeholder has served its purpose: leaving it in an earning status
+      // makes the same session accrue twice — once at its gross value and again at
+      // whatever was actually charged.
+      //
+      // Bounded to non-matching-fee captures: the fee is collected before the
+      // caregiver exists and is not the session being paid for, so it must never
+      // retire the placeholder standing in for the session's value.
+      if (!isMatchingFee) {
+        const placeholders = await tx.payments.findMany({
+          where: {
+            booking_id: payment.booking_id,
+            provider: MANUAL_PENDING_PROVIDER,
+            status: { in: EARNING_STATUSES },
+          },
+          select: { id: true, order_id: true, status: true, amount: true },
+        });
+
+        for (const placeholder of placeholders) {
+          // Guarded on the status we read, so two interleaving captures cannot both
+          // claim the same placeholder and write a duplicate audit entry.
+          const { count } = await tx.payments.updateMany({
+            where: { id: placeholder.id, status: placeholder.status },
+            data: { status: PaymentStatus.VOID },
+          });
+          if (count === 0) continue;
+
+          await this.audit.writeLog(
+            tx,
+            placeholder.id,
+            placeholder.order_id,
+            placeholder.status,
+            PaymentStatus.VOID,
+            `${triggeredBy}:placeholder_settled`,
+            undefined,
+            {
+              settled_by_payment_id: payment.id,
+              settled_by_order_id: orderId,
+              placeholder_amount: Number(placeholder.amount),
+              captured_amount: Number(payment.amount),
+            },
+          );
+        }
+      }
 
       let updatedBooking = await tx.bookings.findUnique({
         where: { id: payment.booking_id },
