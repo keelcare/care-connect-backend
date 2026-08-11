@@ -31,14 +31,33 @@ CREATE INDEX IF NOT EXISTS "payment_installments_booking_id_idx" ON "payment_ins
 CREATE INDEX IF NOT EXISTS "payment_installments_status_due_date_idx" ON "payment_installments"("status", "due_date");
 CREATE INDEX IF NOT EXISTS "payment_installments_payment_id_idx" ON "payment_installments"("payment_id");
 
-ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_booking_id_fkey"
+-- Guarded: `payment_installments_booking_id_fkey` and `..._payment_id_fkey`
+-- already exist from 20260405071912, which created this table for the
+-- superseded subscription_plans model. Bare ADD CONSTRAINTs here made the
+-- migration unreplayable on any database that had that table.
+DO $$ BEGIN
+ ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_booking_id_fkey"
     FOREIGN KEY ("booking_id") REFERENCES "bookings"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
-ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_price_snapshot_id_fkey"
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+ ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_price_snapshot_id_fkey"
     FOREIGN KEY ("price_snapshot_id") REFERENCES "price_snapshots"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
-ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_payment_plan_id_fkey"
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+ ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_payment_plan_id_fkey"
     FOREIGN KEY ("payment_plan_id") REFERENCES "payment_plans"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
-ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_payment_id_fkey"
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+ ALTER TABLE "payment_installments" ADD CONSTRAINT "payment_installments_payment_id_fkey"
     FOREIGN KEY ("payment_id") REFERENCES "payments"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- ── Backfill ────────────────────────────────────────────────────────────────
 -- Every existing snapshot becomes a single 1-of-1 installment so that "every

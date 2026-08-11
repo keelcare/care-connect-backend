@@ -31,7 +31,7 @@
     "test:e2e:local:concurrency": "dotenv -e .env.local -- jest --config ./test/jest-e2e.json --testPathPattern=concurrency"
   },
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node scripts/seed-dev.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
