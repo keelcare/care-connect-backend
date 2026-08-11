@@ -10,7 +10,8 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { FavoritesService } from "../favorites/favorites.service";
 import { ChatService } from "../chat/chat.service";
 import { RequestsService } from "../requests/requests.service";
-import { CATEGORY_SKILL_MAP } from "../constants";
+import { CATEGORY_SKILL_MAP, MANUAL_PENDING_PROVIDER } from "../constants";
+import { EARNING_STATUSES } from "../common/payout-policy";
 import { Prisma } from "@prisma/client";
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
@@ -1542,7 +1543,20 @@ export class AdminService {
       this.prisma.bookings.count({ where: { status: BookingStatus.CANCELLED } }),
       this.prisma.assignments.count(),
       this.prisma.assignments.count({ where: { status: "accepted" } }),
-      this.prisma.payments.aggregate({ _sum: { amount: true } }),
+      // Only money that actually settled. Without the status filter this also
+      // swept up abandoned checkouts (`created`), failed and refunded charges,
+      // and the `manual_pending` placeholder written when a booking completes
+      // with no charge attached — which counted such bookings twice and made the
+      // dashboard headline read roughly double. Mirrors
+      // `RevenueService.collectedWhere()`, the revenue screen's source of truth;
+      // keep the two in step.
+      this.prisma.payments.aggregate({
+        where: {
+          provider: { not: MANUAL_PENDING_PROVIDER },
+          status: { in: EARNING_STATUSES },
+        },
+        _sum: { amount: true },
+      }),
       this.prisma.bookings.findMany({
         where: { start_time: { not: null } },
         select: { start_time: true },
