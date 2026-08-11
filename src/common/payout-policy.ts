@@ -2,7 +2,6 @@ import { Prisma } from "@prisma/client";
 import {
   BookingStatus,
   MANUAL_PENDING_PROVIDER,
-  MATCHING_FEE_KIND,
   PaymentStatus,
 } from "../constants";
 
@@ -57,12 +56,20 @@ export const CAREGIVER_SHARE_ONLY: Prisma.paymentsWhereInput = {
     // earnings and the revenue ledger entirely.
     { payment_installments: { some: {} } },
   ],
-  // The matching fee is what the platform charges for making the match, raised
-  // before a caregiver existed and deducted from the first cycle rather than added
-  // to it. It is not a share of care and carries no payout: without this it rides
-  // in on the instalment arm above and accrues to whoever is later assigned, who
-  // would then be paid twice out of the same first cycle.
-  payment_installments: { none: { kind: MATCHING_FEE_KIND } },
+  // The matching fee is NOT excluded, and the reason is arithmetic rather than
+  // policy. `createPriceSnapshot` deducts the fee from the first cycle
+  // (`netTotal = finalAmount - feeCredit`) instead of adding it on top, so the
+  // parent's total for a placement is `fee + reduced cycle 1 + later cycles` —
+  // exactly the headline price. Dropping the fee row here therefore did not
+  // withhold a platform charge from the caregiver, it shrank her first cycle by
+  // the fee amount and paid her nothing back for it. Counting the row restores
+  // the cycle to its gross value; it cannot double-count, because the money it
+  // represents was subtracted from the cycle it is being added back to.
+  //
+  // Attribution still runs through the booking (see `caregiverEarningsWhere`), so
+  // a fee raised before anyone was assigned simply accrues to nobody until the
+  // match is made — which is the same booking whose first cycle carries the
+  // deduction.
 };
 
 /**

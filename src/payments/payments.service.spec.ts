@@ -638,3 +638,112 @@ describe("PaymentsService", () => {
     });
   });
 });
+
+/**
+ * The caregiver-facing earnings figures. The matching fee is the interesting case:
+ * it is deducted from the booking's first cycle rather than added on top, so it has
+ * to be *inside* the payout — and reported separately without being counted twice.
+ */
+describe("PaymentsService — nanny earnings analytics", () => {
+  let service: PaymentsService;
+
+  // ₹249 fee carrying ₹38 GST, and the first cycle billed net of it: 5691 with 862.
+  const feeRow = {
+    amount: 249,
+    created_at: new Date(),
+    released_at: null,
+    price_snapshots: [{ gst_amount: 38 }],
+    payment_installments: [{ gst_amount: 38, kind: "matching_fee" }],
+  };
+  const cycleRow = {
+    amount: 5691,
+    created_at: new Date(),
+    released_at: null,
+    price_snapshots: [{ gst_amount: 862 }],
+    payment_installments: [{ gst_amount: 862, kind: "cycle" }],
+  };
+
+  const mockPrisma = {
+    payments: { findMany: jest.fn() },
+    bookings: { count: jest.fn(), findMany: jest.fn() },
+    // The analytics read is an array of promises, not a callback.
+    $transaction: jest.fn().mockImplementation((ops: Promise<any>[]) => Promise.all(ops)),
+  };
+
+  const mockPricingService = {
+    getCommissionConfig: jest.fn().mockResolvedValue({ percent: 0, configured: true }),
+    resolveStandardHourlyRate: jest.fn().mockResolvedValue(null),
+  };
+
+  /** Stage the rows every `payments.findMany` in the analytics read returns. */
+  const stage = (rows: any[]) => {
+    mockPrisma.payments.findMany.mockResolvedValue(rows);
+    mockPrisma.bookings.count.mockResolvedValue(0);
+    mockPrisma.bookings.findMany.mockResolvedValue([]);
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockPricingService.getCommissionConfig.mockResolvedValue({ percent: 0, configured: true });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentsService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: PricingEngineService, useValue: mockPricingService },
+      ],
+    })
+      .useMocker(() => ({}))
+      .compile();
+
+    service = module.get<PaymentsService>(PaymentsService);
+  });
+
+  it("counts the matching fee toward what the caregiver has earned", async () => {
+    stage([feeRow, cycleRow]);
+
+    const result = await service.getNannyEarningsAnalytics("nanny-1");
+
+    // 211 (fee, pre-tax) + 4829 (net cycle, pre-tax) — exactly the pre-tax fee of
+    // the 5940 cycle the parent would have paid had there been no matching fee.
+    expect(result.totalEarned).toBe(5040);
+  });
+
+  it("leaves the caregiver short by the fee if the fee row is dropped", async () => {
+    // The bug this fixes, stated as its own case: the cycle alone is not the
+    // booking's value, because the fee was taken out of it.
+    stage([cycleRow]);
+
+    const result = await service.getNannyEarningsAnalytics("nanny-1");
+
+    expect(result.totalEarned).toBe(4829);
+  });
+
+  it("reports the fee's share separately without adding it a second time", async () => {
+    stage([feeRow, cycleRow]);
+
+    const result = await service.getNannyEarningsAnalytics("nanny-1");
+
+    expect(result.matchingFeePayout).toBe(211);
+    // Part of netPayout, not additional to it.
+    expect(result.netPayout).toBe(5040);
+  });
+
+  it("applies commission to the fee like any other earning", async () => {
+    mockPricingService.getCommissionConfig.mockResolvedValue({ percent: 10, configured: true });
+    stage([feeRow, cycleRow]);
+
+    const result = await service.getNannyEarningsAnalytics("nanny-1");
+
+    expect(result.matchingFeePayout).toBe(189.9); // 211 × 0.9
+    expect(result.netPayout).toBe(4536); // 5040 × 0.9
+  });
+
+  it("reports zero fee share for a booking that never carried one", async () => {
+    stage([cycleRow]);
+
+    const result = await service.getNannyEarningsAnalytics("nanny-1");
+
+    expect(result.matchingFeePayout).toBe(0);
+  });
+});

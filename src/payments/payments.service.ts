@@ -1568,7 +1568,8 @@ export class PaymentsService {
       released_at: true,
       price_snapshots: { select: { gst_amount: true } },
       // A split cycle's halves carry their own frozen GST; see preTaxServiceFee.
-      payment_installments: { select: { gst_amount: true } },
+      // `kind` is what identifies the matching-fee row, reported separately below.
+      payment_installments: { select: { gst_amount: true, kind: true } },
     } satisfies Prisma.paymentsSelect;
 
     const [
@@ -1650,6 +1651,19 @@ export class PaymentsService {
     const paidOut = share(sum(allTime.filter((p) => p.released_at != null)));
     const outstanding = round2(netPayout - paidOut);
 
+    // The caregiver's share of the matching fee, called out on its own because it is
+    // the one line she cannot reconcile against a session on her calendar. It is
+    // already inside `netPayout` — the fee is deducted from the first cycle rather
+    // than added to it, so counting it is what restores that cycle to its full
+    // value. Reported so the app can say where the money came from, not added again.
+    const matchingFeePayout = share(
+      sum(
+        allTime.filter((p) =>
+          p.payment_installments.some((i) => i.kind === MATCHING_FEE_KIND),
+        ),
+      ),
+    );
+
     // ── Projected earnings ───────────────────────────────────────────────────
     //
     // Booked work only: the caregiver's share of sessions still on her calendar
@@ -1721,6 +1735,8 @@ export class PaymentsService {
       commissionPercent,
       commissionAmount,
       netPayout,
+      /** Part of `netPayout`, not additional to it. See above. */
+      matchingFeePayout,
       paidOut,
       outstanding,
       jobsCompleted,

@@ -49,6 +49,12 @@ export class UpsertNannyOnboardingDto {
   @IsString()
   shadowTeacherExperience?: string;
 
+  /** Service categories (services.name — e.g. ST, SN), chosen during onboarding. */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  categories?: string[];
+
   @IsOptional()
   @IsArray()
   @IsString({ each: true })

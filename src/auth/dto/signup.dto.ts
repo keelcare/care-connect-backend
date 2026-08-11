@@ -134,12 +134,13 @@ export class SignupDto {
   phone?: string;
 
   /**
-   * Categories for nannies - At least one category is required if role is Nanny
+   * Service categories for nannies. Collected during onboarding rather than at
+   * signup; accepted here only for older clients.
    */
   @ApiPropertyOptional({
     type: [String],
-    example: ["standard", "premium"],
-    description: "Service categories (required for nannies)",
+    example: ["ST", "SN"],
+    description: "Service categories (optional; normally set during onboarding)",
   })
   @IsOptional()
   categories?: string[];

@@ -23,6 +23,7 @@ import {
   INSTALMENT_PENDING,
   INSTALMENT_VOID,
 } from "../../constants";
+import { EARNING_STATUSES, round2 } from "../../common/payout-policy";
 import { Prisma } from "@prisma/client";
 
 @Injectable()
@@ -110,12 +111,22 @@ export class BookingListeners {
     // Every captured charge on the booking moves to pending_release, not just one:
     // a split cycle settles through two payment rows, and releasing only whichever
     // came back first would leave the caregiver's other half permanently unaccrued.
-    // The matching fee is excluded from both reads. It is the platform's charge for
-    // making the match, collected before the caregiver existed and deducted from the
-    // first cycle — so it is neither care the caregiver is owed for nor evidence the
-    // session has been paid for. Counting it here is what left a one-time booking
-    // silently "settled" on ₹249: the fee accrued as the payout, the placeholder for
-    // the session's real value was never written, and `paymentDue` came out false.
+    //
+    // The matching fee is read separately from the care charges, because the two
+    // questions it answers differ:
+    //
+    //   - Does it move to `pending_release`?  Yes. The fee is deducted from the
+    //     first cycle rather than added to it, so the caregiver's share of that
+    //     cycle is short by exactly the fee. It is part of what she is owed and has
+    //     to reach the same releasable status as every other charge, or the admin
+    //     payout list (which filters on `pending_release`) never offers it.
+    //
+    //   - Is it evidence the *session* has been paid for?  No. It is collected at
+    //     confirmation, before the session existed. Letting it answer that question
+    //     is what left a one-time booking silently "settled" on ₹249: no
+    //     placeholder was written for the session's real value and `paymentDue`
+    //     came out false. So `captured`, `existingPayment` and `paymentDue` below
+    //     all stay blind to it.
     const notMatchingFee = {
       payment_installments: { none: { kind: MATCHING_FEE_KIND } },
     } satisfies Prisma.paymentsWhereInput;
@@ -130,29 +141,57 @@ export class BookingListeners {
       orderBy: { created_at: "asc" },
     });
 
+    // Every fee already collected on this booking, in either earning status: the
+    // `captured` ones are flipped below, and the whole set is what the placeholder
+    // has to be netted against — a re-run must not net twice or miss a fee it
+    // flipped on the previous pass.
+    const collectedMatchingFees = await this.prisma.payments.findMany({
+      where: {
+        booking_id: booking.id,
+        provider: { not: MANUAL_PENDING_PROVIDER },
+        status: { in: EARNING_STATUSES },
+        payment_installments: { some: { kind: MATCHING_FEE_KIND } },
+      },
+      orderBy: { created_at: "asc" },
+    });
+
     const existingPayment = await this.prisma.payments.findFirst({
       where: { booking_id: booking.id, ...notMatchingFee },
       orderBy: { created_at: "asc" },
     });
 
-    if (captured.length > 0) {
-      // Sequential rather than parallel: each writes its own audit-log entry.
-      for (const payment of captured) {
-        await this.paymentsService.updatePaymentStatus(
-          payment.id,
-          "pending_release",
-          "bookings:booking_completed",
-          { booking_id: booking.id },
-        ).catch(err => this.logger.error(`Failed to update payment status: ${err.message}`));
-      }
-    } else if (!existingPayment) {
+    // Sequential rather than parallel: each writes its own audit-log entry.
+    // The fee accrues whether or not the session itself was ever charged — the
+    // deduction it caused on cycle 1 stands either way.
+    const feeCollected = round2(
+      collectedMatchingFees.reduce((sum, p) => sum + Number(p.amount), 0),
+    );
+
+    for (const payment of [
+      ...captured,
+      ...collectedMatchingFees.filter((p) => p.status === "captured"),
+    ]) {
+      await this.paymentsService.updatePaymentStatus(
+        payment.id,
+        "pending_release",
+        "bookings:booking_completed",
+        { booking_id: booking.id },
+      ).catch(err => this.logger.error(`Failed to update payment status: ${err.message}`));
+    }
+
+    if (captured.length === 0 && !existingPayment) {
       await this.prisma.payments.create({
         data: {
           booking_id: booking.id,
           // Without this the row is invisible to every nanny earnings query — they
           // all filter on nanny_id, so the payout would accrue to nobody.
           nanny_id: booking.nanny_id ?? null,
-          amount: totalAmount,
+          // `totalAmount` is the session's headline price. Any matching fee already
+          // collected is part of that price, not an addition to it — the first cycle
+          // is billed net of it — and now accrues to the caregiver as its own row.
+          // Standing the placeholder up at the gross figure alongside it would pay
+          // the fee twice, so the placeholder carries only what the fee did not.
+          amount: round2(Math.max(0, Number(totalAmount) - feeCollected)),
           status: "pending_release",
           order_id: `${MANUAL_PENDING_PROVIDER}_${booking.id}_${Date.now()}`,
           provider: MANUAL_PENDING_PROVIDER,

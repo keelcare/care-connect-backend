@@ -235,6 +235,11 @@ export class PaymentsController {
       "Amounts are the caregiver's pre-tax service fee. `commissionPercent` is the " +
       "platform rate in force and `netPayout` is what the caregiver actually receives; " +
       "clients must display those rather than applying a rate of their own.\n\n" +
+      "`matchingFeePayout` is the caregiver's share of the one-off matching fee. It " +
+      "is already **included in** `netPayout` and `totalEarned` — the fee is deducted " +
+      "from the booking's first cycle rather than added on top, so it is part of the " +
+      "same total. It is reported separately only so a client can explain where the " +
+      "money came from; never add it to `netPayout`.\n\n" +
       "`period` is the *calendar* week (Mon–Sun) or month in IST, not a trailing " +
       "window, and `trend` spans the whole of it — days still ahead carry " +
       "`projection` instead of `amount`.\n\n" +

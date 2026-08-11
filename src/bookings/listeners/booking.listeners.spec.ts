@@ -14,10 +14,19 @@ import { SSE_EVENTS } from "../../events/sse-event.types";
  * payout accrual, a booking with nothing captured gets a placeholder so the
  * caregiver is still owed, and the parent is told whether they still have to pay.
  *
- * All three used to be fooled by the matching fee. It is a real captured payment
- * on the booking, so a one-time session whose parent had paid only the ₹249
- * placement fee looked, at completion, exactly like a session that had been paid
- * in full — no prompt, and a ₹249 payout instead of the session's value.
+ * The matching fee sits astride all three, and the split it needs is subtle:
+ *
+ *  - It must NOT answer "has the session been paid for?". It is collected at
+ *    confirmation, so a one-time session whose parent had paid only the ₹249
+ *    placement fee once looked, at completion, exactly like a session paid in
+ *    full — no prompt, and a ₹249 payout instead of the session's value.
+ *  - It MUST accrue to the caregiver. The fee is deducted from the first cycle
+ *    rather than added to it, so leaving it out did not withhold a platform
+ *    charge — it shrank her cycle by ₹249 and paid her nothing back.
+ *
+ * So the fee is released like any other charge, and the placeholder standing in
+ * for an unpaid session is written net of it. Fee + placeholder = the session's
+ * headline price, once.
  */
 describe("BookingListeners — booking completed", () => {
   let listeners: BookingListeners;
@@ -67,6 +76,30 @@ describe("BookingListeners — booking completed", () => {
     listeners = module.get<BookingListeners>(BookingListeners);
   });
 
+  /**
+   * `handleBookingCompleted` issues two `findMany` reads over `payments` — the care
+   * charges and the matching fees — distinguished only by their where clause. The
+   * mock routes on that so each test can stage the two independently.
+   */
+  const stagePayments = ({ care = [], fees = [] }: { care?: any[]; fees?: any[] }) => {
+    mockPrisma.payments.findMany.mockImplementation(async ({ where }: any) =>
+      where.payment_installments?.some?.kind === "matching_fee" ? fees : care,
+    );
+  };
+
+  const careQuery = () =>
+    mockPrisma.payments.findMany.mock.calls.find(
+      ([args]) => args.where.payment_installments?.none,
+    )?.[0];
+
+  const feeQuery = () =>
+    mockPrisma.payments.findMany.mock.calls.find(
+      ([args]) => args.where.payment_installments?.some,
+    )?.[0];
+
+  const released = () =>
+    mockPaymentsService.updatePaymentStatus.mock.calls.map((c) => c[0]);
+
   const complete = (totalAmount = 5940) =>
     listeners.handleBookingCompleted(new BookingCompletedEvent(booking, totalAmount));
 
@@ -75,26 +108,27 @@ describe("BookingListeners — booking completed", () => {
       ([, payload]) => payload?.type === SSE_EVENTS.BOOKING_COMPLETED,
     )?.[1];
 
-  it("excludes matching-fee payments when looking for what the parent has paid", async () => {
-    mockPrisma.payments.findMany.mockResolvedValue([]);
+  it("keeps the matching fee out of the reads that decide what the parent still owes", async () => {
+    stagePayments({});
     mockPrisma.payments.findFirst.mockResolvedValue(null);
 
     await complete();
 
-    for (const call of [
-      mockPrisma.payments.findMany.mock.calls[0][0],
-      mockPrisma.payments.findFirst.mock.calls[0][0],
-    ]) {
+    for (const call of [careQuery(), mockPrisma.payments.findFirst.mock.calls[0][0]]) {
       expect(call.where.payment_installments).toEqual({
         none: { kind: "matching_fee" },
       });
     }
+    // …and reads it on its own terms for the payout side.
+    expect(feeQuery().where.payment_installments).toEqual({
+      some: { kind: "matching_fee" },
+    });
   });
 
   it("still asks the parent to pay when only the matching fee has been collected", async () => {
-    // The fee is filtered out, so both reads come back empty — the session itself
-    // has not been paid for and the drawer has to say so.
-    mockPrisma.payments.findMany.mockResolvedValue([]);
+    // The care read comes back empty — the session itself has not been paid for
+    // and the drawer has to say so, however much fee is sitting on the booking.
+    stagePayments({ fees: [{ id: "pay_fee", amount: 249, status: "captured" }] });
     mockPrisma.payments.findFirst.mockResolvedValue(null);
 
     await complete();
@@ -102,23 +136,62 @@ describe("BookingListeners — booking completed", () => {
     expect(sseEvent()?.data.paymentDue).toBe(true);
   });
 
-  it("accrues the session's value, not the fee, when only the fee was collected", async () => {
-    mockPrisma.payments.findMany.mockResolvedValue([]);
+  it("accrues the fee and the rest of the session's value, adding up to the price once", async () => {
+    stagePayments({ fees: [{ id: "pay_fee", amount: 249, status: "captured" }] });
+    mockPrisma.payments.findFirst.mockResolvedValue(null);
+
+    await complete(5940);
+
+    // The fee reaches pending_release like any other charge, so an admin can release it.
+    expect(released()).toEqual(["pay_fee"]);
+    // The placeholder carries only what the fee did not: 5940 − 249.
+    expect(mockPrisma.payments.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ amount: 5691, nanny_id: "nanny-1" }),
+      }),
+    );
+  });
+
+  it("writes the placeholder at full value when no fee was ever collected", async () => {
+    stagePayments({});
     mockPrisma.payments.findFirst.mockResolvedValue(null);
 
     await complete(5940);
 
     expect(mockPrisma.payments.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ amount: 5940, nanny_id: "nanny-1" }),
-      }),
+      expect.objectContaining({ data: expect.objectContaining({ amount: 5940 }) }),
     );
-    // The fee is never moved to pending_release: it is not care the caregiver is owed for.
-    expect(mockPaymentsService.updatePaymentStatus).not.toHaveBeenCalled();
+    expect(released()).toEqual([]);
+  });
+
+  it("nets an already-released fee too, so a re-run cannot deduct it twice", async () => {
+    // A fee flipped on an earlier pass is `pending_release`, not `captured`. It is
+    // still collected money on this booking, so it still nets off the placeholder —
+    // but it must not be re-released.
+    stagePayments({ fees: [{ id: "pay_fee", amount: 249, status: "pending_release" }] });
+    mockPrisma.payments.findFirst.mockResolvedValue(null);
+
+    await complete(5940);
+
+    expect(released()).toEqual([]);
+    expect(mockPrisma.payments.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amount: 5691 }) }),
+    );
+  });
+
+  it("never writes a negative placeholder when the fee exceeds the session's value", async () => {
+    stagePayments({ fees: [{ id: "pay_fee", amount: 249, status: "captured" }] });
+    mockPrisma.payments.findFirst.mockResolvedValue(null);
+
+    await complete(100);
+
+    expect(mockPrisma.payments.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amount: 0 }) }),
+    );
   });
 
   it("releases a real captured charge and writes no placeholder beside it", async () => {
-    mockPrisma.payments.findMany.mockResolvedValue([{ id: "pay_1" }]);
+    stagePayments({ care: [{ id: "pay_1" }] });
     mockPrisma.payments.findFirst.mockResolvedValue({ id: "pay_1", status: "captured" });
 
     await complete();
@@ -133,8 +206,22 @@ describe("BookingListeners — booking completed", () => {
     expect(sseEvent()?.data.paymentDue).toBe(false);
   });
 
+  it("releases both the cycle charge and the fee when the parent paid both", async () => {
+    stagePayments({
+      care: [{ id: "pay_1" }],
+      fees: [{ id: "pay_fee", amount: 249, status: "captured" }],
+    });
+    mockPrisma.payments.findFirst.mockResolvedValue({ id: "pay_1", status: "captured" });
+
+    await complete();
+
+    expect(released()).toEqual(["pay_1", "pay_fee"]);
+    // The cycle was billed net of the fee, so no placeholder tops it up.
+    expect(mockPrisma.payments.create).not.toHaveBeenCalled();
+  });
+
   it("keeps prompting while a cycle balance is outstanding", async () => {
-    mockPrisma.payments.findMany.mockResolvedValue([{ id: "pay_adv" }]);
+    stagePayments({ care: [{ id: "pay_adv" }] });
     mockPrisma.payments.findFirst.mockResolvedValue({ id: "pay_adv", status: "captured" });
     mockPrisma.payment_installments.count.mockResolvedValue(1);
 

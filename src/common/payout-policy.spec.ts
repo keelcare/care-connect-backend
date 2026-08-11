@@ -1,11 +1,14 @@
 import {
+  CAREGIVER_SHARE_ONLY,
+  EARNING_STATUSES,
+  caregiverEarningsWhere,
   preTaxBookingValue,
   preTaxServiceFee,
   projectableBookingsWhere,
   sessionHours,
   type ProjectableBooking,
 } from "./payout-policy";
-import { BookingStatus, PaymentStatus } from "../constants";
+import { BookingStatus, MANUAL_PENDING_PROVIDER, PaymentStatus } from "../constants";
 
 function booking(over: Partial<ProjectableBooking> = {}): ProjectableBooking {
   return {
@@ -152,5 +155,70 @@ describe("preTaxServiceFee with split payments", () => {
       price_snapshots: [{ gst_amount: 1800 }],
     });
     expect(split).toBe(whole);
+  });
+});
+
+/**
+ * Who a payment row belongs to is the rule most easily got wrong in a way nobody
+ * notices, because the result is a smaller number rather than an error.
+ */
+describe("CAREGIVER_SHARE_ONLY", () => {
+  it("still excludes a cancellation fee, which pays for care that never happened", () => {
+    // No snapshot, no instalment, not a placeholder — nothing in the OR matches.
+    expect(CAREGIVER_SHARE_ONLY.OR).toEqual([
+      { provider: MANUAL_PENDING_PROVIDER },
+      { price_snapshots: { some: {} } },
+      { payment_installments: { some: {} } },
+    ]);
+  });
+
+  it("no longer filters the matching fee out of a caregiver's share", () => {
+    // The fee is deducted from the first cycle rather than added to it, so
+    // excluding it did not withhold a platform charge — it shrank the cycle the
+    // caregiver is paid out of. Any reinstated `none: { kind: matching_fee }`
+    // clause would silently do that again.
+    expect(CAREGIVER_SHARE_ONLY.payment_installments).toBeUndefined();
+  });
+
+  it("attributes through the booking, so a fee raised before the match still lands", () => {
+    // The fee is raised at confirmation with no caregiver on the row; only the
+    // booking knows who was later assigned.
+    const where = caregiverEarningsWhere("nanny-1");
+    expect(where.bookings).toEqual({ nanny_id: "nanny-1" });
+    expect(where.nanny_id).toBeUndefined();
+    expect(where.status).toEqual({ in: EARNING_STATUSES });
+  });
+});
+
+describe("preTaxServiceFee on a matching fee", () => {
+  it("strips the fee's own frozen GST rather than the booking's", () => {
+    // The fee is flat and tax-inclusive: ₹249 carrying ₹38 of GST.
+    expect(
+      preTaxServiceFee({
+        amount: 249,
+        price_snapshots: [{ gst_amount: 38 }],
+        payment_installments: [{ gst_amount: 38 }],
+      }),
+    ).toBe(211);
+  });
+
+  it("sums with the cycle it was deducted from to the booking's gross fee", () => {
+    // Gross cycle 5940 (900 GST). Fee 249 (38 GST) comes out of it, so the cycle
+    // is billed at 5691 (862 GST). Fee + net cycle must equal the gross pre-tax
+    // fee the caregiver would have earned had there been no fee at all.
+    const fee = preTaxServiceFee({
+      amount: 249,
+      price_snapshots: [{ gst_amount: 38 }],
+      payment_installments: [{ gst_amount: 38 }],
+    });
+    const netCycle = preTaxServiceFee({
+      amount: 5691,
+      price_snapshots: [{ gst_amount: 862 }],
+    });
+    const grossCycle = preTaxServiceFee({
+      amount: 5940,
+      price_snapshots: [{ gst_amount: 900 }],
+    });
+    expect(fee + netCycle).toBe(grossCycle);
   });
 });

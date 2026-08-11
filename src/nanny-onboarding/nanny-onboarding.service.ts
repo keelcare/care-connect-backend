@@ -33,10 +33,26 @@ export class NannyOnboardingService {
     const record = await this.prisma.nanny_onboarding_details.findUnique({
       where: { user_id: userId },
     });
+
+    // Caregivers who signed up before categories moved into onboarding already
+    // have them on nanny_details; show those rather than an empty picker.
+    if (record && record.categories.length === 0) {
+      const details = await this.prisma.nanny_details.findUnique({
+        where: { user_id: userId },
+        select: { categories: true },
+      });
+      if (details?.categories.length) {
+        return this.decorate({ ...record, categories: details.categories });
+      }
+    }
+
     return this.decorate(record);
   }
 
   async upsertMine(userId: string, dto: UpsertNannyOnboardingDto) {
+    if (dto.categories !== undefined) {
+      await this.assertValidCategories(dto.categories);
+    }
     const data = this.toDbData(dto);
 
     const record = await this.prisma.nanny_onboarding_details.upsert({
@@ -68,6 +84,10 @@ export class NannyOnboardingService {
       throw new BadRequestException(
         `Missing required fields: ${missing.join(", ")}`,
       );
+    }
+
+    if (!record.categories || record.categories.length === 0) {
+      throw new BadRequestException("Select at least one service category");
     }
 
     if (
@@ -103,12 +123,20 @@ export class NannyOnboardingService {
     // Ensure a nanny_details row exists. The admin assignment / search query
     // INNER JOINs nanny_details, so a completed caregiver with no row here is
     // silently invisible to families. Create it with availability on; skills
-    // and categories are assigned later via admin verification. Existing rows
-    // are left untouched.
+    // are assigned later via admin verification.
+    //
+    // Categories are carried over from the onboarding form — this is the only
+    // place they get set for a caregiver who signed up with Google (that flow
+    // never collected them), and completion happens once, so overwriting an
+    // existing row here cannot clobber an admin-approved category change.
     await this.prisma.nanny_details.upsert({
       where: { user_id: userId },
-      update: {},
-      create: { user_id: userId, is_available_now: true },
+      update: { categories: record.categories },
+      create: {
+        user_id: userId,
+        is_available_now: true,
+        categories: record.categories,
+      },
     });
 
     const updated = await this.prisma.profiles.upsert({
@@ -118,6 +146,22 @@ export class NannyOnboardingService {
     });
 
     return { onboardingCompleted: updated.onboarding_completed };
+  }
+
+  /** Categories must name rows in `services` — the same rule signup applied. */
+  private async assertValidCategories(categories: string[]) {
+    if (categories.length === 0) return;
+    const validServices = await this.prisma.services.findMany({
+      where: { name: { in: categories } },
+      select: { name: true },
+    });
+    const validNames = validServices.map((s) => s.name);
+    const invalidNames = categories.filter((c) => !validNames.includes(c));
+    if (invalidNames.length > 0) {
+      throw new BadRequestException(
+        `Invalid categories: ${invalidNames.join(", ")}`,
+      );
+    }
   }
 
   private camelToDbField(field: string) {
@@ -140,6 +184,7 @@ export class NannyOnboardingService {
       data.stream_subjects = dto.streamSubjects;
     if (dto.shadowTeacherExperience !== undefined)
       data.shadow_teacher_experience = dto.shadowTeacherExperience;
+    if (dto.categories !== undefined) data.categories = dto.categories;
     if (dto.ageGroupsWorked !== undefined)
       data.age_groups_worked = dto.ageGroupsWorked;
     if (dto.childrenTypesSupported !== undefined)

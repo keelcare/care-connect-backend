@@ -8,6 +8,7 @@ import { CreateCategoryRequestDto } from "./dto/create-category-request.dto";
 import { TimeUtils } from "../common/utils/time.utils";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { AttendanceService } from "../attendance/attendance.service";
+import { CAREGIVER_SHARE_ONLY, EARNING_STATUSES } from "../common/payout-policy";
 // Date helpers (no external dep needed)
 function startOfDay(d: Date): Date { const r = new Date(d); r.setHours(0,0,0,0); return r; }
 function endOfDay(d: Date): Date { const r = new Date(d); r.setHours(23,59,59,999); return r; }
@@ -155,13 +156,27 @@ export class NanniesService {
       ["CONFIRMED", "IN_PROGRESS", "ASSIGNED", "ACCEPTED"].includes(b.status ?? ""),
     ).length;
 
-    // Today's earnings (captured payments for today's completed bookings)
+    /**
+     * The dashboard reads the same ledger as the earnings screen, through the same
+     * policy — a caregiver must not see one figure on the home tab and another on
+     * `/earnings`. In particular this counts `pending_release` (completing a booking
+     * flips its captured payment straight into it, so filtering on `captured` alone
+     * showed ₹0 for every job the moment it was done) and includes the matching fee,
+     * which is deducted from the first cycle and so is part of what she is owed.
+     */
+    const earningsOn = (bookingIds: string[]) => ({
+      booking_id: { in: bookingIds },
+      status: { in: EARNING_STATUSES },
+      ...CAREGIVER_SHARE_ONLY,
+    });
+
+    // Today's earnings (earning payments for today's completed bookings)
     const todayBookingIds = todayBookings
       .filter((b) => b.status === "COMPLETED")
       .map((b) => b.id);
 
     const todayEarningsAgg = await this.prisma.payments.aggregate({
-      where: { booking_id: { in: todayBookingIds }, status: "captured" },
+      where: earningsOn(todayBookingIds),
       _sum: { amount: true },
     });
     const todayEarnings = Number(todayEarningsAgg._sum.amount || 0);
@@ -181,7 +196,7 @@ export class NanniesService {
     ).map((b) => b.id);
 
     const lastWeekEarningsAgg = await this.prisma.payments.aggregate({
-      where: { booking_id: { in: lastWeekBookingIds }, status: "captured" },
+      where: earningsOn(lastWeekBookingIds),
       _sum: { amount: true },
     });
     const lastWeekEarnings = Number(lastWeekEarningsAgg._sum.amount || 0);
@@ -210,7 +225,7 @@ export class NanniesService {
       ).map((b) => b.id);
 
       const dayEarnings = await this.prisma.payments.aggregate({
-        where: { booking_id: { in: dayBookingIds }, status: "captured" },
+        where: earningsOn(dayBookingIds),
         _sum: { amount: true },
       });
 

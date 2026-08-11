@@ -299,14 +299,11 @@ export class AuthService {
 
   async register(userDto: SignupDto) {
 
-    // Validate categories for Nannies
-    if (userDto.role === "nanny") {
-      if (!userDto.categories || userDto.categories.length === 0) {
-        throw new BadRequestException(
-          "Nannies must select at least one category",
-        );
-      }
-
+    // Categories are collected during nanny onboarding, not at signup, so they
+    // are optional here — the onboarding form is what finally writes them onto
+    // nanny_details. Older clients that still send them are still honoured, and
+    // still validated.
+    if (userDto.role === "nanny" && userDto.categories?.length) {
       // Validate categories exist in services table
       const validServices = await this.prisma.services.findMany({
         where: {
@@ -351,7 +348,7 @@ export class AuthService {
           userDto.role === "nanny"
             ? {
                 create: {
-                  categories: userDto.categories,
+                  categories: userDto.categories ?? [],
                 },
               }
             : undefined,

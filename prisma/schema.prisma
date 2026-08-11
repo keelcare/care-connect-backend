@@ -302,6 +302,9 @@ model nanny_onboarding_details {
   education_qualification_other String?   @db.VarChar(255)
   stream_subjects               String?
   shadow_teacher_experience     String?   @db.VarChar(20)
+  /// Service categories the nanny applies for (services.name — CC/ST/SN).
+  /// Copied onto nanny_details.categories when onboarding is completed.
+  categories                    String[]  @default([])
   age_groups_worked             String[]  @default([])
   children_types_supported      String[]  @default([])
   children_types_other          String?   @db.VarChar(255)
