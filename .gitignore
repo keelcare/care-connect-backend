@@ -5,6 +5,10 @@
 /generated
 *.tsbuildinfo
 
+# Chrome downloaded by puppeteer (see .puppeteerrc.cjs) — a build artifact,
+# fetched by `npm run build`, never committed
+/.cache
+
 # Logs
 logs
 *.log
