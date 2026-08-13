@@ -25,6 +25,7 @@ import { RecurringBookingsModule } from "./recurring-bookings/recurring-bookings
 import { AvailabilityModule } from "./availability/availability.module";
 import { VerificationModule } from "./verification/verification.module";
 import { PaymentsModule } from "./payments/payments.module";
+import { InvoicesModule } from "./invoices/invoices.module";
 import { CommonModule } from "./common/common.module";
 import { FamilyModule } from "./family/family.module";
 import { ThrottlerModule } from "@nestjs/throttler";
@@ -103,6 +104,7 @@ import { AttendanceModule } from "./attendance/attendance.module";
     AvailabilityModule,
     VerificationModule,
     PaymentsModule,
+    InvoicesModule,
     CommonModule,
     FamilyModule,
     ServicesModule,
