@@ -3,9 +3,9 @@ import { PrismaService } from "../prisma/prisma.service";
 import { InvoiceConfig } from "./invoice.config";
 
 /**
- * Allocates the human-facing invoice number for an installment, once.
+ * Allocates the human-facing invoice number for a booking, once.
  *
- * Lazy on purpose: most installments are never asked for as a PDF, and a number
+ * Lazy on purpose: most bookings are never asked for as a PDF, and a number
  * handed out is a number that has to be accounted for. Once allocated it is
  * immutable — a family may already be quoting it on a bank transfer.
  */
@@ -19,8 +19,8 @@ export class InvoiceNumberService {
   ) {}
 
   /**
-   * Returns the installment's invoice number and issue date, minting them on
-   * first call.
+   * Returns the booking's invoice number and issue date, minting them on first
+   * call.
    *
    * The write is a conditional UPDATE rather than a read-then-write: two devices
    * tapping download at the same moment would otherwise each see a null and each
@@ -29,11 +29,11 @@ export class InvoiceNumberService {
    * sequences are not gapless under any usage, and the numbers only need to be
    * unique and ordered, not contiguous.
    */
-  async ensureFor(
-    installmentId: string,
+  async ensureForBooking(
+    bookingId: string,
   ): Promise<{ invoiceNumber: string; issuedAt: Date }> {
-    const existing = await this.prisma.payment_installments.findUnique({
-      where: { id: installmentId },
+    const existing = await this.prisma.bookings.findUnique({
+      where: { id: bookingId },
       select: { invoice_number: true, invoice_issued_at: true },
     });
 
@@ -45,29 +45,57 @@ export class InvoiceNumberService {
     }
 
     const issuedAt = new Date();
-    const candidate = this.format(await this.nextSequenceValue(), issuedAt);
+    // A number issued back when each instalment was its own invoice is adopted
+    // rather than superseded: it is on a document the family already holds, and
+    // possibly on a bank transfer reference. Only a booking that never had one
+    // draws from the sequence.
+    const inherited = await this.inheritedNumber(bookingId);
+    const candidate = inherited?.invoiceNumber
+      ? inherited.invoiceNumber
+      : this.format(await this.nextSequenceValue(), issuedAt);
+    const candidateIssuedAt = inherited?.issuedAt ?? issuedAt;
 
-    const claimed = await this.prisma.payment_installments.updateMany({
-      where: { id: installmentId, invoice_number: null },
-      data: { invoice_number: candidate, invoice_issued_at: issuedAt },
+    const claimed = await this.prisma.bookings.updateMany({
+      where: { id: bookingId, invoice_number: null },
+      data: { invoice_number: candidate, invoice_issued_at: candidateIssuedAt },
     });
 
     if (claimed.count === 1) {
-      this.logger.log(
-        `Issued invoice ${candidate} for installment ${installmentId}`,
-      );
-      return { invoiceNumber: candidate, issuedAt };
+      this.logger.log(`Issued invoice ${candidate} for booking ${bookingId}`);
+      return { invoiceNumber: candidate, issuedAt: candidateIssuedAt };
     }
 
     // Lost the race — the concurrent caller's number is the real one.
-    const winner = await this.prisma.payment_installments.findUniqueOrThrow({
-      where: { id: installmentId },
+    const winner = await this.prisma.bookings.findUniqueOrThrow({
+      where: { id: bookingId },
       select: { invoice_number: true, invoice_issued_at: true },
     });
     return {
       invoiceNumber: winner.invoice_number ?? candidate,
-      issuedAt: winner.invoice_issued_at ?? issuedAt,
+      issuedAt: winner.invoice_issued_at ?? candidateIssuedAt,
     };
+  }
+
+  /**
+   * The oldest number already issued against one of this booking's instalments,
+   * from before the booking became the invoice unit. Null for everything issued
+   * since.
+   */
+  private async inheritedNumber(
+    bookingId: string,
+  ): Promise<{ invoiceNumber: string; issuedAt: Date } | null> {
+    const row = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, invoice_number: { not: null } },
+      orderBy: [{ invoice_issued_at: "asc" }],
+      select: { invoice_number: true, invoice_issued_at: true },
+    });
+
+    return row?.invoice_number
+      ? {
+          invoiceNumber: row.invoice_number,
+          issuedAt: row.invoice_issued_at ?? new Date(),
+        }
+      : null;
   }
 
   private async nextSequenceValue(): Promise<number> {

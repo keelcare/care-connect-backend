@@ -26,10 +26,11 @@ export class InvoicesController {
   @UseGuards(AuthGuard("jwt"), RolesGuard)
   @ApiOperation({
     summary:
-      "Every instalment the authenticated parent can download an invoice for",
+      "Every booking the authenticated parent can download an invoice for",
     description:
-      "One entry per instalment — a cycle split into an advance and a balance " +
-      "produces two invoices, matching what the parent was actually asked to pay.\n\n" +
+      "One entry per booking. The whole engagement is a single document — the " +
+      "matching fee and every session instalment are line items on it — so a " +
+      "client shows exactly one download per booking.\n\n" +
       "`invoiceNumber` is null until the invoice is first downloaded: numbers are " +
       "issued lazily so unwanted invoices never consume one. Clients should show " +
       "`title`/`amountFormatted` in the list and not depend on the number being present.\n\n" +
@@ -41,26 +42,27 @@ export class InvoicesController {
     return this.invoices.listForParent(req.user.id);
   }
 
-  @Get(":installmentId")
+  @Get("booking/:bookingId")
   @ApiOperation({
-    summary: "The invoice as structured data, for an in-app preview",
+    summary: "The booking's invoice as structured data, for an in-app preview",
     description:
       "Exactly the object the PDF is rendered from, already formatted for display " +
-      "— amounts are strings, dates are IST. Calling this issues the invoice " +
-      "number if one has not been issued yet.",
+      "— amounts are strings, dates are IST. Every invoiceable instalment on the " +
+      "booking is one row of `items`. Calling this issues the invoice number if " +
+      "one has not been issued yet.",
   })
   @ApiResponse({ status: 200, description: "Invoice data returned" })
   @ApiResponse({ status: 404, description: "No such invoice for this user" })
   async getData(
     @Req() req: any,
-    @Param("installmentId", ParseUUIDPipe) installmentId: string,
+    @Param("bookingId", ParseUUIDPipe) bookingId: string,
   ) {
-    return this.invoices.getInvoiceData(installmentId, req.user);
+    return this.invoices.getInvoiceData(bookingId, req.user);
   }
 
-  @Get(":installmentId/pdf")
+  @Get("booking/:bookingId/pdf")
   @ApiOperation({
-    summary: "Download the invoice as a PDF",
+    summary: "Download the booking's invoice as a PDF",
     description:
       "Streams `application/pdf` with a `Content-Disposition` filename, for the " +
       "mobile app to save or share. Admins may fetch any invoice; a parent may " +
@@ -70,11 +72,11 @@ export class InvoicesController {
   @ApiResponse({ status: 404, description: "No such invoice for this user" })
   async download(
     @Req() req: any,
-    @Param("installmentId", ParseUUIDPipe) installmentId: string,
+    @Param("bookingId", ParseUUIDPipe) bookingId: string,
     @Res() res: Response,
   ) {
     const { pdf, filename } = await this.invoices.getInvoicePdf(
-      installmentId,
+      bookingId,
       req.user,
     );
 

@@ -1,30 +1,18 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import { UserRole } from "../auth/dto/signup.dto";
+import { INSTALMENT_PAID, MATCHING_FEE_KIND } from "../constants";
 import {
-  INSTALMENT_PAID,
-  INSTALMENT_PENDING,
-  MATCHING_FEE_KIND,
-} from "../constants";
-import { InvoiceDataBuilder } from "./invoice-data.builder";
+  INVOICEABLE_STATUSES,
+  InvoiceDataBuilder,
+} from "./invoice-data.builder";
 import { InvoiceNumberService } from "./invoice-number.service";
 import { PdfService } from "./pdf.service";
 import { InvoiceData } from "./invoice.types";
 import { renderTemplate } from "./utils/template.util";
 import { formatAmount, formatDate } from "./utils/format.util";
-
-/**
- * Statuses an invoice can be issued for. A `void` instalment was superseded
- * before anyone paid it and a `refunded` one has been unwound — handing either
- * out as a document that looks payable would be worse than saying it is gone.
- */
-const INVOICEABLE_STATUSES = [INSTALMENT_PENDING, INSTALMENT_PAID];
 
 @Injectable()
 export class InvoicesService {
@@ -39,59 +27,78 @@ export class InvoicesService {
   ) {}
 
   /**
-   * Every instalment the parent can download an invoice for, newest first.
+   * Every booking the parent can download an invoice for, newest first — one
+   * entry per booking, because one engagement is one document.
    *
    * Deliberately covers unpaid instalments too: the design is a bill (it has a
    * due date and bank details), and a family often needs it *before* paying —
    * to file a claim, or to hand to whoever actually transfers the money.
    */
   async listForParent(parentId: string) {
-    const rows = await this.prisma.payment_installments.findMany({
+    const bookings = await this.prisma.bookings.findMany({
       where: {
-        status: { in: INVOICEABLE_STATUSES },
-        bookings: { parent_id: parentId },
+        parent_id: parentId,
+        payment_installments: {
+          some: { status: { in: INVOICEABLE_STATUSES } },
+        },
       },
-      orderBy: [{ created_at: "desc" }, { installment_no: "asc" }],
+      orderBy: [{ created_at: "desc" }],
       take: 200,
       select: {
         id: true,
-        booking_id: true,
-        kind: true,
-        amount: true,
-        status: true,
-        due_date: true,
-        paid_at: true,
-        cycle_number: true,
-        installment_no: true,
-        total_installments: true,
         invoice_number: true,
         invoice_issued_at: true,
+        payment_installments: {
+          where: { status: { in: INVOICEABLE_STATUSES } },
+          select: {
+            id: true,
+            kind: true,
+            amount: true,
+            status: true,
+            due_date: true,
+            paid_at: true,
+            installment_no: true,
+            total_installments: true,
+          },
+        },
       },
     });
 
-    return rows.map((row) => ({
-      installmentId: row.id,
-      bookingId: row.booking_id,
-      /** Null until the parent first downloads it — numbers are issued lazily. */
-      invoiceNumber: row.invoice_number,
-      issuedAt: row.invoice_issued_at,
-      kind: row.kind,
-      title:
-        row.kind === MATCHING_FEE_KIND
-          ? "Matching & placement fee"
-          : row.total_installments > 1
-            ? `Shadow teacher support — Instalment ${row.installment_no}`
-            : "Shadow teacher support",
-      amount: Number(row.amount),
-      amountFormatted: `₹ ${formatAmount(Number(row.amount))}`,
-      paid: row.status === INSTALMENT_PAID,
-      dueDate: row.due_date,
-      dueDateFormatted: row.due_date ? formatDate(row.due_date) : "On receipt",
-      paidAt: row.paid_at,
-      cycleNumber: row.cycle_number,
-      installmentNo: row.installment_no,
-      totalInstallments: row.total_installments,
-    }));
+    return bookings.map((booking) => {
+      const installments = booking.payment_installments;
+      const total = this.sum(installments.map((i) => Number(i.amount)));
+      const outstanding = this.sum(
+        installments
+          .filter((i) => i.status !== INSTALMENT_PAID)
+          .map((i) => Number(i.amount)),
+      );
+      const paid = outstanding === 0;
+      const dueDate = this.earliest(
+        installments
+          .filter((i) => i.status !== INSTALMENT_PAID)
+          .map((i) => i.due_date),
+      );
+
+      return {
+        bookingId: booking.id,
+        /** Null until the parent first downloads it — numbers are issued lazily. */
+        invoiceNumber: booking.invoice_number,
+        issuedAt: booking.invoice_issued_at,
+        title: this.titleFor(installments),
+        /** What the whole engagement came to, paid or not. */
+        amount: total,
+        amountFormatted: `₹ ${formatAmount(total)}`,
+        /** What is still owed on it — zero once settled. */
+        amountDue: outstanding,
+        amountDueFormatted: `₹ ${formatAmount(outstanding)}`,
+        paid,
+        dueDate,
+        dueDateFormatted: dueDate ? formatDate(dueDate) : "On receipt",
+        paidAt: this.latest(installments.map((i) => i.paid_at)),
+        /** How many fees the one invoice covers — for a "3 items" style hint. */
+        itemCount: installments.length,
+      };
+    });
   }
 
   /**
@@ -99,21 +106,21 @@ export class InvoicesService {
    * and the same object the PDF is built from, so the two cannot disagree.
    */
   async getInvoiceData(
-    installmentId: string,
+    bookingId: string,
     user: RequestUser,
   ): Promise<InvoiceData> {
-    await this.assertCanAccess(installmentId, user);
+    await this.assertCanAccess(bookingId, user);
     const { invoiceNumber, issuedAt } =
-      await this.numbers.ensureFor(installmentId);
-    return this.builder.build(installmentId, invoiceNumber, issuedAt);
+      await this.numbers.ensureForBooking(bookingId);
+    return this.builder.buildForBooking(bookingId, invoiceNumber, issuedAt);
   }
 
   /** The same invoice, rendered. `filename` is what the app should save it as. */
   async getInvoicePdf(
-    installmentId: string,
+    bookingId: string,
     user: RequestUser,
   ): Promise<{ pdf: Buffer; filename: string; invoiceNumber: string }> {
-    const data = await this.getInvoiceData(installmentId, user);
+    const data = await this.getInvoiceData(bookingId, user);
     const html = renderTemplate(
       await this.loadTemplate(),
       data as unknown as Record<string, unknown>,
@@ -137,28 +144,66 @@ export class InvoicesService {
    * authorisation that rides along on a data load is authorisation that quietly
    * disappears the day someone changes the `include`.
    */
-  private async assertCanAccess(installmentId: string, user: RequestUser) {
-    const installment = await this.prisma.payment_installments.findUnique({
-      where: { id: installmentId },
-      select: { status: true, bookings: { select: { parent_id: true } } },
+  private async assertCanAccess(bookingId: string, user: RequestUser) {
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id: bookingId },
+      select: { parent_id: true },
     });
 
-    if (!installment) {
+    if (!booking) {
       throw new NotFoundException("Invoice not found");
     }
 
     const isAdmin = user.role === UserRole.ADMIN;
-    if (!isAdmin && installment.bookings?.parent_id !== user.id) {
+    if (!isAdmin && booking.parent_id !== user.id) {
       // Not a 403: confirming the id exists would leak that another family has a
       // booking with it.
       throw new NotFoundException("Invoice not found");
     }
 
-    if (!INVOICEABLE_STATUSES.includes(installment.status)) {
-      throw new ForbiddenException(
-        `No invoice is available for a ${installment.status} instalment`,
-      );
+    // Nothing billable left — every instalment was voided or refunded — so there
+    // is no document to issue rather than an empty one that looks payable.
+    const billable = await this.prisma.payment_installments.findFirst({
+      where: { booking_id: bookingId, status: { in: INVOICEABLE_STATUSES } },
+      select: { id: true },
+    });
+    if (!billable) {
+      throw new NotFoundException("No invoice is available for this booking");
     }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  /**
+   * What the single invoice is called in a list. It has to name everything on it,
+   * since there is no longer a per-fee row to spell the rest out.
+   */
+  private titleFor(installments: Array<{ kind: string | null }>): string {
+    const hasMatching = installments.some((i) => i.kind === MATCHING_FEE_KIND);
+    const hasSupport = installments.some((i) => i.kind !== MATCHING_FEE_KIND);
+
+    if (hasMatching && hasSupport) {
+      return "Shadow teacher support & matching fee";
+    }
+    return hasMatching ? "Matching & placement fee" : "Shadow teacher support";
+  }
+
+  private sum(values: number[]): number {
+    return Math.round(values.reduce((a, b) => a + b, 0) * 100) / 100;
+  }
+
+  private earliest(dates: Array<Date | null>): Date | null {
+    const known = dates.filter((d): d is Date => !!d);
+    return known.length
+      ? new Date(Math.min(...known.map((d) => d.getTime())))
+      : null;
+  }
+
+  private latest(dates: Array<Date | null>): Date | null {
+    const known = dates.filter((d): d is Date => !!d);
+    return known.length
+      ? new Date(Math.max(...known.map((d) => d.getTime())))
+      : null;
   }
 
   private loadTemplate(): Promise<string> {

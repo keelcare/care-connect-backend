@@ -64,6 +64,12 @@ model bookings {
   days_per_week                   Int?
   /// Total number of recurring months (e.g. 6)
   plan_duration_months            Int                         @default(1)
+  /// Allocated from `invoice_number_seq` the first time a parent downloads this
+  /// booking's invoice, then never changed. The booking — not the instalment —
+  /// is the invoice unit: a family gets one document covering the matching fee
+  /// and every instalment of the engagement.
+  invoice_number                  String?                     @unique @db.VarChar(32)
+  invoice_issued_at               DateTime?                   @db.Timestamptz(6)
   booking_children                booking_children[]
   call_sessions                   call_sessions[]
   jobs                            jobs?                       @relation(fields: [job_id], references: [id], onUpdate: NoAction)
