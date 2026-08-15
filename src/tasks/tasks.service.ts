@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { BookingsService } from "../bookings/bookings.service";
 import { PaymentsService } from "../payments/payments.service";
+import { PayoutsService } from "../payments/payouts.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { SseService } from "../sse/sse.service";
@@ -36,6 +37,8 @@ export class TasksService {
     // PaymentsModule already import each other.
     @Inject(forwardRef(() => PaymentsService))
     private paymentsService: PaymentsService,
+    @Inject(forwardRef(() => PayoutsService))
+    private payoutsService: PayoutsService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_MINUTES)
@@ -101,6 +104,29 @@ export class TasksService {
       await this.paymentsService.reconcileMissingInvoices();
     } catch (error) {
       this.logger.error("Error in reconcileMissingInvoices cron job", error);
+    }
+  }
+
+  /**
+   * Catches payouts whose status webhook never arrived.
+   *
+   * Webhooks get missed — a dropped delivery, a deploy mid-flight, an endpoint that
+   * 500s once — and a payout stuck in `processing` means a caregiver is shown money
+   * as on its way when it may have bounced days ago. Quarter-hourly because that is
+   * roughly the pace RazorpayX settles at, and the sweep costs nothing when there is
+   * nothing in flight.
+   */
+  @Cron("0 */15 * * * *")
+  async reconcilePayouts() {
+    try {
+      const result = await this.payoutsService.reconcileStalePayouts();
+      if (result.updated > 0) {
+        this.logger.log(
+          `Payout reconciliation: ${result.updated} of ${result.checked} in-flight payouts changed status`,
+        );
+      }
+    } catch (error) {
+      this.logger.error("Error in reconcilePayouts cron job", error);
     }
   }
 

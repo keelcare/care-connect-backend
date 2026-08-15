@@ -15,6 +15,7 @@ import {
   preTaxServiceFee,
   round2,
 } from "../common/payout-policy";
+import { PayoutsService } from "../payments/payouts.service";
 
 export { COMMISSION_SETTING_KEY };
 
@@ -33,6 +34,7 @@ export class RevenueService {
     private readonly prisma: PrismaService,
     private readonly auditService: AdminAuditService,
     private readonly pricingService: PricingEngineService,
+    private readonly payoutsService: PayoutsService,
   ) {}
 
   /**
@@ -463,9 +465,28 @@ export class RevenueService {
       }))
       .sort((a, b) => b.payoutAmount - a.payoutAmount);
 
+    const pageItems = all.slice((page - 1) * pageSize, page * pageSize);
+
+    // Whether a Release button will actually work, resolved for the page in one
+    // query rather than one per row. Without it the admin app can only find out by
+    // pressing the button and reading the error — on a screen whose buttons move
+    // money, that is the wrong place to learn a caregiver has no bank account.
+    const readiness = await this.payoutsService.payoutReadinessFor(
+      pageItems.map((item) => item.nannyId).filter((id): id is string => Boolean(id)),
+    );
+
     return {
       commissionPercent: percent,
-      items: all.slice((page - 1) * pageSize, page * pageSize),
+      items: pageItems.map((item) => {
+        const ready = item.nannyId ? readiness.get(item.nannyId) : undefined;
+        return {
+          ...item,
+          payoutAccount: ready?.payoutAccount ?? null,
+          /** Approved account, no payout already in flight. */
+          payoutReady: Boolean(ready?.payoutReady),
+          inFlightPayoutId: ready?.inFlightPayoutId ?? null,
+        };
+      }),
       pagination: {
         page,
         pageSize,
@@ -475,7 +496,17 @@ export class RevenueService {
     };
   }
 
-  /** Marks a caregiver's share as paid out. Idempotent by design — a second call errors. */
+  /**
+   * Marks ONE payment's caregiver share as settled, without moving any money.
+   *
+   * This is bookkeeping only, and stays that way deliberately: a bank transfer is
+   * made per caregiver, not per payment, so releasing a single payment through the
+   * gateway would mean one IMPS charge and one line on her statement for every
+   * session. Use `releasePayoutsForNanny` to actually pay someone; use this to
+   * record a share settled some other way, or to correct the ledger.
+   *
+   * Idempotent by design — a second call errors.
+   */
   async releasePayout(paymentId: string, adminId: string, ipAddress?: string) {
     const payment = await this.prisma.payments.findUnique({
       where: { id: paymentId },
@@ -508,39 +539,40 @@ export class RevenueService {
     return updated;
   }
 
-  /** Releases every outstanding payout for one caregiver in a single settlement. */
-  async releasePayoutsForNanny(nannyId: string, adminId: string, ipAddress?: string) {
-    const pending = await this.prisma.payments.findMany({
-      where: {
-        status: PaymentStatus.PENDING_RELEASE,
-        released_at: null,
-        bookings: { nanny_id: nannyId },
-      },
-      select: { id: true, amount: true },
-    });
-
-    if (pending.length === 0) {
-      throw new NotFoundException("No outstanding payouts for this caregiver");
-    }
-
-    const releasedAt = new Date();
-    await this.prisma.payments.updateMany({
-      where: { id: { in: pending.map((p) => p.id) } },
-      data: { released_at: releasedAt, released_by: adminId },
-    });
-
-    await this.auditService.logAction({
-      adminId,
-      action: "RELEASE_PAYOUT_BATCH",
-      targetType: "user",
-      targetId: nannyId,
-      metadata: {
-        paymentIds: pending.map((p) => p.id),
-        grossAmount: pending.reduce((s, p) => s + Number(p.amount), 0),
-      },
+  /**
+   * Settles everything one caregiver is owed in a single transfer.
+   *
+   * **This moves real money.** It used to only stamp `released_at` and leave an
+   * admin to make the transfer by hand; it now creates a RazorpayX payout, links it
+   * to the exact payments it settles, and unwinds itself if the gateway rejects it.
+   * The amount is unchanged — it is still the sum this ledger's own
+   * `getOutstandingPayouts` reports.
+   *
+   * Falls back to recording a manual settlement (the old behaviour) when RazorpayX
+   * is not enabled, so the admin flow works identically before activation.
+   */
+  async releasePayoutsForNanny(
+    nannyId: string,
+    adminId: string,
+    ipAddress?: string,
+    options: { manual?: boolean; note?: string } = {},
+  ) {
+    const payout = await this.payoutsService.releasePayoutForNanny(nannyId, adminId, {
+      manual: options.manual,
+      note: options.note,
       ipAddress,
     });
 
-    return { released: pending.length, releasedAt: releasedAt.toISOString() };
+    // `released` kept for the admin app, which reports "Released N payouts". It is
+    // the number of payments settled, which is what it always counted.
+    const released = await this.prisma.nanny_payout_items.count({
+      where: { payout_id: payout.id, voided_at: null },
+    });
+
+    return {
+      released,
+      releasedAt: payout.createdAt,
+      payout,
+    };
   }
 }

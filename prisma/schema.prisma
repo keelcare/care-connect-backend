@@ -134,46 +134,46 @@ model booking_status_log {
 /// retuning the attendance policy must never retroactively rewrite the record a
 /// caregiver was already judged on.
 model nanny_attendance_events {
-  id               String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  nanny_id         String                @db.Uuid
-  booking_id       String?               @db.Uuid
-  type             attendance_event_type
+  id                 String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id           String                @db.Uuid
+  booking_id         String?               @db.Uuid
+  type               attendance_event_type
   /// IST calendar day this is attributed to — the day the *slot* belonged to, not
   /// the day the row was written. A 23:00 session flagged at 00:20 by the sweeper
   /// still belongs to the previous day.
-  attendance_date  DateTime              @db.Date
+  attendance_date    DateTime              @db.Date
   /// Slot start copied at write time, so a later reschedule cannot silently turn a
   /// late arrival into an on-time one.
-  scheduled_start  DateTime?             @db.Timestamptz(6)
-  occurred_at      DateTime              @default(now()) @db.Timestamptz(6)
+  scheduled_start    DateTime?             @db.Timestamptz(6)
+  occurred_at        DateTime              @default(now()) @db.Timestamptz(6)
   /// Minutes late (positive) or early (negative) against the scheduled boundary.
-  minutes_delta    Int?
+  minutes_delta      Int?
   /// Distance from the care location when the event fired — geofence events only.
-  distance_meters  Int?
+  distance_meters    Int?
   /// Contribution to the rolling score, frozen at write time.
-  score_weight     Decimal               @default(0) @db.Decimal(4, 2)
+  score_weight       Decimal               @default(0) @db.Decimal(4, 2)
   /// True for the one terminal event that settles a session (attended / no-show /
   /// cancelled). Only these form the score's denominator; modifiers such as a
   /// geofence breach subtract from the numerator without inflating exposure.
-  is_session_outcome Boolean             @default(false)
+  is_session_outcome Boolean               @default(false)
   /// 'app' | 'system' | 'admin' — who or what observed it.
-  source           String                @default("system") @db.VarChar(20)
-  notes            String?
+  source             String                @default("system") @db.VarChar(20)
+  notes              String?
   /// Idempotency key for the once-per-booking events (`<booking_id>:<type>`), null
   /// for the repeatable ones. Postgres does not collide NULLs in a unique index,
   /// so one column covers both without a partial index Prisma cannot express.
-  dedupe_key       String?               @unique @db.VarChar(120)
+  dedupe_key         String?               @unique @db.VarChar(120)
   /// Set when an admin excuses the event — a family that cancelled at the door, a
   /// medical emergency, an app failure. Waived events stay visible in the
   /// caregiver's timeline but drop out of scoring entirely.
-  waived_at        DateTime?             @db.Timestamptz(6)
-  waived_by        String?               @db.Uuid
-  waiver_reason    String?
-  metadata         Json?
-  created_at       DateTime              @default(now()) @db.Timestamptz(6)
-  users            users                 @relation("attendance_events_nanny", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  bookings         bookings?             @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  waived_by_user   users?                @relation("attendance_events_waived_by", fields: [waived_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  waived_at          DateTime?             @db.Timestamptz(6)
+  waived_by          String?               @db.Uuid
+  waiver_reason      String?
+  metadata           Json?
+  created_at         DateTime              @default(now()) @db.Timestamptz(6)
+  users              users                 @relation("attendance_events_nanny", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  bookings           bookings?             @relation(fields: [booking_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  waived_by_user     users?                @relation("attendance_events_waived_by", fields: [waived_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([nanny_id, attendance_date])
   @@index([nanny_id, occurred_at])
@@ -422,6 +422,11 @@ model payments {
   payment_audit_log    payment_audit_log[]
   price_snapshots      price_snapshots[]
   payment_installments payment_installments[]
+  /// A list, but at most one item is ever live: the partial unique index on
+  /// `nanny_payout_items.payment_id WHERE voided_at IS NULL` is what guarantees a
+  /// caregiver's share of this payment can only be paid out once. Voided items from
+  /// failed payouts accumulate alongside it.
+  payout_items         nanny_payout_items[]
   bookings             bookings               @relation(fields: [booking_id], references: [id])
   nanny                users?                 @relation("payments_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   released_by_user     users?                 @relation("payments_released_by", fields: [released_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
@@ -442,6 +447,127 @@ model payment_audit_log {
   payments            payments @relation(fields: [payment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([order_id])
+  @@index([payment_id])
+}
+
+/// Where a caregiver's money goes. One row mirrors one RazorpayX fund account.
+///
+/// Fund accounts are immutable on RazorpayX — changing bank details creates a new
+/// one rather than editing the old — so this table is append-and-archive too. That
+/// is what lets a settled payout stay truthful about where the money actually went,
+/// however many times the caregiver has changed banks since.
+///
+/// The full account number is deliberately NOT stored. RazorpayX holds it against
+/// `razorpay_fund_account_id`, and a payout addresses the fund account, never the
+/// number — so nothing here needs it, and a leak of this table cannot expose one.
+/// Last four digits plus IFSC is enough to show her which account is on file and
+/// enough for support to identify it.
+model nanny_payout_accounts {
+  id                       String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id                 String    @db.Uuid
+  /// `bank_account` or `vpa` — matches RazorpayX's `account_type`.
+  account_type             String    @db.VarChar(20)
+  beneficiary_name         String    @db.VarChar(255)
+  /// Bank rows only. Display and support identification; see the note above.
+  account_number_last4     String?   @db.VarChar(4)
+  ifsc                     String?   @db.VarChar(20)
+  /// VPA rows only, e.g. `name@bank`.
+  vpa_address              String?   @db.VarChar(255)
+  /// Created at approval, not at submission — a rejected submission must not leave
+  /// an orphan contact behind on RazorpayX. Reused across a caregiver's accounts.
+  razorpay_contact_id      String?   @db.VarChar(255)
+  razorpay_fund_account_id String?   @db.VarChar(255)
+  /// `pending_review` | `active` | `rejected` | `archived`
+  status                   String    @default("pending_review") @db.VarChar(30)
+  rejection_reason         String?
+  reviewed_by              String?   @db.Uuid
+  reviewed_at              DateTime? @db.Timestamptz(6)
+  created_at               DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime  @default(now()) @db.Timestamptz(6)
+
+  nanny    users           @relation("payout_accounts_nanny", fields: [nanny_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  reviewer users?          @relation("payout_accounts_reviewer", fields: [reviewed_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  payouts  nanny_payouts[]
+
+  // A partial unique index in the migration allows at most one `pending_review` and
+  // one `active` row per caregiver: she can submit a change without losing the
+  // account she is currently paid into if that change is rejected.
+  @@index([nanny_id, status])
+  @@index([status, created_at])
+}
+
+/// One movement of money to one caregiver.
+///
+/// The row is written *before* RazorpayX is called, so a request that dies mid-flight
+/// leaves something to reconcile rather than an untracked transfer. `idempotency_key`
+/// is generated with the row and replayed on every retry, so a retry can only ever
+/// return the original payout — never create a second one.
+model nanny_payouts {
+  id                       String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  nanny_id                 String    @db.Uuid
+  payout_account_id        String?   @db.Uuid
+  /// INR, and equal to the sum of this payout's live items by construction.
+  amount                   Decimal   @db.Decimal(12, 2)
+  currency                 String    @default("INR") @db.VarChar(10)
+  /// `created` (ours, pre-gateway) then RazorpayX's own: `queued` | `pending` |
+  /// `processing` | `processed` | `failed` | `reversed` | `cancelled`.
+  status                   String    @default("created") @db.VarChar(30)
+  /// `razorpayx`, or `manual` for a settlement made outside the platform and only
+  /// recorded here. Manual rows never carry a gateway id.
+  provider                 String    @default("razorpayx") @db.VarChar(30)
+  razorpay_payout_id       String?   @unique @db.VarChar(255)
+  razorpay_fund_account_id String?   @db.VarChar(255)
+  /// Sent as `X-Payout-Idempotency`. Mandatory on RazorpayX since 15 Mar 2025.
+  idempotency_key          String    @unique @db.VarChar(64)
+  reference_id             String?   @db.VarChar(64)
+  /// `IMPS` | `NEFT` | `RTGS` | `UPI`
+  mode                     String?   @db.VarChar(10)
+  /// The bank reference the caregiver can quote to her bank. Only set on `processed`.
+  utr                      String?   @db.VarChar(64)
+  fees                     Decimal?  @db.Decimal(12, 2)
+  tax                      Decimal?  @db.Decimal(12, 2)
+  failure_reason           String?
+  notes                    String?
+  initiated_by             String?   @db.Uuid
+  processed_at             DateTime? @db.Timestamptz(6)
+  created_at               DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime  @default(now()) @db.Timestamptz(6)
+
+  nanny     users                  @relation("payouts_nanny", fields: [nanny_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  account   nanny_payout_accounts? @relation(fields: [payout_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  initiator users?                 @relation("payouts_initiated_by", fields: [initiated_by], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  items     nanny_payout_items[]
+
+  @@index([nanny_id, status])
+  @@index([status, created_at])
+}
+
+/// The `payments` rows a payout settles — what makes a bank transfer reconcilable
+/// back to the specific care that earned it.
+///
+/// `amount` and `commission_percent` are frozen here at release time, the same way
+/// `price_snapshots` freezes GST: a later change to the platform rate must never
+/// re-state what was already paid.
+model nanny_payout_items {
+  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  payout_id          String    @db.Uuid
+  payment_id         String    @db.Uuid
+  /// The caregiver's net share of this payment — what she is actually being paid.
+  amount             Decimal   @db.Decimal(12, 2)
+  /// The payment's pre-tax service fee, before commission. Kept so a payout can be
+  /// explained without re-deriving it from rows that may have moved on.
+  gross_amount       Decimal   @db.Decimal(12, 2)
+  commission_percent Decimal   @db.Decimal(5, 2)
+  /// Set when the payout failed or reversed. The item stays for the audit trail
+  /// while the payment becomes eligible for release again — see the partial unique
+  /// index in the migration, which is what makes double-paying impossible.
+  voided_at          DateTime? @db.Timestamptz(6)
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+
+  payout  nanny_payouts @relation(fields: [payout_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payment payments      @relation(fields: [payment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([payout_id])
   @@index([payment_id])
 }
 
@@ -570,10 +696,15 @@ model users {
   rate_cards_created      rate_cards[]              @relation("rate_cards_created_by")
   payouts_released        payments[]                @relation("payments_released_by")
 
-  attendance_events            nanny_attendance_events[] @relation("attendance_events_nanny")
-  attendance_events_waived     nanny_attendance_events[] @relation("attendance_events_waived_by")
-  attendance_days              nanny_attendance_days[]   @relation("attendance_days_nanny")
-  attendance_days_overridden   nanny_attendance_days[]   @relation("attendance_days_overridden_by")
+  payout_accounts          nanny_payout_accounts[] @relation("payout_accounts_nanny")
+  payout_accounts_reviewed nanny_payout_accounts[] @relation("payout_accounts_reviewer")
+  payouts_received         nanny_payouts[]         @relation("payouts_nanny")
+  payouts_initiated        nanny_payouts[]         @relation("payouts_initiated_by")
+
+  attendance_events          nanny_attendance_events[] @relation("attendance_events_nanny")
+  attendance_events_waived   nanny_attendance_events[] @relation("attendance_events_waived_by")
+  attendance_days            nanny_attendance_days[]   @relation("attendance_days_nanny")
+  attendance_days_overridden nanny_attendance_days[]   @relation("attendance_days_overridden_by")
 
   @@unique([oauth_provider, oauth_provider_id])
 }
@@ -1098,24 +1229,24 @@ model invoices {
 /// the snapshot is display strings for rendering, these are queryable numbers for
 /// revenue reporting and GST returns.
 model invoice_lines {
-  id              String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  invoice_id      String  @db.Uuid
-  seq             Int
-  name            String
-  description     String?
-  qty             Decimal @default(1) @db.Decimal(10, 2)
-  unit_amount     Decimal @default(0) @db.Decimal(12, 2)
-  subtotal_amount Decimal @default(0) @db.Decimal(12, 2)
-  gst_percent     Decimal @default(0) @db.Decimal(5, 2)
-  gst_amount      Decimal @default(0) @db.Decimal(12, 2)
-  amount          Decimal @default(0) @db.Decimal(12, 2)
+  id               String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  invoice_id       String  @db.Uuid
+  seq              Int
+  name             String
+  description      String?
+  qty              Decimal @default(1) @db.Decimal(10, 2)
+  unit_amount      Decimal @default(0) @db.Decimal(12, 2)
+  subtotal_amount  Decimal @default(0) @db.Decimal(12, 2)
+  gst_percent      Decimal @default(0) @db.Decimal(5, 2)
+  gst_amount       Decimal @default(0) @db.Decimal(12, 2)
+  amount           Decimal @default(0) @db.Decimal(12, 2)
   /// How many scheduled sessions this line's money actually bought. The number
   /// the whole plan-invoicing design exists to state — a 50% advance on a
   /// twenty-session month buys ten, and the parent should be able to read that
   /// off the document rather than infer it.
   sessions_covered Int?
   /// Service Accounting Code, populated only once GST registration is enabled.
-  sac_code        String? @db.VarChar(12)
+  sac_code         String? @db.VarChar(12)
 
   invoices invoices @relation(fields: [invoice_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -1129,17 +1260,17 @@ model invoice_lines {
 /// refunding it, the only things that reach here are discretionary admin refunds,
 /// write-offs and billing corrections.
 model credit_notes {
-  id         String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  number     String @unique @db.VarChar(32)
-  invoice_id String @db.Uuid
-  booking_id String @db.Uuid
+  id         String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  number     String  @unique @db.VarChar(32)
+  invoice_id String  @db.Uuid
+  booking_id String  @db.Uuid
   parent_id  String? @db.Uuid
   /// `refund` | `plan_cancelled` | `written_off` | `correction`
-  reason     String @db.VarChar(32)
+  reason     String  @db.VarChar(32)
   /// How the credit was actually settled — money returned, or the value kept as
   /// retained sessions. A note whose settlement is `retained_as_entitlement`
   /// reduces the invoice without any cash moving.
-  settlement String @default("refunded") @db.VarChar(32)
+  settlement String  @default("refunded") @db.VarChar(32)
   note       String?
 
   subtotal_amount Decimal @default(0) @db.Decimal(12, 2)
@@ -1194,10 +1325,10 @@ model plan_settlements {
   reason       String?
 
   /// `EntitlementCycle[]` — paid fraction, sessions in cycle, sessions earned.
-  entitlement        Json
-  sessions_entitled  Int  @default(0)
-  sessions_delivered Int  @default(0)
-  sessions_retained  Int  @default(0)
+  entitlement          Json
+  sessions_entitled    Int      @default(0)
+  sessions_delivered   Int      @default(0)
+  sessions_retained    Int      @default(0)
   /// The sessions the parent keeps, in date order. Frozen because the bookings
   /// themselves can later be rescheduled or completed, and the statement has to
   /// keep saying what it said on the day.
@@ -1412,8 +1543,8 @@ model recurring_service_requests {
   /// Why and when the plan was ended. Previously only written onto the individual
   /// `bookings` rows, so "when was this plan cancelled" could not be answered
   /// without joining sessions that eventually age out of relevance.
-  cancellation_reason  String?
-  cancelled_at         DateTime? @db.Timestamptz(6)
+  cancellation_reason               String?
+  cancelled_at                      DateTime? @db.Timestamptz(6)
   /// Sessions the parent had paid for at the instant of cancellation, frozen.
   ///
   /// Entitlement is otherwise derived live from `payment_installments`, which is
@@ -1423,8 +1554,8 @@ model recurring_service_requests {
   /// separate record — the surviving non-CANCELLED bookings are that record.
   sessions_entitled_at_cancellation Int?
 
-  created_at           DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime? @default(now()) @db.Timestamptz(6)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
 
   users            users             @relation("recurring_requests_parent_idTousers", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   nanny            users?            @relation("recurring_requests_nanny_idTousers", fields: [nanny_id], references: [id], onDelete: SetNull, onUpdate: NoAction)

@@ -14,16 +14,41 @@ import { BookingStatusLogService } from "../bookings/booking-status-log.service"
 // a credit note at refund. Safe to import — InvoicesModule reads billing rows
 // directly and does not depend back on this one.
 import { InvoicesModule } from "../invoices/invoices.module";
+import { PayoutsService } from "./payouts.service";
+import { RazorpayxService } from "./razorpayx.service";
+import {
+  AdminPayoutsController,
+  PayoutWebhookController,
+  PayoutsController,
+} from "./payouts.controller";
+// Same reasoning as BookingStatusLogService above: it needs only PrismaService, and
+// importing AdminModule for it would be circular — AdminModule already imports this
+// one.
+import { AdminAuditService } from "../admin/admin-audit.service";
 
 @Module({
   imports: [ConfigModule, NotificationsModule, MailModule, InvoicesModule],
-  controllers: [PaymentsController],
+  controllers: [
+    PaymentsController,
+    PayoutsController,
+    AdminPayoutsController,
+    PayoutWebhookController,
+  ],
   providers: [
     PaymentsService,
     PaymentGatewayService,
     PaymentAuditService,
     BookingStatusLogService,
+    RazorpayxService,
+    PayoutsService,
+    AdminAuditService,
   ],
-  exports: [PaymentsService, PaymentGatewayService, PaymentAuditService],
+  exports: [
+    PaymentsService,
+    PaymentGatewayService,
+    PaymentAuditService,
+    PayoutsService,
+    RazorpayxService,
+  ],
 })
 export class PaymentsModule {}

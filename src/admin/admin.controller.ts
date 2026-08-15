@@ -258,9 +258,23 @@ export class AdminController {
     return this.revenueService.releasePayout(paymentId, req.user.id, getClientIp(req));
   }
 
+  /**
+   * Sends the caregiver everything she is owed. **This moves real money** — it is no
+   * longer a bookkeeping flag. Body accepts `{ manual: true }` to record a
+   * settlement made outside the platform instead.
+   */
   @Post("revenue/payouts/nanny/:nannyId/release")
-  async releasePayoutsForNanny(@Param("nannyId") nannyId: string, @Req() req: any) {
-    return this.revenueService.releasePayoutsForNanny(nannyId, req.user.id, getClientIp(req));
+  async releasePayoutsForNanny(
+    @Param("nannyId") nannyId: string,
+    @Req() req: any,
+    @Body() body: { manual?: boolean; note?: string } = {},
+  ) {
+    return this.revenueService.releasePayoutsForNanny(
+      nannyId,
+      req.user.id,
+      getClientIp(req),
+      { manual: body?.manual, note: body?.note },
+    );
   }
 
   @Get("revenue/commission")

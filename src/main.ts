@@ -11,7 +11,14 @@ import { ThrottleExceptionFilter } from "./common/filters/throttle-exception.fil
 const logger = new Logger('Bootstrap');
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  // rawBody: keeps the untouched request bytes alongside the parsed body, which the
+  // RazorpayX payout webhook needs — its HMAC is over what was actually sent, and
+  // re-serialising the parsed JSON is not guaranteed to reproduce those bytes.
+  // Purely additive: normal body parsing is unchanged for every other route.
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    rawBody: true,
+  });
   // Use nestjs-pino logger
   app.useLogger(app.get(PinoLogger));
 
