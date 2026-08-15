@@ -14,23 +14,40 @@ import { InvoiceData } from "./invoice.types";
  * An invoice used to be re-derived from `payment_installments` on every read, so
  * a six-month plan's document grew each month under the same number and shrank
  * again when cancellation voided a row. Everything here exists to make that
- * impossible: one document per capture, written once, snapshot and all.
+ * impossible: one document per billing group — a cycle of a booking, with the
+ * matching fee folded into cycle 1 — written once, snapshot and all, and only
+ * once every instalment in that group has been captured.
  */
 describe("DocumentIssuerService", () => {
   let service: DocumentIssuerService;
 
   const mockPrisma: Record<string, any> = {
-    invoices: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), findMany: jest.fn() },
+    invoices: {
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      findMany: jest.fn(),
+    },
     invoice_lines: { createMany: jest.fn(), deleteMany: jest.fn() },
     credit_notes: { create: jest.fn() },
     credit_note_lines: { create: jest.fn() },
     plan_settlements: { findUnique: jest.fn(), create: jest.fn() },
+    payment_installments: { findUnique: jest.fn(), findMany: jest.fn() },
     // Issuance opens its own transaction so a number and the row it belongs to
     // cannot land separately. Run the callback against the same mock.
     $transaction: jest.fn((work: (tx: unknown) => unknown) => work(mockPrisma)),
   };
 
-  const mockBuilder = { buildForInstallment: jest.fn(), gstBlock: jest.fn() };
+  const mockBuilder = { buildForGroup: jest.fn(), gstBlock: jest.fn() };
+
+  /** A cycle whose instalments are all captured, so its invoice is due. */
+  const settledGroup = (
+    rows: Array<Record<string, unknown>> = [
+      { id: "inst-fee", status: "paid", cycle_number: 0, kind: "matching_fee" },
+      { id: "inst-1", status: "paid", cycle_number: 1, kind: "cycle" },
+    ],
+  ) => mockPrisma.payment_installments.findMany.mockResolvedValue(rows);
   const mockSettlements = { build: jest.fn() };
   const mockNumbers = { next: jest.fn() };
   const mockGst = {
@@ -94,20 +111,24 @@ describe("DocumentIssuerService", () => {
     mockBuilder.gstBlock.mockReturnValue({ registered: false });
     // Fresh each time: the issuer stamps the number onto what the builder
     // returned, and a shared object would carry it between cases.
-    mockBuilder.buildForInstallment.mockImplementation(async () => ({
+    mockBuilder.buildForGroup.mockImplementation(async () => ({
       ...built,
       data: { ...built.data },
     }));
+    mockPrisma.payment_installments.findUnique.mockResolvedValue({
+      booking_id: "b1",
+      cycle_number: 1,
+    });
+    settledGroup();
+    mockPrisma.invoices.findFirst.mockResolvedValue(null);
     mockConfig.paymentDetails.mockReturnValue({ reference: "ref" });
     mockNumbers.next.mockResolvedValue("KL-2026-0001");
     mockPrisma.invoices.create.mockResolvedValue({ id: "inv-1", number: "KL-2026-0001" });
     mockPrisma.invoice_lines.createMany.mockResolvedValue({ count: 1 });
   });
 
-  describe("issueForInstallment", () => {
+  describe("issueForBillingGroup", () => {
     it("freezes the rendered document alongside the numbers", async () => {
-      mockPrisma.invoices.findUnique.mockResolvedValue(null);
-
       await service.issueForInstallment("inst-1");
 
       const written = mockPrisma.invoices.create.mock.calls[0][0].data;
@@ -118,20 +139,53 @@ describe("DocumentIssuerService", () => {
         payment: { reference: "ref" },
       });
       expect(written.number).toBe("KL-2026-0001");
-      expect(written.installment_id).toBe("inst-1");
       expect(written.total_amount).toBe(15000);
       // The number the whole redesign exists to record: what this money bought.
       expect(mockPrisma.invoice_lines.createMany.mock.calls[0][0].data[0].sessions_covered).toBe(10);
     });
 
-    it("does not issue a second invoice for the same capture", async () => {
+    it("holds until every instalment in the cycle is captured", async () => {
+      // A split cycle's advance must not raise an invoice on its own: the
+      // document covers the whole cycle, matching fee included, and one issued
+      // at half the amount would either understate it or have to grow later.
+      settledGroup([
+        { id: "inst-1", status: "paid", cycle_number: 1, kind: "cycle" },
+        { id: "inst-2", status: "pending", cycle_number: 1, kind: "cycle" },
+      ]);
+
+      const result = await service.issueForInstallment("inst-1");
+
+      expect(result).toBeNull();
+      expect(mockPrisma.invoices.create).not.toHaveBeenCalled();
+      expect(mockNumbers.next).not.toHaveBeenCalled();
+    });
+
+    it("bills the matching fee through cycle 1 rather than on its own", async () => {
+      // Cycle 0 is not a cycle: the fee is carved out of cycle 1, so it resolves
+      // to that group and lands on that document.
+      mockPrisma.payment_installments.findUnique.mockResolvedValue({
+        booking_id: "b1",
+        cycle_number: 0,
+      });
+
+      await service.issueForInstallment("inst-fee");
+
+      expect(mockBuilder.buildForGroup).toHaveBeenCalledWith(
+        "b1",
+        1,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("does not issue a second invoice for a group already invoiced", async () => {
       // Razorpay delivers `payment.captured` after `api:verify_payment` has
       // already run the same capture. A second document would be a second entry
       // in the books for money that arrived once.
-      mockPrisma.invoices.findUnique.mockResolvedValue({
+      mockPrisma.invoices.findFirst.mockResolvedValue({
         id: "inv-1",
         number: "KL-2026-0001",
-        kind: "tax_invoice",
       });
 
       const result = await service.issueForInstallment("inst-1");
@@ -141,30 +195,32 @@ describe("DocumentIssuerService", () => {
       expect(mockNumbers.next).not.toHaveBeenCalled();
     });
 
-    it("upgrades a legacy row in place rather than minting a new number", async () => {
-      // A number issued under the old download-time scheme may already be quoted
-      // on a bank transfer.
-      mockPrisma.invoices.findUnique.mockResolvedValue({
-        id: "inv-old",
-        number: "KL-2026-0004",
-        kind: "legacy",
-      });
-      mockPrisma.invoices.update.mockResolvedValue({ id: "inv-old", number: "KL-2026-0004" });
+    it("issues a stranded matching fee alone when forced", async () => {
+      // A fee paid on a booking whose first cycle never opened belongs to a
+      // group that will never complete. Past the grace period the reconciliation
+      // sweep bills it on its own rather than leaving money undocumented.
+      settledGroup([
+        { id: "inst-fee", status: "paid", cycle_number: 0, kind: "matching_fee" },
+      ]);
 
-      const result = await service.issueForInstallment("inst-1");
+      const result = await service.issueForBillingGroup(
+        "b1",
+        1,
+        mockPrisma as never,
+        new Date("2026-09-04"),
+        { force: true },
+      );
 
-      expect(mockNumbers.next).not.toHaveBeenCalled();
-      expect(mockPrisma.invoices.create).not.toHaveBeenCalled();
-      expect(result?.number).toBe("KL-2026-0004");
-      // Rebuilt lines replace the old ones rather than doubling them up.
-      expect(mockPrisma.invoice_lines.deleteMany).toHaveBeenCalledWith({
-        where: { invoice_id: "inv-old" },
-      });
+      expect(result).not.toBeNull();
+      expect(mockPrisma.invoices.create).toHaveBeenCalled();
     });
 
     it("records whether registration was in force at the moment of issue", async () => {
-      mockPrisma.invoices.findUnique.mockResolvedValue(null);
-      mockGst.getRegistration.mockResolvedValue({ ...UNREGISTERED, enabled: true, gstin: "27AAAAA0000A1Z5" });
+      mockGst.getRegistration.mockResolvedValue({
+        ...UNREGISTERED,
+        enabled: true,
+        gstin: "27AAAAA0000A1Z5",
+      });
 
       await service.issueForInstallment("inst-1");
 

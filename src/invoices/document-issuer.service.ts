@@ -2,7 +2,12 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { PlanEntitlement } from "../common/plan-entitlement.service";
-import { InvoiceDataBuilder } from "./invoice-data.builder";
+import { INSTALMENT_PAID } from "../constants";
+import {
+  INVOICEABLE_STATUSES,
+  InvoiceDataBuilder,
+  billingGroupOf,
+} from "./invoice-data.builder";
 import { InvoiceNumberService } from "./invoice-number.service";
 import { SettlementBuilder, SettlementInput } from "./settlement.builder";
 import { GstConfigService } from "./gst.config";
@@ -91,15 +96,59 @@ export class DocumentIssuerService {
     db: Db = this.prisma,
     issuedAt: Date = new Date(),
   ): Promise<{ id: string; number: string } | null> {
-    const existing = await db.invoices.findUnique({
-      where: { installment_id: installmentId },
-      select: { id: true, number: true, kind: true },
+    const installment = await this.prisma.payment_installments.findUnique({
+      where: { id: installmentId },
+      select: { booking_id: true, cycle_number: true },
     });
-    // A `legacy` row here is a number minted under the old download-time scheme
-    // for this same instalment. Upgrade it in place rather than issuing a second
-    // number: the family may already be quoting the first one on a transfer.
-    if (existing && existing.kind !== "legacy") {
-      return { id: existing.id, number: existing.number };
+    if (!installment) return null;
+
+    return this.issueForBillingGroup(
+      installment.booking_id,
+      billingGroupOf(installment.cycle_number),
+      db,
+      issuedAt,
+    );
+  }
+
+  /**
+   * Issue the invoice for one billing group, if the group is ready.
+   *
+   * Ready means every invoiceable instalment in it has been captured. Holding
+   * until then is what lets one document carry the whole cycle — the matching fee
+   * and the session fee together, at the ₹792 the family actually paid, rather
+   * than two documents for ₹249 and ₹543.
+   *
+   * The cost is that a split cycle's advance is receipted by the proforma rather
+   * than a tax invoice until the balance lands. That is the correct trade: the
+   * proforma already shows what has been paid, and an invoice raised on half a
+   * cycle would either understate the cycle or have to grow later.
+   */
+  async issueForBillingGroup(
+    bookingId: string,
+    groupCycle: number,
+    db: Db = this.prisma,
+    issuedAt: Date = new Date(),
+    options: { force?: boolean } = {},
+  ): Promise<{ id: string; number: string } | null> {
+    const existing = await db.invoices.findFirst({
+      where: { booking_id: bookingId, cycle_number: groupCycle, kind: "tax_invoice" },
+      select: { id: true, number: true },
+    });
+    if (existing) return existing;
+
+    const members = await this.prisma.payment_installments.findMany({
+      where: { booking_id: bookingId, status: { in: INVOICEABLE_STATUSES } },
+      select: { id: true, status: true, cycle_number: true, kind: true },
+    });
+    const group = members.filter(
+      (m) => billingGroupOf(m.cycle_number) === groupCycle,
+    );
+    if (group.length === 0) return null;
+
+    if (!options.force && !group.every((m) => m.status === INSTALMENT_PAID)) {
+      // Still owed on. Nothing to issue yet, and nothing wrong — the next capture
+      // in this group comes back through here.
+      return null;
     }
 
     const registration = await this.gst.getRegistration();
@@ -107,52 +156,46 @@ export class DocumentIssuerService {
     // Built before the number exists, so the reads that assemble the document
     // stay outside the transaction below. The number is stamped onto the
     // snapshot at the end — see `numberDocument`.
-    const built = await this.builder.buildForInstallment(
-      installmentId,
+    const built = await this.builder.buildForGroup(
+      bookingId,
+      groupCycle,
       PENDING_NUMBER,
       issuedAt,
       registration,
     );
 
     return this.inTransaction(db, async (tx) => {
-      const number =
-        existing?.number ??
-        (await this.numbers.next("invoice", issuedAt, registration.enabled, tx));
-      const snapshot = this.numberDocument(built.data, number);
+      const number = await this.numbers.next(
+        "invoice",
+        issuedAt,
+        registration.enabled,
+        tx,
+      );
 
-      const payload = {
-        number,
-        kind: "tax_invoice",
-        booking_id: built.bookingId,
-        plan_id: built.planId,
-        parent_id: built.parentId,
-        installment_id: installmentId,
-        price_snapshot_id: built.priceSnapshotId,
-        cycle_number: built.cycleNumber,
-        period_from: built.periodFrom,
-        period_to: built.periodTo,
-        subtotal_amount: built.subtotalAmount,
-        gst_amount: built.gstAmount,
-        total_amount: built.totalAmount,
-        gst_registered: registration.enabled,
-        issued_at: issuedAt,
-        snapshot: snapshot as unknown as Prisma.InputJsonValue,
-      };
+      const invoice = await tx.invoices.create({
+        data: {
+          number,
+          kind: "tax_invoice",
+          booking_id: built.bookingId,
+          plan_id: built.planId,
+          parent_id: built.parentId,
+          price_snapshot_id: built.priceSnapshotId,
+          cycle_number: built.cycleNumber,
+          period_from: built.periodFrom,
+          period_to: built.periodTo,
+          subtotal_amount: built.subtotalAmount,
+          gst_amount: built.gstAmount,
+          total_amount: built.totalAmount,
+          gst_registered: registration.enabled,
+          issued_at: issuedAt,
+          snapshot: this.numberDocument(
+            built.data,
+            number,
+          ) as unknown as Prisma.InputJsonValue,
+        },
+        select: { id: true, number: true },
+      });
 
-      const invoice = existing
-        ? await tx.invoices.update({
-            where: { id: existing.id },
-            data: { ...payload, updated_at: new Date() },
-            select: { id: true, number: true },
-          })
-        : await tx.invoices.create({
-            data: payload,
-            select: { id: true, number: true },
-          });
-
-      if (existing) {
-        await tx.invoice_lines.deleteMany({ where: { invoice_id: invoice.id } });
-      }
       await tx.invoice_lines.createMany({
         data: built.lines.map((line) => ({
           invoice_id: invoice.id,
@@ -171,9 +214,33 @@ export class DocumentIssuerService {
       });
 
       this.logger.log(
-        `Issued ${registration.enabled ? "tax invoice" : "invoice"} ${number} for instalment ${installmentId}`,
+        `Issued ${registration.enabled ? "tax invoice" : "invoice"} ${number} for booking ` +
+          `${bookingId} cycle ${groupCycle} (${built.lines.length} line(s), ₹${built.totalAmount})`,
       );
       return invoice;
+    });
+  }
+
+  /** The invoice covering an instalment, once its group has been issued. */
+  async invoiceForInstallment(installmentId: string, db: Db = this.prisma) {
+    const installment = await db.payment_installments.findUnique({
+      where: { id: installmentId },
+      select: { booking_id: true, cycle_number: true },
+    });
+    if (!installment) return null;
+
+    return db.invoices.findFirst({
+      where: {
+        booking_id: installment.booking_id,
+        cycle_number: billingGroupOf(installment.cycle_number),
+        kind: "tax_invoice",
+      },
+      select: {
+        id: true,
+        number: true,
+        total_amount: true,
+        credited_amount: true,
+      },
     });
   }
 

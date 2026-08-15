@@ -53,6 +53,19 @@ const PROFORMA_NOTICE =
   "invoice and not a demand for payment. A tax invoice is issued for each " +
   "instalment once payment is received.";
 
+/**
+ * Which invoice a billing row belongs on.
+ *
+ * The matching fee sits on `cycle_number` 0 but is not a cycle: it is carved out
+ * of cycle 1's total rather than charged on top of it, so the parent's all-in
+ * cost is unchanged and the fee is simply the first thing they pay. Billing it on
+ * its own document would present a ₹249 charge as a separate purchase and leave
+ * cycle 1's invoice understating what the engagement cost.
+ */
+export function billingGroupOf(cycleNumber: number | null | undefined): number {
+  return Math.max(1, Number(cycleNumber ?? 1));
+}
+
 /** One item row, in the numbers the ledger stores rather than the strings it prints. */
 export interface PersistableLine {
   seq: number;
@@ -134,74 +147,90 @@ export class InvoiceDataBuilder {
   // ── Tax invoice ────────────────────────────────────────────────────────────
 
   /**
-   * The document for one captured instalment.
+   * The document for one billing group: a cycle of a booking, with the matching
+   * fee folded in where it belongs.
    *
-   * Deliberately narrow: one payment, one invoice. The booking used to be the
-   * unit, which read well until a plan's second cycle opened and the "same"
-   * invoice quietly grew. Anchoring on the payment is the only unit that cannot
-   * change after the fact, and it is also what GST wants — the tax point for an
-   * advance is when the money arrives.
+   * The unit matters, and both obvious answers are wrong. The *booking* cannot be
+   * the unit, because a plan's cycles open month by month against one anchor
+   * booking, so the document grew under a fixed number. The *instalment* cannot
+   * be the unit either: a booking with a ₹249 matching fee and a ₹543 session fee
+   * then hands the family two documents, neither showing the ₹792 they paid.
+   *
+   * A cycle is the unit that is both fixed and whole. Its instalments are written
+   * in one transaction with their snapshot, so the set cannot change afterwards;
+   * and the matching fee is carved out of cycle 1 rather than charged on top, so
+   * it is part of that cycle's total rather than a separate thing bought.
    */
-  async buildForInstallment(
-    installmentId: string,
+  async buildForGroup(
+    bookingId: string,
+    groupCycle: number,
     invoiceNumber: string,
     issuedAt: Date,
     registration: GstRegistration,
   ): Promise<IssuableInvoice> {
-    const installment = await this.prisma.payment_installments.findUnique({
-      where: { id: installmentId },
-      select: { booking_id: true },
-    });
-    if (!installment) {
-      throw new NotFoundException(`Instalment ${installmentId} not found`);
-    }
+    const booking = await this.load(bookingId);
+    const members = this.ordered(
+      booking.payment_installments.filter(
+        (i) =>
+          INVOICEABLE_STATUSES.includes(i.status) &&
+          billingGroupOf(i.cycle_number) === groupCycle,
+      ),
+    );
 
-    const booking = await this.load(installment.booking_id);
-    const row = booking.payment_installments.find((i) => i.id === installmentId);
-    if (!row) {
+    if (members.length === 0) {
       throw new NotFoundException(
-        `Instalment ${installmentId} is not billable on its booking`,
+        `Booking ${bookingId} has nothing to invoice for cycle ${groupCycle}`,
       );
     }
 
     const request = booking.service_requests ?? booking.recurring_service_requests;
     const schedule = this.scheduleContext(booking, request);
-    const cycle = this.cycleFacts(booking, schedule, row);
 
-    const gstPercent = this.gstPercentOf(row);
-    const item = this.buildItem({
-      installment: row,
-      schedule,
-      cycle,
-      siblings: this.cycleSiblings(booking, row),
-      registration,
-    });
+    const items = members.map((installment) =>
+      this.buildItem({
+        installment,
+        schedule,
+        cycle: this.cycleFacts(booking, schedule, installment),
+        siblings: this.cycleSiblings(booking, installment),
+        registration,
+      }),
+    );
 
-    const subtotal = round(Number(row.subtotal_amount));
-    const gstAmount = round(Number(row.gst_amount));
-    const total = round(Number(row.amount));
+    const subtotal = sum(members.map((i) => Number(i.subtotal_amount)));
+    const gstAmount = sum(members.map((i) => Number(i.gst_amount)));
+    const total = sum(members.map((i) => Number(i.amount)));
+
+    // The window of the cycle proper. The matching fee has no period of its own,
+    // so it must not be allowed to define the group's.
+    const cycleRow = members.find((i) => i.kind !== MATCHING_FEE_KIND) ?? members[0];
+    const cycle = this.cycleFacts(booking, schedule, cycleRow);
 
     const data: InvoiceData = {
       documentTitle: registration.enabled ? "Tax Invoice" : "Invoice",
       documentKind: "tax_invoice",
       invoiceNumber,
-      // Issued at capture, so it is a receipt from the moment it exists.
+      // Issued only once every instalment in the group is captured, so it is a
+      // receipt in full from the moment it exists.
       paid: true,
       isProforma: false,
       billedTo: this.billedTo(booking, registration),
       facts: [
         { label: "Invoice date", value: formatDate(issuedAt) },
-        { label: "Paid on", value: formatDate(row.paid_at ?? issuedAt) },
+        {
+          label: "Paid on",
+          // The date the group was settled — the last payment, not the first.
+          value: formatDate(this.latest(members.map((i) => i.paid_at)) ?? issuedAt),
+        },
         ...(cycle.periodLabel
           ? [{ label: "Billing period", value: cycle.periodLabel }]
           : []),
         { label: "Amount paid", value: `₹ ${formatAmount(total)}` },
       ],
       ...this.engagementSection(booking),
-      items: [item],
+      items,
       totals: this.buildTotals({
         subtotal,
-        gstByRate: new Map([[gstPercent, gstAmount]]),
+        gstByRate: this.gstByRate(members),
         registration,
         paidToDate: 0,
         paid: true,
@@ -217,26 +246,24 @@ export class InvoiceDataBuilder {
 
     return {
       data,
-      lines: [
-        {
-          seq: 1,
-          name: item.name,
-          description: item.description,
-          qty: 1,
-          unitAmount: subtotal,
-          subtotalAmount: subtotal,
-          gstPercent,
-          gstAmount,
-          amount: total,
-          sessionsCovered: item.sessionsCovered,
-          sacCode: registration.enabled ? registration.defaultSacCode : null,
-        },
-      ],
+      lines: members.map((installment, index) => ({
+        seq: index + 1,
+        name: items[index].name,
+        description: items[index].description,
+        qty: 1,
+        unitAmount: round(Number(installment.subtotal_amount)),
+        subtotalAmount: round(Number(installment.subtotal_amount)),
+        gstPercent: this.gstPercentOf(installment),
+        gstAmount: round(Number(installment.gst_amount)),
+        amount: round(Number(installment.amount)),
+        sessionsCovered: items[index].sessionsCovered,
+        sacCode: registration.enabled ? registration.defaultSacCode : null,
+      })),
       bookingId: booking.id,
       planId: booking.recurring_request_id ?? null,
       parentId: booking.parent_id ?? null,
-      priceSnapshotId: row.price_snapshot_id,
-      cycleNumber: row.cycle_number,
+      priceSnapshotId: cycleRow.price_snapshot_id,
+      cycleNumber: groupCycle,
       periodFrom: cycle.from,
       periodTo: cycle.to,
       subtotalAmount: subtotal,
@@ -895,6 +922,13 @@ export class InvoiceDataBuilder {
       total += this.sessionsInCycle(schedule, cycle);
     }
     return total;
+  }
+
+  private latest(dates: Array<Date | null>): Date | null {
+    const known = dates.filter((d): d is Date => !!d);
+    return known.length
+      ? new Date(Math.max(...known.map((d) => d.getTime())))
+      : null;
   }
 
   /** `children.school_details` is free-form JSON; read it defensively. */

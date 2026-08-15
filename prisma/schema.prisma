@@ -1042,11 +1042,14 @@ model invoices {
   /// read rather than a join through every session.
   plan_id           String?   @db.Uuid
   parent_id         String?   @db.Uuid
-  /// The capture this documents. Unique, and the whole idempotency story: a
-  /// Razorpay webhook replaying after `api:verify_payment` already ran cannot
-  /// mint a second number for the same money.
-  installment_id    String?   @unique @db.Uuid
+  /// Provenance for a number minted under the old per-instalment scheme. Not
+  /// written for anything issued since — an invoice now covers a whole billing
+  /// group, so no single instalment identifies it.
+  installment_id    String?   @db.Uuid
   price_snapshot_id String?   @db.Uuid
+  /// The billing group this covers: a cycle of the booking, with the matching
+  /// fee (cycle 0) folded into cycle 1 because it is carved out of that cycle
+  /// rather than charged on top of it. Null on legacy rows.
   cycle_number      Int?
   period_from       DateTime? @db.Timestamptz(6)
   period_to         DateTime? @db.Timestamptz(6)
@@ -1072,6 +1075,15 @@ model invoices {
   invoice_lines              invoice_lines[]
   credit_notes               credit_notes[]
 
+  /// One invoice per billing group. This is the idempotency guarantee that
+  /// `installment_id` used to provide: a Razorpay webhook replaying after
+  /// `api:verify_payment` already settled the same group cannot mint a second
+  /// number for money that arrived once.
+  ///
+  /// `legacy` rows carry a null `cycle_number` precisely so they sit outside it
+  /// — Postgres does not collide nulls, and two of them can legitimately exist
+  /// for one booking.
+  @@unique([booking_id, cycle_number, kind])
   @@index([parent_id, issued_at])
   @@index([booking_id])
   @@index([plan_id])

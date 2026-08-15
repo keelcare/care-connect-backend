@@ -117,19 +117,90 @@ describe("InvoiceDataBuilder", () => {
     builder = module.get(InvoiceDataBuilder);
   });
 
-  describe("buildForInstallment", () => {
+  describe("buildForGroup", () => {
+    /** The matching fee, carved out of cycle 1 and billed on its own snapshot. */
+    const fee = (over: Record<string, unknown> = {}) =>
+      instalment(1, {
+        id: "inst-fee",
+        kind: "matching_fee",
+        cycle_number: 0,
+        amount: 249,
+        subtotal_amount: 211,
+        gst_amount: 38,
+        total_installments: 1,
+        price_snapshot_id: "snap-0",
+        price_snapshots: { gst_percent_used: 18, final_amount: 249 },
+        ...over,
+      });
+
+    const build = (
+      cycle = 1,
+      registration = UNREGISTERED,
+      issuedAt = new Date("2026-09-04"),
+    ) => builder.buildForGroup("anchor-1", cycle, "KL-2026-0001", issuedAt, registration);
+
     beforeEach(() => {
-      mockPrisma.payment_installments.findUnique.mockResolvedValue({ booking_id: "anchor-1" });
       mockPrisma.bookings.findUnique.mockResolvedValue(booking());
     });
 
-    it("states how many sessions the money bought", async () => {
-      const built = await builder.buildForInstallment(
-        "inst-1",
-        "KL-2026-0001",
-        new Date("2026-09-04"),
-        UNREGISTERED,
+    it("bills the matching fee on the same document as the cycle it came out of", async () => {
+      // The regression this fixes: a ₹249 fee and a ₹543 session fee invoiced
+      // separately, so neither document showed the ₹792 the family actually
+      // paid. The fee is carved *out of* cycle 1, not charged on top of it.
+      mockPrisma.bookings.findUnique.mockResolvedValue(
+        booking({
+          payment_installments: [
+            fee(),
+            instalment(1, {
+              id: "inst-cycle",
+              amount: 543,
+              subtotal_amount: 460,
+              gst_amount: 83,
+              total_installments: 1,
+            }),
+          ],
+        }),
       );
+
+      const built = await build();
+
+      expect(built.data.items).toHaveLength(2);
+      expect(built.totalAmount).toBe(792);
+      expect(built.data.grandTotal).toEqual({ label: "Total paid", amount: "792.00" });
+      // The fee heads the list: it is what the family paid first.
+      expect(built.data.items[0].name).toBe("Matching & placement fee");
+      expect(built.lines.map((l) => l.amount)).toEqual([249, 543]);
+    });
+
+    it("keeps a later cycle on its own document", async () => {
+      // Grouping is per cycle, not per booking. Cycle 2 is a different month and
+      // a different bill — this is what stopped a plan's invoice from growing.
+      mockPrisma.bookings.findUnique.mockResolvedValue(
+        booking({
+          payment_installments: [
+            fee(),
+            instalment(1, { id: "c1", amount: 543, total_installments: 1 }),
+            instalment(1, { id: "c2", cycle_number: 2, amount: 600, total_installments: 1, price_snapshot_id: "snap-2" }),
+          ],
+        }),
+      );
+
+      const built = await build(2);
+
+      expect(built.data.items).toHaveLength(1);
+      expect(built.totalAmount).toBe(600);
+      expect(built.cycleNumber).toBe(2);
+    });
+
+    it("carries both halves of a split cycle at the cycle's full price", async () => {
+      const built = await build();
+
+      expect(built.data.items).toHaveLength(2);
+      expect(built.totalAmount).toBe(30000);
+    });
+
+    it("states how many sessions each instalment bought", async () => {
+      const built = await build();
 
       // 4 Sep – 3 Oct holds 21 weekdays. The advance buys the first 10 of them;
       // the odd session goes to whoever pays last, so the halves sum to 21.
@@ -137,15 +208,11 @@ describe("InvoiceDataBuilder", () => {
         "Covers 10 of 21 scheduled sessions in this cycle",
       );
       expect(built.lines[0].sessionsCovered).toBe(10);
+      expect(built.lines[1].sessionsCovered).toBe(11);
     });
 
     it("uses the natural month billing uses, not a flat 28 days", async () => {
-      const built = await builder.buildForInstallment(
-        "inst-1",
-        "KL-2026-0001",
-        new Date("2026-09-04"),
-        UNREGISTERED,
-      );
+      const built = await build();
 
       // 4 Sep – 3 Oct. A 28-day block from the booking start would have said 1 Oct.
       expect(built.data.items[0].description).toContain("4 Sept – 3 October 2026");
@@ -164,47 +231,46 @@ describe("InvoiceDataBuilder", () => {
         }),
       );
 
-      const first = await builder.buildForInstallment(
-        "inst-1", "KL-2026-0001", new Date("2026-09-04"), UNREGISTERED,
-      );
-      const second = await builder.buildForInstallment(
-        "inst-2", "KL-2026-0002", new Date("2026-09-18"), UNREGISTERED,
-      );
+      const built = await build();
 
-      const total =
-        (first.lines[0].sessionsCovered ?? 0) + (second.lines[0].sessionsCovered ?? 0);
+      const total = built.lines.reduce((sum, l) => sum + (l.sessionsCovered ?? 0), 0);
       const inCycle = Number(
-        /of (\d+) scheduled/.exec(first.data.items[0].description)?.[1],
+        /of (\d+) scheduled/.exec(built.data.items[0].description)?.[1],
       );
       expect(total).toBe(inCycle);
     });
 
-    it("is a receipt, because it only exists once the money arrived", async () => {
-      const built = await builder.buildForInstallment(
-        "inst-1", "KL-2026-0001", new Date("2026-09-04"), UNREGISTERED,
-      );
+    it("is a receipt, because it only exists once the cycle is settled", async () => {
+      const built = await build();
 
       expect(built.data.paid).toBe(true);
       expect(built.data.grandTotal.label).toBe("Total paid");
       expect(built.data.isProforma).toBe(false);
     });
 
-    it("covers only its own instalment, not the whole cycle", async () => {
-      // The failure this design removes: a document that grows as later
-      // instalments are billed against the same booking.
-      const built = await builder.buildForInstallment(
-        "inst-1", "KL-2026-0001", new Date("2026-09-04"), UNREGISTERED,
+    it("takes its billing period from the cycle, not from the fee", async () => {
+      // The matching fee has no period of its own; letting it define the group's
+      // would leave the document claiming no billing period at all.
+      mockPrisma.bookings.findUnique.mockResolvedValue(
+        booking({
+          payment_installments: [
+            fee(),
+            instalment(1, { id: "inst-cycle", amount: 543, total_installments: 1 }),
+          ],
+        }),
       );
 
-      expect(built.data.items).toHaveLength(1);
-      expect(built.totalAmount).toBe(15000);
+      const built = await build();
+
+      expect(built.data.facts).toContainEqual({
+        label: "Billing period",
+        value: "4 Sept – 3 October 2026",
+      });
     });
 
     it("titles itself a tax invoice only once registered", async () => {
       const registered = { ...UNREGISTERED, enabled: true, gstin: "27AAAAA0000A1Z5" };
-      const built = await builder.buildForInstallment(
-        "inst-1", "KL-2026-0001", new Date("2026-09-04"), registered,
-      );
+      const built = await build(1, registered);
 
       expect(built.data.documentTitle).toBe("Tax Invoice");
       expect(built.lines[0].sacCode).toBe("999599");
@@ -213,25 +279,10 @@ describe("InvoiceDataBuilder", () => {
     it("does not claim a matching fee bought sessions", async () => {
       // It bought a placement, and is carved out of cycle 1 rather than added on.
       mockPrisma.bookings.findUnique.mockResolvedValue(
-        booking({
-          payment_installments: [
-            instalment(1, {
-              id: "inst-fee",
-              kind: "matching_fee",
-              cycle_number: 0,
-              amount: 249,
-              subtotal_amount: 211,
-              gst_amount: 38,
-              total_installments: 1,
-              price_snapshot_id: "snap-0",
-            }),
-          ],
-        }),
+        booking({ payment_installments: [fee()] }),
       );
 
-      const built = await builder.buildForInstallment(
-        "inst-fee", "KL-2026-0001", new Date("2026-09-04"), UNREGISTERED,
-      );
+      const built = await build();
 
       expect(built.data.items[0].name).toBe("Matching & placement fee");
       expect(built.lines[0].sessionsCovered).toBeNull();

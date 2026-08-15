@@ -8,6 +8,7 @@ import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
 
 /**
  * `getNannyEarningsAnalytics` builds the caregiver's own earnings screen, so the
@@ -95,6 +96,10 @@ describe("PaymentsService — nanny earnings analytics", () => {
         { provide: PricingEngineService, useValue: pricing },
         { provide: MailService, useValue: {} },
         { provide: BookingStatusLogService, useValue: { writeLog: jest.fn() } },
+        {
+          provide: DocumentIssuerService,
+          useValue: { issueForInstallment: jest.fn(), invoiceForInstallment: jest.fn() },
+        },
         { provide: ConfigService, useValue: { get: jest.fn(() => undefined) } },
       ],
     }).compile();

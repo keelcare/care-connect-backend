@@ -8,6 +8,7 @@ import { PaymentAuditService } from "./payment-audit.service";
 import { PricingEngineService } from "../common/pricing.service";
 import { MailService } from "../mail/mail.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
 
 describe("PaymentsService", () => {
   let service: PaymentsService;
@@ -81,6 +82,19 @@ describe("PaymentsService", () => {
     writeLog: jest.fn().mockResolvedValue(undefined),
   };
 
+  /**
+   * Capturing money now also issues the invoice for the billing group it
+   * completes. Stubbed here: these tests are about the money moving, and
+   * document issuance has its own suite. It is deliberately after the commit and
+   * swallowed on failure, so a stub returning nothing changes no assertion here.
+   */
+  const mockDocuments = {
+    issueForInstallment: jest.fn().mockResolvedValue(null),
+    issueForBillingGroup: jest.fn().mockResolvedValue(null),
+    invoiceForInstallment: jest.fn().mockResolvedValue(null),
+    issueCreditNote: jest.fn(),
+  };
+
   const mockPricingService = {
     calculateCost: jest.fn(),
     calculateAndSnapshot: jest.fn(),
@@ -117,6 +131,7 @@ describe("PaymentsService", () => {
         { provide: PricingEngineService, useValue: mockPricingService },
         { provide: MailService, useValue: mockMailService },
         { provide: BookingStatusLogService, useValue: mockBookingStatusLog },
+        { provide: DocumentIssuerService, useValue: mockDocuments },
         {
           provide: ConfigService,
           useValue: {

@@ -167,8 +167,10 @@ export class InvoicesService {
         planId: invoice.plan_id,
         number: invoice.number,
         title: invoice.gst_registered ? "Tax invoice" : "Invoice",
+        // A one-cycle engagement has no "cycle 1" worth naming — that is just
+        // the booking. Numbering only earns its place on a plan.
         subtitle:
-          invoice.cycle_number != null && invoice.cycle_number > 0
+          invoice.plan_id && invoice.cycle_number != null && invoice.cycle_number > 0
             ? `Cycle ${invoice.cycle_number}`
             : "Shadow teacher support",
         issuedAt: invoice.issued_at,

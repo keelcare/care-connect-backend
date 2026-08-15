@@ -21,6 +21,7 @@ import {
 } from "../common/pricing.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
 import { DocumentIssuerService } from "../invoices/document-issuer.service";
+import { billingGroupOf } from "../invoices/invoice-data.builder";
 import { MailService } from "../mail/mail.service";
 import {
   MANUAL_PENDING_PROVIDER,
@@ -45,6 +46,13 @@ import {
   RAZORPAY_PAISE_MULTIPLIER,
   RAZORPAY_MIN_AMOUNT_PAISE,
 } from "../common/constants/constants";
+
+/**
+ * How long a paid matching fee waits for its first cycle to open before it is
+ * invoiced on its own. Long enough for a normal confirm-then-assign flow, short
+ * enough that an abandoned booking's fee does not sit undocumented for a quarter.
+ */
+const STRANDED_MATCHING_FEE_DAYS = 7;
 
 @Injectable()
 export class PaymentsService {
@@ -991,17 +999,21 @@ export class PaymentsService {
     }
 
     // ── Issue the tax invoice ──────────────────────────────────────────────────
-    // The money has arrived, so there is now something to invoice — and nothing
-    // that can later change what this document says. Invoices used to be rendered
-    // on demand from whatever instalments existed at read time, which is why a
-    // plan's invoice grew every month under one number.
+    // Money has arrived, so this cycle may now be fully settled — and if it is,
+    // there is a document to raise that nothing can later change. Invoices used
+    // to be rendered on demand from whatever instalments existed at read time,
+    // which is why a plan's invoice grew every month under one number.
+    //
+    // A no-op while the cycle is only part paid: the invoice covers the whole
+    // billing group, matching fee included, so it waits for the last instalment
+    // rather than issuing a document that understates what the engagement cost.
     //
     // Deliberately after the commit, in its own transaction. The builder is a
-    // couple of extra queries and the interactive transaction above has a five
+    // handful of extra queries and the interactive transaction above has a five
     // second budget it must spend on settling money, not on paperwork. Issuance
-    // is idempotent on `invoices.installment_id`, and `reconcileMissingInvoices`
-    // sweeps up anything a crash in this window leaves behind — so the failure
-    // mode is a late document, never a duplicate one and never a failed capture.
+    // is idempotent on `(booking, cycle)`, and `reconcileMissingInvoices` sweeps
+    // up anything a crash in this window leaves behind — so the failure mode is
+    // a late document, never a duplicate one and never a failed capture.
     if (installment) {
       await this.documents
         .issueForInstallment(installment.id, this.prisma, capturedAt)
@@ -1801,11 +1813,10 @@ export class PaymentsService {
     const refundedInstallment = await this.prisma.payment_installments.findFirst({
       where: { payment_id: payment.id },
     });
+    // Resolved through the billing group, not the instalment: an invoice covers
+    // a whole cycle, so the document to credit is the one that cycle landed on.
     const invoice = refundedInstallment
-      ? await this.prisma.invoices.findUnique({
-          where: { installment_id: refundedInstallment.id },
-          select: { id: true, number: true, total_amount: true, credited_amount: true },
-        })
+      ? await this.documents.invoiceForInstallment(refundedInstallment.id)
       : null;
 
     if (refundedInstallment && !invoice) {
@@ -1911,40 +1922,77 @@ export class PaymentsService {
   }
 
   /**
-   * Issue invoices for captured instalments that somehow have none.
+   * Issue invoices for settled billing groups that somehow have none.
    *
-   * The capture path issues after its transaction commits, so a crash in that
-   * window leaves settled money with no document. Rare, and invisible until a
-   * parent goes looking for a receipt — hence a sweep rather than trust. Bounded
-   * to a recent window and a batch size because it runs on a schedule and must
-   * never turn into a full-table walk.
+   * Two gaps to close. The capture path issues after its transaction commits, so
+   * a crash in that window leaves settled money with no document. And a matching
+   * fee paid on a booking whose first cycle never opened — the parent confirmed,
+   * then the booking was abandoned or expired — belongs to a group that will
+   * never complete on its own, so after a grace period it is invoiced alone
+   * rather than left as money taken with nothing to show for it.
+   *
+   * Bounded to a recent window and a batch size because it runs on a schedule and
+   * must never turn into a full-table walk.
    */
   async reconcileMissingInvoices(sinceDays = 30, limit = 200) {
     const since = new Date(Date.now() - sinceDays * 86_400_000);
+    const strandedBefore = new Date(
+      Date.now() - STRANDED_MATCHING_FEE_DAYS * 86_400_000,
+    );
 
-    const orphans = await this.prisma.payment_installments.findMany({
-      where: {
-        status: INSTALMENT_PAID,
-        paid_at: { gte: since },
-        invoices: { is: null },
-      },
+    const paid = await this.prisma.payment_installments.findMany({
+      where: { status: INSTALMENT_PAID, paid_at: { gte: since } },
       orderBy: { paid_at: "asc" },
       take: limit,
-      select: { id: true, paid_at: true },
+      select: {
+        id: true,
+        booking_id: true,
+        cycle_number: true,
+        kind: true,
+        paid_at: true,
+      },
     });
 
+    // One attempt per group, not per instalment: both halves of a split cycle
+    // resolve to the same document.
+    const groups = new Map<
+      string,
+      { bookingId: string; cycle: number; paidAt: Date; onlyFee: boolean }
+    >();
+    for (const row of paid) {
+      const cycle = billingGroupOf(row.cycle_number);
+      const key = `${row.booking_id}:${cycle}`;
+      const seen = groups.get(key);
+      const isFee = row.kind === MATCHING_FEE_KIND;
+      if (!seen) {
+        groups.set(key, {
+          bookingId: row.booking_id,
+          cycle,
+          paidAt: row.paid_at ?? new Date(),
+          onlyFee: isFee,
+        });
+        continue;
+      }
+      seen.onlyFee = seen.onlyFee && isFee;
+      if (row.paid_at && row.paid_at > seen.paidAt) seen.paidAt = row.paid_at;
+    }
+
     let issued = 0;
-    for (const orphan of orphans) {
+    for (const group of groups.values()) {
       try {
-        await this.documents.issueForInstallment(
-          orphan.id,
+        const result = await this.documents.issueForBillingGroup(
+          group.bookingId,
+          group.cycle,
           this.prisma,
-          orphan.paid_at ?? new Date(),
+          group.paidAt,
+          // A fee still waiting on a cycle that never came. Past the grace period
+          // it is billed on its own — the placement was made and paid for.
+          { force: group.onlyFee && group.paidAt < strandedBefore },
         );
-        issued++;
+        if (result) issued++;
       } catch (err) {
         this.logger.error(
-          `Could not reconcile a missing invoice for instalment ${orphan.id}`,
+          `Could not reconcile the invoice for booking ${group.bookingId} cycle ${group.cycle}`,
           err as Error,
         );
       }
@@ -1953,6 +2001,6 @@ export class PaymentsService {
     if (issued > 0) {
       this.logger.log(`Reconciliation issued ${issued} missing invoice(s).`);
     }
-    return { checked: orphans.length, issued };
+    return { checked: groups.size, issued };
   }
 }
