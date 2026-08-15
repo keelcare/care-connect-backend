@@ -49,10 +49,29 @@ export class RecurringRequestsController {
     return this.recurringRequestsService.findOne(id, req.user.id, req.user.role);
   }
 
+  @Get(":id/cancellation-preview")
+  @ApiOperation({
+    summary: "What cancelling this plan would actually do, without doing it",
+    description:
+      "Sessions already paid for that the parent would keep (with the dates " +
+      "already on the calendar), sessions that would be cancelled, money that " +
+      "stops being payable, and anything still owed.\n\n" +
+      "`refundAmount` is always 0: captured money buys sessions that survive " +
+      "cancellation rather than being returned. Show this before the confirm " +
+      "button — the outcome is a good one the parent cannot otherwise see coming.",
+  })
+  @ApiResponse({ status: 200, description: "Preview returned" })
+  cancellationPreview(@Request() req, @Param("id") id: string) {
+    return this.recurringRequestsService.cancellationPreview(id, req.user.id);
+  }
+
   @Delete(":id")
   @ApiOperation({
     summary:
-      "Cancel a recurring plan (parent only). Ends the series and cancels all future unstarted sessions.",
+      "Cancel a recurring plan (parent only). Ends the series, retains every session already paid for, and cancels the rest.",
+    description:
+      "Returns `settlementNumber` — the frozen statement of what was kept and " +
+      "what was released, downloadable at `/invoices/plan/:id/settlement/pdf`.",
   })
   @ApiResponse({ status: 200, description: "Plan cancelled successfully" })
   cancel(

@@ -205,25 +205,85 @@ describe("PlanEntitlementService", () => {
     });
   });
 
-  describe("droppedCyclesAfter", () => {
-    it("keeps a cycle that is still partly being served", () => {
-      // The cut-off falls inside cycle 2, so the parent is still owed part of
-      // that month and what they owe for it stands.
-      const dropped = service.droppedCyclesAfter(
-        "2026-09-01",
-        4,
-        new Date("2026-10-15"),
-      );
-      expect(dropped).toEqual([3, 4]);
+  describe("cyclesToVoid", () => {
+    const entitlement = (over: Record<string, unknown> = {}) => ({
+      sessionsEntitled: 0,
+      sessionsDelivered: 0,
+      sessionsRemaining: 0,
+      cycles: [],
+      ...over,
+    }) as Parameters<PlanEntitlementService["cyclesToVoid"]>[0]["entitlement"];
+
+    it("releases every cycle when the parent used no more than they paid for", () => {
+      // The bug this replaced: a parent pays the 50% advance on a 22-session
+      // month, attends nothing and cancels. They correctly keep 11 sessions —
+      // and were then still chased for the balance that would have bought the
+      // 11 sessions just cancelled.
+      const dropped = service.cyclesToVoid({
+        planMonths: 4,
+        entitlement: entitlement({
+          sessionsEntitled: 11,
+          sessionsDelivered: 0,
+          sessionsRemaining: 11,
+          cycles: [
+            { cycleNumber: 1, paidFraction: 0.5, sessionsInCycle: 22, sessionsEarned: 11 },
+          ],
+        }),
+        deliveredByCycle: new Map(),
+      });
+      expect(dropped).toEqual([1, 2, 3, 4]);
     });
 
-    it("drops every cycle when nothing at all is retained", () => {
-      const dropped = service.droppedCyclesAfter(
-        "2026-09-01",
-        3,
-        new Date("2026-08-01"),
-      );
-      expect(dropped).toEqual([1, 2, 3]);
+    it("keeps the balance of a cycle whose care outran its payment", () => {
+      // 15 sessions delivered against an advance that bought 11. The balance is
+      // genuinely owed — that care happened.
+      const dropped = service.cyclesToVoid({
+        planMonths: 3,
+        entitlement: entitlement({
+          sessionsEntitled: 11,
+          sessionsDelivered: 15,
+          sessionsRemaining: 0,
+          cycles: [
+            { cycleNumber: 1, paidFraction: 0.5, sessionsInCycle: 22, sessionsEarned: 11 },
+          ],
+        }),
+        deliveredByCycle: new Map([[1, 15]]),
+      });
+      expect(dropped).toEqual([2, 3]);
+    });
+
+    it("does not bill a later cycle for sessions spilling forward from an earlier one", () => {
+      // Cycle 1 fully paid (22 sessions), 18 served in cycle 1 and 4 in cycle 2.
+      // Delivery has not outrun payment across the term, so cycle 2 owes nothing
+      // even though sessions were served in it.
+      const dropped = service.cyclesToVoid({
+        planMonths: 2,
+        entitlement: entitlement({
+          sessionsEntitled: 22,
+          sessionsDelivered: 22,
+          sessionsRemaining: 0,
+          cycles: [
+            { cycleNumber: 1, paidFraction: 1, sessionsInCycle: 22, sessionsEarned: 22 },
+            { cycleNumber: 2, paidFraction: 0, sessionsInCycle: 22, sessionsEarned: 0 },
+          ],
+        }),
+        deliveredByCycle: new Map([[1, 18], [2, 4]]),
+      });
+      expect(dropped).toEqual([1, 2]);
+    });
+
+    it("covers cycles billed beyond the sold term", () => {
+      const dropped = service.cyclesToVoid({
+        planMonths: 1,
+        entitlement: entitlement({
+          cycles: [
+            { cycleNumber: 1, paidFraction: 0, sessionsInCycle: 22, sessionsEarned: 0 },
+            { cycleNumber: 2, paidFraction: 0, sessionsInCycle: 22, sessionsEarned: 0 },
+          ],
+        }),
+        deliveredByCycle: new Map(),
+      });
+      expect(dropped).toEqual([1, 2]);
     });
   });
 

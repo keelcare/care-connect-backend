@@ -8,7 +8,11 @@ import {
   MATCHING_FEE_KIND,
 } from "../constants";
 import { MATCHING_FEE_CYCLE } from "./pricing.service";
-import { countSessionsBetween, cycleWindow } from "./utils/pricing.utils";
+import {
+  countSessionsBetween,
+  cycleNumberFor,
+  cycleWindow,
+} from "./utils/pricing.utils";
 
 /**
  * Sessions a plan has already used up. A session that was served — or that the
@@ -200,25 +204,87 @@ export class PlanEntitlementService {
   }
 
   /**
-   * Which cycles of a plan are wholly beyond a cut-off date, and so are no longer
-   * being served at all.
+   * Delivered sessions bucketed by the cycle their date falls in.
    *
-   * Used by cancellation to decide whose pending installments to void. A cycle
-   * that is only *partly* dropped is not included: the parent is still being
-   * served part of that month, so what they owe for it stands.
+   * Needed to tell a month where care outran payment from one where it did not,
+   * which is the difference between a balance that is genuinely owed and one that
+   * should stop being chased.
    */
-  droppedCyclesAfter(
+  async deliveredByCycle(
+    planId: string,
     planStart: Date | string,
-    planMonths: number,
-    cutoff: Date,
-  ): number[] {
-    const months = Math.max(1, Math.round(planMonths || 1));
-    const dropped: number[] = [];
-    for (let n = 1; n <= months; n++) {
-      const { start } = cycleWindow(planStart, n);
-      if (start >= cutoff) dropped.push(n);
+  ): Promise<Map<number, number>> {
+    const delivered = await this.prisma.bookings.findMany({
+      where: {
+        recurring_request_id: planId,
+        status: { in: DELIVERED_BOOKING_STATUSES },
+      },
+      select: { start_time: true },
+    });
+
+    const byCycle = new Map<number, number>();
+    for (const booking of delivered) {
+      if (!booking.start_time) continue;
+      const { number } = cycleNumberFor(planStart, booking.start_time);
+      byCycle.set(number, (byCycle.get(number) ?? 0) + 1);
     }
-    return dropped;
+    return byCycle;
+  }
+
+  /**
+   * Which cycles' outstanding money stops being owed when a plan is cancelled.
+   *
+   * The rule this replaces voided only cycles that began *after* the last
+   * retained session, on the reasoning that a partly-served month is still being
+   * served so its balance stands. That is right when the parent has used more of
+   * the month than they paid for and wrong in the far more common case where they
+   * have not: a parent who pays a 50% advance on a twenty-session month, attends
+   * nothing and cancels correctly keeps ten sessions — and was then still chased
+   * for the balance that would have bought the ten sessions just cancelled.
+   *
+   * What is actually owed is care that was *delivered* beyond what was paid for.
+   * Compared in aggregate first, because retained sessions can spill forward: a
+   * fully-paid month with five sessions left over hands them to the next month,
+   * and that next month must not read as unpaid consumption. Only once delivery
+   * genuinely outruns entitlement across the term does the per-cycle comparison
+   * decide which months keep their balance.
+   *
+   * Voiding stays at instalment granularity. Reducing an instalment to a part
+   * amount would mean rewriting a frozen billing row, and rounding is left in the
+   * parent's favour — consistent with the single floor in `reduce`.
+   */
+  cyclesToVoid(input: {
+    planMonths: number;
+    entitlement: PlanEntitlement;
+    deliveredByCycle: Map<number, number>;
+  }): number[] {
+    const { planMonths, entitlement, deliveredByCycle } = input;
+    const months = Math.max(1, Math.round(planMonths || 1));
+
+    const allCycles: number[] = [];
+    for (let n = 1; n <= months; n++) allCycles.push(n);
+    // Cycles billed past the sold term — a plan extended by hand, or a term
+    // shortened after the fact — would otherwise keep their balances forever.
+    for (const cycle of entitlement.cycles) {
+      if (!allCycles.includes(cycle.cycleNumber)) allCycles.push(cycle.cycleNumber);
+    }
+    allCycles.sort((a, b) => a - b);
+
+    // Nothing was over-consumed across the term, so nothing outstanding is owed.
+    if (entitlement.sessionsDelivered <= entitlement.sessionsEntitled) {
+      return allCycles;
+    }
+
+    const earnedByCycle = new Map(
+      entitlement.cycles.map((c) => [c.cycleNumber, c.sessionsEarned]),
+    );
+
+    return allCycles.filter((cycle) => {
+      const delivered = deliveredByCycle.get(cycle) ?? 0;
+      const earned = earnedByCycle.get(cycle) ?? 0;
+      // Keep the balance only where this month's care outran this month's money.
+      return delivered <= earned + 1e-9;
+    });
   }
 
   /** Money that is still owed, as opposed to captured, voided or refunded. */

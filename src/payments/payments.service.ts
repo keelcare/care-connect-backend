@@ -20,6 +20,7 @@ import {
   PricingEngineService,
 } from "../common/pricing.service";
 import { BookingStatusLogService } from "../bookings/booking-status-log.service";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
 import { MailService } from "../mail/mail.service";
 import {
   MANUAL_PENDING_PROVIDER,
@@ -59,6 +60,7 @@ export class PaymentsService {
     private pricingService: PricingEngineService,
     private mailService: MailService,
     private bookingStatusLog: BookingStatusLogService,
+    private documents: DocumentIssuerService,
   ) { }
 
   // 1. Create Order (Server-Side Price Calculation)
@@ -988,6 +990,29 @@ export class PaymentsService {
       return { alreadyCaptured: false };
     }
 
+    // ── Issue the tax invoice ──────────────────────────────────────────────────
+    // The money has arrived, so there is now something to invoice — and nothing
+    // that can later change what this document says. Invoices used to be rendered
+    // on demand from whatever instalments existed at read time, which is why a
+    // plan's invoice grew every month under one number.
+    //
+    // Deliberately after the commit, in its own transaction. The builder is a
+    // couple of extra queries and the interactive transaction above has a five
+    // second budget it must spend on settling money, not on paperwork. Issuance
+    // is idempotent on `invoices.installment_id`, and `reconcileMissingInvoices`
+    // sweeps up anything a crash in this window leaves behind — so the failure
+    // mode is a late document, never a duplicate one and never a failed capture.
+    if (installment) {
+      await this.documents
+        .issueForInstallment(installment.id, this.prisma, capturedAt)
+        .catch((err) =>
+          this.logger.error(
+            `Captured payment ${payment.id} but could not issue its invoice; the reconciliation sweep will retry.`,
+            err as Error,
+          ),
+        );
+    }
+
     const isPartial = !!installment && installment.total_installments > 1;
     const balanceDue = isPartial && !cycleSettled
       ? Number(snapshot?.final_amount ?? 0) - Number(payment.amount)
@@ -1768,6 +1793,28 @@ export class PaymentsService {
       throw new BadRequestException("No gateway payment ID associated with this record");
     }
 
+    // A refund with no invoice behind it is money taken without a document, and
+    // there is nothing to raise a credit note against. Under GST an invoice is
+    // never edited or voided once issued — s.34 requires the reduction to be its
+    // own numbered note referencing the original — so refusing here is not
+    // pedantry: it is the only point at which the books can still be made right.
+    const refundedInstallment = await this.prisma.payment_installments.findFirst({
+      where: { payment_id: payment.id },
+    });
+    const invoice = refundedInstallment
+      ? await this.prisma.invoices.findUnique({
+          where: { installment_id: refundedInstallment.id },
+          select: { id: true, number: true, total_amount: true, credited_amount: true },
+        })
+      : null;
+
+    if (refundedInstallment && !invoice) {
+      throw new BadRequestException(
+        "No invoice has been issued for this payment yet, so a credit note cannot " +
+          "be raised against it. Reconcile the invoice first, then refund.",
+      );
+    }
+
     const amountPaise = amount ? Math.round(amount * RAZORPAY_PAISE_MULTIPLIER) : undefined;
 
     // Call Razorpay refund
@@ -1786,21 +1833,50 @@ export class PaymentsService {
     // dunning a parent for the balance of a cycle we just refunded would be
     // indefensible. Both are marked so they leave the pending list and the
     // reminder cron without ever being counted as collected.
-    const refunded = await this.prisma.payment_installments.findFirst({
-      where: { payment_id: payment.id },
-    });
-    if (refunded) {
+    //
+    // Note this no longer erases the refund from the parent's paperwork. The
+    // invoice was frozen at capture and stands exactly as issued; the credit note
+    // below is what reduces it. Previously `refunded` simply dropped out of the
+    // live query the invoice was rendered from, so a refund made a payment vanish
+    // from the document rather than being shown as returned.
+    if (refundedInstallment) {
       await this.prisma.payment_installments.update({
-        where: { id: refunded.id },
+        where: { id: refundedInstallment.id },
         data: { status: INSTALMENT_REFUNDED, updated_at: new Date() },
       });
       await this.prisma.payment_installments.updateMany({
         where: {
-          price_snapshot_id: refunded.price_snapshot_id,
+          price_snapshot_id: refundedInstallment.price_snapshot_id,
           status: INSTALMENT_PENDING,
         },
         data: { status: INSTALMENT_VOID, updated_at: new Date() },
       });
+    }
+
+    // ── Credit note (GST s.34) ─────────────────────────────────────────────────
+    // Raised after the gateway has confirmed the refund, so a note can never
+    // exist for money that did not actually go back. Failure here leaves the
+    // refund done and the note missing, which is recoverable by hand; refusing to
+    // refund because a PDF could not be built would not be.
+    let creditNoteNumber: string | null = null;
+    if (invoice) {
+      creditNoteNumber = await this.documents
+        .issueCreditNote({
+          invoiceId: invoice.id,
+          reason: "refund",
+          settlement: "refunded",
+          amount: amount,
+          refundId: refund.id,
+          note: `Refund of ₹${amount ?? Number(payment.amount)} against payment ${payment.payment_id}.`,
+        })
+        .then((note) => note.number)
+        .catch((err) => {
+          this.logger.error(
+            `Refunded payment ${payment.id} against invoice ${invoice.number} but could not issue a credit note.`,
+            err as Error,
+          );
+          return null;
+        });
     }
 
     // Write Audit Log
@@ -1812,7 +1888,11 @@ export class PaymentsService {
       PaymentStatus.REFUNDED,
       "admin:refund",
       payment.payment_id,
-      { refund_id: refund.id, amount_refunded: amount || Number(payment.amount) }
+      {
+        refund_id: refund.id,
+        amount_refunded: amount || Number(payment.amount),
+        credit_note: creditNoteNumber,
+      }
     );
 
     // Notify Parent
@@ -1820,11 +1900,59 @@ export class PaymentsService {
       await this.notificationsService.createNotification(
         payment.bookings.parent_id,
         "Refund Processed",
-        `A refund of ₹${amount || payment.amount} has been processed for your booking.`,
+        creditNoteNumber
+          ? `A refund of ₹${amount || payment.amount} has been processed. Credit note ${creditNoteNumber} is available in your documents.`
+          : `A refund of ₹${amount || payment.amount} has been processed for your booking.`,
         "info",
       );
     }
 
-    return updatedPayment;
+    return { ...updatedPayment, creditNoteNumber };
+  }
+
+  /**
+   * Issue invoices for captured instalments that somehow have none.
+   *
+   * The capture path issues after its transaction commits, so a crash in that
+   * window leaves settled money with no document. Rare, and invisible until a
+   * parent goes looking for a receipt — hence a sweep rather than trust. Bounded
+   * to a recent window and a batch size because it runs on a schedule and must
+   * never turn into a full-table walk.
+   */
+  async reconcileMissingInvoices(sinceDays = 30, limit = 200) {
+    const since = new Date(Date.now() - sinceDays * 86_400_000);
+
+    const orphans = await this.prisma.payment_installments.findMany({
+      where: {
+        status: INSTALMENT_PAID,
+        paid_at: { gte: since },
+        invoices: { is: null },
+      },
+      orderBy: { paid_at: "asc" },
+      take: limit,
+      select: { id: true, paid_at: true },
+    });
+
+    let issued = 0;
+    for (const orphan of orphans) {
+      try {
+        await this.documents.issueForInstallment(
+          orphan.id,
+          this.prisma,
+          orphan.paid_at ?? new Date(),
+        );
+        issued++;
+      } catch (err) {
+        this.logger.error(
+          `Could not reconcile a missing invoice for instalment ${orphan.id}`,
+          err as Error,
+        );
+      }
+    }
+
+    if (issued > 0) {
+      this.logger.log(`Reconciliation issued ${issued} missing invoice(s).`);
+    }
+    return { checked: orphans.length, issued };
   }
 }

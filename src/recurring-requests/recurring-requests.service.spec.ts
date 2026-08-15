@@ -7,6 +7,7 @@ import { PricingEngineService } from '../common/pricing.service';
 import { PlanEntitlementService } from '../common/plan-entitlement.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SseService } from '../sse/sse.service';
+import { DocumentIssuerService } from '../invoices/document-issuer.service';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
 
 describe('RecurringRequestsService', () => {
@@ -22,7 +23,7 @@ describe('RecurringRequestsService', () => {
       updateMany: jest.fn(),
       groupBy: jest.fn(),
     },
-    payment_installments: { updateMany: jest.fn() },
+    payment_installments: { updateMany: jest.fn(), findMany: jest.fn() },
     $transaction: jest.fn(),
   };
 
@@ -42,18 +43,24 @@ describe('RecurringRequestsService', () => {
     computeEntitlement: jest.fn(),
     computeEntitlementMany: jest.fn(),
     countDelivered: jest.fn(),
-    droppedCyclesAfter: jest.fn(),
+    deliveredByCycle: jest.fn(),
+    cyclesToVoid: jest.fn(),
   };
 
   const mockEmitter = { emit: jest.fn() };
   const mockSse = { emitToUser: jest.fn(), emitToUsers: jest.fn() };
+  const mockDocuments = { issueSettlement: jest.fn() };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     mockPricing.prefetchServiceCategories.mockResolvedValue(undefined);
     mockEntitlement.computeEntitlementMany.mockResolvedValue(new Map());
     mockEntitlement.computeEntitlement.mockResolvedValue(noEntitlement);
-    mockEntitlement.droppedCyclesAfter.mockReturnValue([]);
+    mockEntitlement.deliveredByCycle.mockResolvedValue(new Map());
+    mockEntitlement.cyclesToVoid.mockReturnValue([]);
+    mockDocuments.issueSettlement.mockResolvedValue({ id: 's-1', number: 'KL-ST-2026-0001' });
+    // The settlement statement reads the plan's ledger before anything is voided.
+    mockPrisma.payment_installments.findMany.mockResolvedValue([]);
     mockPrisma.bookings.groupBy.mockResolvedValue([]);
     mockPrisma.bookings.count.mockResolvedValue(0);
     // The cancel path runs its writes inside an interactive transaction.
@@ -71,6 +78,7 @@ describe('RecurringRequestsService', () => {
         { provide: PlanEntitlementService, useValue: mockEntitlement },
         { provide: EventEmitter2, useValue: mockEmitter },
         { provide: SseService, useValue: mockSse },
+        { provide: DocumentIssuerService, useValue: mockDocuments },
       ],
     }).compile();
 
@@ -399,7 +407,7 @@ describe('RecurringRequestsService', () => {
 
     it('voids what is owed for months that are no longer being served', async () => {
       setup({ entitled: 10, delivered: 3, future: 17 });
-      mockEntitlement.droppedCyclesAfter.mockReturnValue([2, 3]);
+      mockEntitlement.cyclesToVoid.mockReturnValue([2, 3]);
 
       await service.cancel('plan-1', 'parent-1');
 
@@ -414,9 +422,9 @@ describe('RecurringRequestsService', () => {
       expect(voided.where.kind).toEqual({ not: 'matching_fee' });
     });
 
-    it('leaves installments alone when no whole month was dropped', async () => {
+    it('leaves installments alone when every cycle is still owed for', async () => {
       setup({ entitled: 22, delivered: 0, future: 22 });
-      mockEntitlement.droppedCyclesAfter.mockReturnValue([]);
+      mockEntitlement.cyclesToVoid.mockReturnValue([]);
 
       await service.cancel('plan-1', 'parent-1');
 

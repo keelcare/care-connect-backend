@@ -8,6 +8,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { AddressesModule } from '../addresses/addresses.module';
 import { CommonModule } from '../common/common.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { InvoicesModule } from '../invoices/invoices.module';
 
 @Module({
   imports: [
@@ -18,6 +19,9 @@ import { PaymentsModule } from '../payments/payments.module';
     CommonModule,
     // The nightly cron opens each plan's next billing cycle before its month begins.
     PaymentsModule,
+    // Cancelling a plan freezes a settlement statement — the record of which
+    // sessions the family keeps and what stops being payable.
+    InvoicesModule,
   ],
   controllers: [RecurringRequestsController],
   providers: [RecurringRequestsService, RecurringRequestsCron]

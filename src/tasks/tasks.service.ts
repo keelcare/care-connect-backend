@@ -1,6 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { BookingsService } from "../bookings/bookings.service";
+import { PaymentsService } from "../payments/payments.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { SseService } from "../sse/sse.service";
@@ -31,6 +32,10 @@ export class TasksService {
     private sseService: SseService,
     private mailService: MailService,
     private pricingService: PricingEngineService,
+    // forwardRef because BookingsModule (which provides this service) and
+    // PaymentsModule already import each other.
+    @Inject(forwardRef(() => PaymentsService))
+    private paymentsService: PaymentsService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_MINUTES)
@@ -81,6 +86,24 @@ export class TasksService {
    * `reminder_count` caps it: after the cap we stop nagging and leave the balance
    * visible in the app.
    */
+  /**
+   * Catch captured money that ended up with no invoice behind it.
+   *
+   * Invoices are issued just after the capture transaction commits, so a crash in
+   * that narrow window leaves settled money undocumented — invisible until a
+   * parent goes looking for a receipt, and awkward to explain at year end. Runs
+   * before the reminder job so a parent is never chased for a balance on an
+   * engagement whose receipts are still missing.
+   */
+  @Cron("0 30 3 * * *")
+  async reconcileMissingInvoices() {
+    try {
+      await this.paymentsService.reconcileMissingInvoices();
+    } catch (error) {
+      this.logger.error("Error in reconcileMissingInvoices cron job", error);
+    }
+  }
+
   @Cron("0 45 3 * * *")
   async remindOutstandingInstallments() {
     this.logger.debug("Running Cron Job: Checking for due/overdue instalments...");

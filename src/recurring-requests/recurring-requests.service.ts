@@ -34,13 +34,20 @@ import {
 import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import {
+  INSTALMENT_PAID,
   INSTALMENT_PENDING,
   INSTALMENT_VOID,
   MATCHING_FEE_KIND,
 } from "../constants";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
 
 /** One day, used only to make an inclusive end date exclusive. */
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Money is Decimal(12,2); float sums leave a tail that formats a rupee out. */
+function round2(value: number): number {
+  return Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
+}
 
 /** Sessions still ahead of the parent: on the calendar, neither spent nor dropped. */
 const SCHEDULED_BOOKING_STATUSES = [
@@ -60,6 +67,7 @@ export class RecurringRequestsService {
     private entitlementService: PlanEntitlementService,
     private eventEmitter: EventEmitter2,
     private sseService: SseService,
+    private documents: DocumentIssuerService,
   ) {}
 
   /**
@@ -568,7 +576,10 @@ export class RecurringRequestsService {
     const now = TimeUtils.nowIST();
     const cancellationReason = reason?.trim() || "Recurring plan cancelled by parent";
 
-    const entitlement = await this.entitlementService.computeEntitlement(id);
+    const [entitlement, deliveredByCycle] = await Promise.all([
+      this.entitlementService.computeEntitlement(id),
+      this.entitlementService.deliveredByCycle(id, req.start_date),
+    ]);
     let retainCount = entitlement.sessionsRemaining;
 
     const futureBookings = await this.prisma.bookings.findMany({
@@ -612,18 +623,22 @@ export class RecurringRequestsService {
     const toCancel = candidates.slice(retainCount);
     const toCancelIds = toCancel.map((b) => b.id);
 
-    // Cycles wholly past the last session still being served. A cycle that is
-    // only partly dropped keeps its installments: the parent is being served
-    // part of that month, so what they owe for it stands.
-    const cutoff = retained.length > 0 ? retained[retained.length - 1].start_time : now;
-    const droppedCycles = this.entitlementService.droppedCyclesAfter(
-      req.start_date,
-      Number(req.plan_duration_months || 1),
-      cutoff,
-    );
+    // Which cycles stop being owed for. See `cyclesToVoid` for why this is no
+    // longer "every cycle after the last retained session": that rule kept
+    // chasing the balance of a month the parent had just cancelled the sessions
+    // of, because the month was technically still being served.
+    const droppedCycles = this.entitlementService.cyclesToVoid({
+      planMonths: Number(req.plan_duration_months || 1),
+      entitlement,
+      deliveredByCycle,
+    });
 
     const nextStatus =
       retainCount > 0 ? PLAN_STATUS.WINDING_DOWN : PLAN_STATUS.CANCELLED;
+
+    // Read before the transaction voids anything, so the settlement statement can
+    // say what was billed and paid as at cancellation rather than after it.
+    const ledger = await this.planLedger(id, droppedCycles);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.recurring_service_requests.update({
@@ -671,6 +686,36 @@ export class RecurringRequestsService {
       }
     });
 
+    // ── Freeze the settlement statement ────────────────────────────────────────
+    // Outside the transaction on purpose: it renders a whole document, and the
+    // cancellation itself must not be held open behind paperwork or rolled back
+    // by it. Unique on `plan_id`, so a retry issues the same statement rather
+    // than a second one — and a plan cancelled with no statement is a support
+    // question, not a broken cancellation.
+    const settlement = await this.documents
+      .issueSettlement({
+        planId: id,
+        parentId,
+        cancelledAt: now,
+        reason: cancellationReason,
+        entitlement,
+        retainedBookingIds: retained.map((b) => b.id),
+        amounts: {
+          billed: ledger.billed,
+          paid: ledger.paid,
+          voided: ledger.voidedNow,
+          stillOwed: ledger.stillOwed,
+          matchingFeeRetained: ledger.matchingFee,
+        },
+      })
+      .catch((err) => {
+        this.logger.error(
+          `Cancelled plan ${id} but could not issue its settlement statement.`,
+          err as Error,
+        );
+        return null;
+      });
+
     // One event for the whole plan. Emitting a per-booking cancellation instead
     // would email both parties once per dropped session.
     this.eventEmitter.emit(
@@ -707,6 +752,148 @@ export class RecurringRequestsService {
       cancelledSessions: toCancelIds.length,
       retainedSessions: retainCount,
       status: nextStatus,
+      settlementNumber: settlement?.number ?? null,
+    };
+  }
+
+  /**
+   * What a parent would actually get if they cancelled right now, without
+   * cancelling.
+   *
+   * Runs the same arithmetic as `cancel` and writes nothing. A cancellation that
+   * silently keeps some sessions and drops others is a good outcome the parent
+   * cannot see coming, and "you will keep 7 sessions, on these dates" is a very
+   * different decision from "cancel plan?".
+   */
+  async cancellationPreview(id: string, parentId: string) {
+    const req = await this.prisma.recurring_service_requests.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        parent_id: true,
+        status: true,
+        start_date: true,
+        plan_duration_months: true,
+      },
+    });
+    if (!req) throw new NotFoundException("Recurring request not found");
+    if (req.parent_id !== parentId) {
+      throw new ForbiddenException("You can only preview your own recurring plans");
+    }
+
+    const now = TimeUtils.nowIST();
+    const [entitlement, deliveredByCycle] = await Promise.all([
+      this.entitlementService.computeEntitlement(id),
+      this.entitlementService.deliveredByCycle(id, req.start_date),
+    ]);
+
+    const futureBookings = await this.prisma.bookings.findMany({
+      where: {
+        recurring_request_id: id,
+        start_time: { gt: now },
+        status: {
+          notIn: [
+            BookingStatus.CANCELLED,
+            BookingStatus.COMPLETED,
+            BookingStatus.IN_PROGRESS,
+          ],
+        },
+      },
+      orderBy: { start_time: "asc" },
+      select: { id: true, start_time: true },
+    });
+
+    // Unlike `cancel`, this does not generate the shortfall — writing sessions is
+    // not something a preview may do. The count is still the honest promise;
+    // only the *dates* of any sessions past what is generated are unknown here.
+    const retainCount = entitlement.sessionsRemaining;
+    const retained = futureBookings.slice(0, retainCount);
+    const cancelled = futureBookings.slice(retainCount);
+
+    const droppedCycles = this.entitlementService.cyclesToVoid({
+      planMonths: Number(req.plan_duration_months || 1),
+      entitlement,
+      deliveredByCycle,
+    });
+    const ledger = await this.planLedger(id, droppedCycles);
+
+    return {
+      planId: id,
+      alreadyCancelled: isTerminalPlanStatus(req.status) ||
+        req.status === PLAN_STATUS.WINDING_DOWN,
+      sessionsEntitled: entitlement.sessionsEntitled,
+      sessionsDelivered: entitlement.sessionsDelivered,
+      sessionsRetained: retainCount,
+      /** Dates already on the calendar. May be fewer than `sessionsRetained`. */
+      retainedSessions: retained.map((b) => ({
+        id: b.id,
+        startTime: b.start_time,
+      })),
+      sessionsCancelled: cancelled.length,
+      /** Money that stops being payable. Nothing captured is ever refunded here. */
+      amountReleased: ledger.voidedNow,
+      amountStillPayable: ledger.stillOwed,
+      amountPaid: ledger.paid,
+      matchingFeeRetained: ledger.matchingFee,
+      refundAmount: 0,
+      cycles: entitlement.cycles,
+    };
+  }
+
+  /**
+   * The money side of a cancellation: what has been billed and captured on the
+   * plan, what the void rule is about to release, and what survives it.
+   *
+   * Kept in one place so the preview and the statement cannot quote different
+   * numbers for the same cancellation.
+   */
+  private async planLedger(planId: string, cyclesToVoid: number[]) {
+    const installments = await this.prisma.payment_installments.findMany({
+      where: {
+        bookings: { recurring_request_id: planId },
+        status: { in: [INSTALMENT_PENDING, INSTALMENT_PAID] },
+      },
+      select: {
+        amount: true,
+        status: true,
+        cycle_number: true,
+        kind: true,
+      },
+    });
+
+    const dropped = new Set(cyclesToVoid);
+    let billed = 0;
+    let paid = 0;
+    let voidedNow = 0;
+    let stillOwed = 0;
+    let matchingFee = 0;
+
+    for (const instalment of installments) {
+      const amount = Number(instalment.amount);
+      billed += amount;
+
+      if (instalment.status === INSTALMENT_PAID) {
+        paid += amount;
+        // The fee bought a placement that was made, so it is retained rather
+        // than released — called out separately because it is the one amount a
+        // cancelling parent most often asks about.
+        if (instalment.kind === MATCHING_FEE_KIND) matchingFee += amount;
+        continue;
+      }
+
+      // Pending. The matching fee is never released by a cancellation.
+      const releasable =
+        instalment.kind !== MATCHING_FEE_KIND && dropped.has(instalment.cycle_number);
+      if (releasable) voidedNow += amount;
+      else stillOwed += amount;
+    }
+
+    return {
+      billed: round2(billed),
+      paid: round2(paid),
+      voidedNow: round2(voidedNow),
+      stillOwed: round2(stillOwed),
+      matchingFee: round2(matchingFee),
     };
   }
 

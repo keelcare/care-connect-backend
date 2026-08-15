@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{company.name}} — Invoice {{invoiceNumber}}</title>
+<title>{{company.name}} — {{documentTitle}} {{invoiceNumber}}</title>
 <style>
   @page { size: A4; margin: 14mm 14mm 12mm 14mm; }
 
@@ -76,6 +76,34 @@
     color:var(--gold);
   }
 
+  /* Supplier GSTIN / legal name, printed only once registration is enabled. */
+  .doc-title .taxid{
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:8pt;letter-spacing:.06em;color:var(--muted);margin-top:5px;
+  }
+  .doc-title .taxid strong{color:var(--navy);}
+
+  /* A proforma is not a tax document and not a demand. Saying so quietly at the
+     top is cheaper than a family being turned away at a claims counter. */
+  .notice{
+    margin-top:6mm;padding:7px 12px;
+    background:#FCF6E8;border-left:3px solid var(--gold);
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:8.4pt;line-height:1.45;color:var(--ink);
+  }
+
+  /* Credit notes: the invoice being reduced, per GST s.34. */
+  .reference{
+    margin-top:6mm;padding:7px 12px;background:var(--ivory);
+    border-left:3px solid var(--navy);
+  }
+  .reference .k{
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:7pt;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
+  }
+  .reference .v{font-size:10pt;color:var(--navy);font-weight:700;}
+  .reference .why{font-size:9pt;color:var(--muted);margin-top:2px;}
+
   /* ── Meta blocks ──────────────────────────── */
   .meta{margin-top:8mm;}
   .meta td.right{padding-left:12mm;border-left:1px solid var(--rule);width:40%;}
@@ -124,6 +152,22 @@
   table.items td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
   .item-name{color:var(--navy);font-weight:700;}
   .item-desc{color:var(--muted);font-size:9pt;margin-top:2px;}
+
+  /* ── Payment schedule (proforma only) ─────── */
+  table.schedule{width:100%;border-collapse:collapse;margin-top:8mm;font-size:9.2pt;}
+  table.schedule thead th{
+    background:var(--ivory);color:var(--navy);
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:7.4pt;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+    padding:7px 10px;text-align:left;border-bottom:1.5px solid var(--navy);
+  }
+  table.schedule thead th.num{text-align:right;}
+  table.schedule tbody td{padding:6px 10px;border-bottom:1px solid var(--rule);}
+  table.schedule td.num{text-align:right;font-variant-numeric:tabular-nums;}
+  table.schedule .state{
+    font-family:"Helvetica Neue",Arial,sans-serif;
+    font-size:7.4pt;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+  }
 
   /* ── Totals ───────────────────────────────── */
   .totals-wrap{margin-top:6mm;}
@@ -215,12 +259,28 @@
       </tr></table>
     </td>
     <td class="doc-title">
-      <h1>Invoice</h1>
+      <h1>{{documentTitle}}</h1>
       <div class="rule"></div>
-      <div class="no">Invoice No. <strong>{{invoiceNumber}}</strong></div>
-      {{#paid}}<div class="status-paid">Paid</div>{{/paid}}
+      <div class="no">No. <strong>{{invoiceNumber}}</strong></div>
+      {{#gst.registered}}
+      <div class="taxid">GSTIN <strong>{{gst.gstin}}</strong></div>
+      {{#gst.placeOfSupply}}<div class="taxid">Place of supply: {{gst.placeOfSupply}}</div>{{/gst.placeOfSupply}}
+      {{/gst.registered}}
+      {{^isProforma}}{{#paid}}<div class="status-paid">Paid</div>{{/paid}}{{/isProforma}}
     </td>
   </tr></table>
+
+  {{#notice}}<div class="notice">{{notice}}</div>{{/notice}}
+
+  {{#reference}}
+  <table class="layout reference"><tr>
+    <td>
+      <div class="k">{{label}}</div>
+      <div class="v">{{number}} · {{date}}</div>
+      <div class="why">{{reason}}</div>
+    </td>
+  </tr></table>
+  {{/reference}}
 
   <!-- BILL TO / FACTS -->
   <table class="layout meta"><tr>
@@ -229,6 +289,7 @@
       <div class="party">{{billedTo.name}}</div>
       <div class="lines">
         {{#billedTo.lines}}<div>{{.}}</div>{{/billedTo.lines}}
+        {{#billedTo.gstin}}<div>GSTIN: {{billedTo.gstin}}</div>{{/billedTo.gstin}}
       </div>
     </td>
     <td class="right">
@@ -249,10 +310,11 @@
   <table class="items">
     <thead>
       <tr>
-        <th style="width:52%">Description</th>
-        <th class="num" style="width:12%">Qty</th>
-        <th class="num" style="width:18%">Rate (₹)</th>
-        <th class="num" style="width:18%">Amount (₹)</th>
+        <th style="width:46%">Description</th>
+        {{#gst.showSac}}<th style="width:12%">SAC</th>{{/gst.showSac}}
+        <th class="num" style="width:10%">Qty</th>
+        <th class="num" style="width:16%">Rate (₹)</th>
+        <th class="num" style="width:16%">Amount (₹)</th>
       </tr>
     </thead>
     <tbody>
@@ -262,6 +324,7 @@
           <div class="item-name">{{name}}</div>
           <div class="item-desc">{{description}}</div>
         </td>
+        {{#gst.showSac}}<td>{{sac}}</td>{{/gst.showSac}}
         <td class="num">{{qty}}</td>
         <td class="num">{{rate}}</td>
         <td class="num">{{amount}}</td>
@@ -269,6 +332,31 @@
       {{/items}}
     </tbody>
   </table>
+
+  <!-- PAYMENT SCHEDULE — proforma only. What the whole term costs and when each
+       instalment falls due, including cycles the billing cron has not opened. -->
+  {{#hasSchedule}}
+  <table class="schedule">
+    <thead>
+      <tr>
+        <th style="width:34%">Instalment</th>
+        <th style="width:30%">Period</th>
+        <th style="width:16%">Due</th>
+        <th class="num" style="width:20%">Amount (₹)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#schedule}}
+      <tr>
+        <td>{{label}}<div class="state">{{status}}</div></td>
+        <td>{{period}}</td>
+        <td>{{due}}</td>
+        <td class="num">{{amount}}</td>
+      </tr>
+      {{/schedule}}
+    </tbody>
+  </table>
+  {{/hasSchedule}}
 
   <!-- TOTALS -->
   <div class="totals-wrap">
@@ -306,7 +394,8 @@
   <table class="layout sign"><tr>
     <td class="thanks">
       Thank you for trusting {{company.name}} with your child's support.
-      <span>Questions about this invoice? Write to {{company.supportEmail}}</span>
+      <span>Questions about this document? Write to {{company.supportEmail}}</span>
+      {{#gst.registered}}<span>{{gst.legalName}} · GSTIN {{gst.gstin}}</span>{{/gst.registered}}
     </td>
     <td class="box" style="width:62mm">
       <div class="line"></div>

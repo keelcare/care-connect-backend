@@ -34,6 +34,17 @@ export function formatShortDate(value: Date | null | undefined): string {
   }).format(value);
 }
 
+/** `"9:00 am"` — the session start time on a settlement statement. */
+export function formatTime(value: Date | null | undefined): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: IST,
+  }).format(value);
+}
+
 /** `"Aug – Oct 2026"` for the billing-period fact row. */
 export function formatMonthRange(from: Date, to: Date): string {
   const month = (d: Date) =>
