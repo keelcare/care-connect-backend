@@ -112,7 +112,8 @@ export class RazorpayxService {
       );
     } else if (!this.accountNumber) {
       this.logger.error(
-        "RAZORPAYX_ENABLED is true but RAZORPAYX_ACCOUNT_NUMBER is missing. Every payout will be rejected.",
+        "RAZORPAYX_ENABLED is true but RAZORPAYX_ACCOUNT_NUMBER is missing. " +
+          "Payouts will be refused rather than silently recorded as settled.",
       );
     } else {
       this.logger.log("RazorpayX payouts are live.");
@@ -130,6 +131,27 @@ export class RazorpayxService {
    */
   isEnabled(): boolean {
     return this.isConfigured() && this.enabled && Boolean(this.accountNumber);
+  }
+
+  /**
+   * The operator asked for live payouts but the configuration cannot deliver them.
+   *
+   * This is deliberately not folded into `isEnabled()` returning false. Falling back
+   * to a manual settlement here would mark a caregiver's earnings as paid when
+   * nothing left the bank — the one outcome this whole feature exists to prevent.
+   * Someone who set RAZORPAYX_ENABLED=true wants a transfer, so a missing account
+   * number has to be a loud failure, not a quiet downgrade.
+   */
+  misconfigured(): boolean {
+    return this.enabled && !this.isEnabled();
+  }
+
+  /** What is missing, for an error message an operator can act on. */
+  missingConfig(): string {
+    const missing: string[] = [];
+    if (!this.isConfigured()) missing.push("RAZORPAYX_KEY_ID / RAZORPAYX_KEY_SECRET");
+    if (!this.accountNumber) missing.push("RAZORPAYX_ACCOUNT_NUMBER");
+    return missing.join(" and ");
   }
 
   get payoutMode(): PayoutMode {

@@ -535,6 +535,18 @@ export class PayoutsService {
       where: { nanny_id: nannyId, status: ACCOUNT_ACTIVE },
     });
 
+    // Half-configured is not a reason to quietly settle manually: that would stamp
+    // these earnings as paid with no transfer behind them. Refuse and say what is
+    // missing. `manual: true` remains the explicit way to record an off-platform
+    // settlement, which is a decision rather than an accident.
+    if (!options.manual && this.razorpayx.misconfigured()) {
+      throw new BadRequestException(
+        `RazorpayX is switched on but not fully configured (missing ${this.razorpayx.missingConfig()}). ` +
+          "Refusing to record this payout as settled when no money would move. " +
+          "Fix the configuration, or release with manual: true to record an off-platform settlement.",
+      );
+    }
+
     const useGateway = !options.manual && this.razorpayx.isEnabled();
 
     if (useGateway && !account?.razorpay_fund_account_id) {

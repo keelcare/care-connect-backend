@@ -54,6 +54,8 @@ describe("PayoutsService", () => {
   const mockRazorpayx = {
     isConfigured: jest.fn().mockReturnValue(true),
     isEnabled: jest.fn().mockReturnValue(true),
+    misconfigured: jest.fn().mockReturnValue(false),
+    missingConfig: jest.fn().mockReturnValue("RAZORPAYX_ACCOUNT_NUMBER"),
     payoutMode: "IMPS" as const,
     createContact: jest.fn(),
     createFundAccount: jest.fn(),
@@ -125,6 +127,7 @@ describe("PayoutsService", () => {
 
     mockRazorpayx.isConfigured.mockReturnValue(true);
     mockRazorpayx.isEnabled.mockReturnValue(true);
+    mockRazorpayx.misconfigured.mockReturnValue(false);
     mockPricing.getCommissionConfig.mockResolvedValue({
       percent: 10,
       configured: true,
@@ -456,6 +459,30 @@ describe("PayoutsService", () => {
     it("does not need an approved account, since no money moves through us", async () => {
       mockRazorpayx.isEnabled.mockReturnValue(false);
       mockPrisma.nanny_payout_accounts.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.releasePayoutForNanny(NANNY_ID, ADMIN_ID, { manual: true }),
+      ).resolves.toBeDefined();
+    });
+
+    it("refuses rather than settling manually when RazorpayX is half-configured", async () => {
+      // The dangerous case: RAZORPAYX_ENABLED=true with no account number. Quietly
+      // recording a manual payout would mark these earnings paid with nothing
+      // behind them, which is the exact outcome this feature exists to prevent.
+      mockRazorpayx.isEnabled.mockReturnValue(false);
+      mockRazorpayx.misconfigured.mockReturnValue(true);
+
+      await expect(
+        service.releasePayoutForNanny(NANNY_ID, ADMIN_ID),
+      ).rejects.toThrow(/not fully configured/);
+
+      expect(mockPrisma.nanny_payouts.create).not.toHaveBeenCalled();
+      expect(mockPrisma.payments.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("still allows an explicit manual settlement while half-configured", async () => {
+      mockRazorpayx.isEnabled.mockReturnValue(false);
+      mockRazorpayx.misconfigured.mockReturnValue(true);
 
       await expect(
         service.releasePayoutForNanny(NANNY_ID, ADMIN_ID, { manual: true }),
