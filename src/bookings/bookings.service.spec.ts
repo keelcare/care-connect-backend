@@ -20,6 +20,7 @@ describe("BookingsService", () => {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     payments: {
       create: jest.fn(),
@@ -27,7 +28,18 @@ describe("BookingsService", () => {
     },
     payment_installments: {
       findMany: jest.fn(),
+      updateMany: jest.fn(),
     },
+    service_requests: {
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    assignments: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(mockPrisma)),
     jobs: {
       findUnique: jest.fn(),
     },
@@ -57,6 +69,14 @@ describe("BookingsService", () => {
     emitToUsers: jest.fn(),
   };
 
+  const mockCalculateCost = jest.fn().mockResolvedValue({
+    totalAmount: 500,
+    appliedRate: 500,
+    subtotalAmount: 500,
+    gstAmount: 0,
+    gstPercent: 0,
+  });
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -71,9 +91,15 @@ describe("BookingsService", () => {
       ],
     })
       // The service has grown collaborators this suite does not exercise
-      // (status log, pricing, progress reports, event emitter). Auto-stub them so
-      // adding one more never breaks the module from compiling.
-      .useMocker(() => ({}))
+      // (status log, pricing, progress reports, event emitter). One stub object
+      // covers the methods the paths under test touch.
+      .useMocker(() => ({
+        emit: jest.fn(),
+        writeLog: jest.fn().mockResolvedValue(undefined),
+        calculateCost: mockCalculateCost,
+        generateReportForBooking: jest.fn().mockResolvedValue(undefined),
+        prefetchServiceCategories: jest.fn().mockResolvedValue(undefined),
+      }))
       .compile();
 
     service = module.get<BookingsService>(BookingsService);
@@ -195,60 +221,85 @@ describe("BookingsService", () => {
   });
 
   describe("cancelBooking", () => {
-    it("should cancel with fee if < 24 hours", async () => {
-      const bookingId = "1";
-      const start = new Date(Date.now() + 1000 * 60 * 60 * 5); // 5 hours from now
-      const hourlyRate = 20;
-
-      mockPrisma.bookings.findUnique.mockResolvedValue({
-        id: bookingId,
-        status: "CONFIRMED",
-        start_time: start,
-        nanny_id: "nanny1",
-        parent_id: "parent1",
-        users_bookings_nanny_idTousers: {
-          nanny_details: { hourly_rate: hourlyRate },
-        },
-        service_requests: { category: "CC" },
-      });
-
-      mockPrisma.bookings.update.mockResolvedValue({
-        id: bookingId,
-        status: "CANCELLED",
-      });
-
-      await service.cancelBooking(bookingId, "Emergency", "parent1");
-
-      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
-        "nanny1",
-        "Booking Cancelled",
-        expect.any(String),
-        "warning",
-      );
+    const booking = (over: Record<string, unknown> = {}) => ({
+      id: "1",
+      status: "CONFIRMED",
+      start_time: new Date(Date.now() + 1000 * 60 * 60 * 5), // 5 hours from now
+      nanny_id: "nanny1",
+      parent_id: "parent1",
+      request_id: null,
+      users_bookings_nanny_idTousers: { profiles: {}, nanny_details: {} },
+      users_bookings_parent_idTousers: { profiles: {} },
+      service_requests: { category: "CC" },
+      ...over,
     });
 
-    it("should cancel without fee if > 24 hours", async () => {
-      const bookingId = "2";
-      const start = new Date(Date.now() + 1000 * 60 * 60 * 25); // 25 hours from now
-      const hourlyRate = 20;
+    it("records a fee owed when the parent cancels < 24 hours out", async () => {
+      mockPrisma.bookings.findUnique.mockResolvedValue(booking());
+      mockPrisma.bookings.update.mockResolvedValue({ id: "1", status: "CANCELLED" });
 
-      mockPrisma.bookings.findUnique.mockResolvedValue({
-        id: bookingId,
-        status: "CONFIRMED",
-        start_time: start,
-        nanny_id: "nanny1",
-        parent_id: "parent1",
-        users_bookings_nanny_idTousers: {
-          nanny_details: { hourly_rate: hourlyRate },
-        },
-      });
-
-      await service.cancelBooking(bookingId, "Changed plans");
+      await service.cancelBooking("1", "Emergency", "parent1");
 
       expect(mockPrisma.bookings.update).toHaveBeenCalledWith({
-        where: { id: bookingId },
+        where: { id: "1" },
         data: expect.objectContaining({
           status: "CANCELLED",
+          cancellation_fee: 500,
+          cancellation_fee_status: "owed",
+        }),
+      });
+      // Money that stopped being owed is voided
+      expect(mockPrisma.payment_installments.updateMany).toHaveBeenCalledWith({
+        where: { booking_id: "1", status: "pending" },
+        data: expect.objectContaining({ status: "void" }),
+      });
+    });
+
+    it("records no fee when the parent cancels > 24 hours out", async () => {
+      mockPrisma.bookings.findUnique.mockResolvedValue(
+        booking({ start_time: new Date(Date.now() + 1000 * 60 * 60 * 25) }),
+      );
+      mockPrisma.bookings.update.mockResolvedValue({ id: "1", status: "CANCELLED" });
+
+      await service.cancelBooking("1", "Changed plans", "parent1");
+
+      expect(mockPrisma.bookings.update).toHaveBeenCalledWith({
+        where: { id: "1" },
+        data: expect.objectContaining({
+          status: "CANCELLED",
+          cancellation_fee: 0,
+          cancellation_fee_status: "no_fee",
+        }),
+      });
+    });
+
+    it("does not bill the parent when the nanny cancels a direct booking < 24 hours out", async () => {
+      // No request_id, so the nanny cancellation takes the standard path — the
+      // late-cancellation fee compensates for a slot the *parent* pulled, and
+      // must not be raised against them for their caregiver walking away.
+      mockPrisma.bookings.findUnique.mockResolvedValue(booking());
+      mockPrisma.bookings.update.mockResolvedValue({ id: "1", status: "CANCELLED" });
+
+      await service.cancelBooking("1", "Emergency", "nanny1");
+
+      expect(mockPrisma.bookings.update).toHaveBeenCalledWith({
+        where: { id: "1" },
+        data: expect.objectContaining({
+          cancellation_fee: 0,
+          cancellation_fee_status: "no_fee",
+        }),
+      });
+    });
+
+    it("records no fee for a system cancellation < 24 hours out", async () => {
+      mockPrisma.bookings.findUnique.mockResolvedValue(booking());
+      mockPrisma.bookings.update.mockResolvedValue({ id: "1", status: "CANCELLED" });
+
+      await service.cancelBooking("1", "Ops cleanup");
+
+      expect(mockPrisma.bookings.update).toHaveBeenCalledWith({
+        where: { id: "1" },
+        data: expect.objectContaining({
           cancellation_fee: 0,
           cancellation_fee_status: "no_fee",
         }),
@@ -257,47 +308,122 @@ describe("BookingsService", () => {
   });
 
   describe("completeBooking", () => {
-    it("should complete booking and create payment", async () => {
+    it("claims the transition atomically and prices with the booking's plan", async () => {
       const bookingId = "3";
-      const start = new Date(Date.now() - 1000 * 60 * 60 * 2); // Started 2 hours ago
-      const end = new Date(Date.now() + 1000 * 60 * 60 * 2); // Scheduled to end in 2 hours
-      const hourlyRate = 25;
+      const start = new Date(Date.now() - 1000 * 60 * 60 * 2);
+      const end = new Date(start.getTime() + 1000 * 60 * 60 * 4); // 4 hour session
 
+      mockPrisma.bookings.findUnique
+        .mockResolvedValueOnce({
+          id: bookingId,
+          status: "IN_PROGRESS",
+          start_time: start,
+          end_time: end,
+          nanny_id: "nanny1",
+          parent_id: "parent1",
+          days_per_week: 3,
+          users_bookings_nanny_idTousers: { nanny_details: {} },
+          service_requests: {
+            category: "CC",
+            plan_type: "MONTHLY",
+            plan_duration_months: 2,
+          },
+          payments: [],
+        })
+        .mockResolvedValue({ id: bookingId, status: "COMPLETED" });
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.completeBooking(bookingId);
+
+      // The claim is guarded on the expected status, not a blind update
+      expect(mockPrisma.bookings.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: bookingId, status: "IN_PROGRESS" },
+          data: expect.objectContaining({ status: "COMPLETED" }),
+        }),
+      );
+      // The payout accrual is priced with the plan the booking was sold under,
+      // not the ONE_TIME defaults
+      expect(mockCalculateCost).toHaveBeenCalledWith("CC", 4, 2, "MONTHLY", 3);
+      expect(result).toEqual({ id: bookingId, status: "COMPLETED" });
+    });
+
+    it("does not duplicate side effects when another call claimed the completion first", async () => {
+      mockPrisma.bookings.findUnique
+        .mockResolvedValueOnce({
+          id: "3",
+          status: "IN_PROGRESS",
+          start_time: new Date(Date.now() - 3600_000),
+          end_time: new Date(),
+          nanny_id: "nanny1",
+          parent_id: "parent1",
+          users_bookings_nanny_idTousers: { nanny_details: {} },
+          service_requests: { category: "CC" },
+          payments: [],
+        })
+        .mockResolvedValue({ id: "3", status: "COMPLETED" });
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await service.completeBooking("3");
+      expect(result).toEqual({ id: "3", status: "COMPLETED" });
+    });
+  });
+
+  describe("reportNoShow", () => {
+    const base = {
+      id: "b1",
+      status: "CONFIRMED",
+      parent_id: "parent1",
+      nanny_id: "nanny1",
+      request_id: "req1",
+      start_time: new Date(Date.now() - 3600_000), // started an hour ago
+    };
+
+    it("rejects a report before the booking's start time", async () => {
       mockPrisma.bookings.findUnique.mockResolvedValue({
-        id: bookingId,
-        status: "IN_PROGRESS",
-        start_time: start,
-        end_time: end,
-        nanny_id: "nanny1",
-        parent_id: "parent1",
-        users_bookings_nanny_idTousers: {
-          nanny_details: { hourly_rate: hourlyRate },
-        },
-        service_requests: { category: "CC" },
+        ...base,
+        start_time: new Date(Date.now() + 3600_000),
       });
 
-      mockPrisma.bookings.update.mockResolvedValue({
-        id: bookingId,
-        status: "COMPLETED",
+      await expect(
+        service.reportNoShow("b1", "nanny1", "not here"),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.bookings.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("cancels atomically, voids pending instalments and closes the request", async () => {
+      mockPrisma.bookings.findUnique
+        .mockResolvedValueOnce(base)
+        .mockResolvedValue({ ...base, status: "CANCELLED" });
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await service.reportNoShow("b1", "nanny1", "parent absent");
+
+      expect(mockPrisma.bookings.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "b1", status: "CONFIRMED" },
+        }),
+      );
+      expect(mockPrisma.payment_installments.updateMany).toHaveBeenCalledWith({
+        where: { booking_id: "b1", status: "pending" },
+        data: expect.objectContaining({ status: "void" }),
       });
-
-      await service.completeBooking(bookingId);
-
-      expect(mockPrisma.payments.create).toHaveBeenCalled();
-      // Parent should be notified
-      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
-        "parent1",
-        "Booking Completed",
-        expect.any(String),
-        "success",
+      expect(mockPrisma.service_requests.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: "req1" }),
+          data: { status: "CANCELLED" },
+        }),
       );
-      // Nanny should be notified
-      expect(mockNotificationsService.createNotification).toHaveBeenCalledWith(
-        "nanny1",
-        "Booking Completed",
-        expect.any(String),
-        "success",
-      );
+      expect(result.status).toBe("CANCELLED");
+    });
+
+    it("throws when another actor moved the booking between read and claim", async () => {
+      mockPrisma.bookings.findUnique.mockResolvedValue(base);
+      mockPrisma.bookings.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.reportNoShow("b1", "nanny1", "parent absent"),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

@@ -121,6 +121,11 @@ export class InvoicesService {
             reason: true,
             issued_at: true,
             total_amount: true,
+            // The plan a note belongs to is the plan of the invoice it reduces.
+            // Without it, `statementForBooking` — which filters a plan's
+            // documents on `planId` — silently dropped every credit note from a
+            // plan's statement while still counting its amount in `credited`.
+            invoices: { select: { plan_id: true } },
           },
         }),
         this.prisma.plan_settlements.findMany({
@@ -184,7 +189,7 @@ export class InvoicesService {
         kind: "credit_note" as const,
         id: note.id,
         bookingId: note.booking_id,
-        planId: null,
+        planId: note.invoices?.plan_id ?? null,
         number: note.number,
         title: "Credit note",
         subtitle: CREDIT_NOTE_SUBTITLE[note.reason] ?? "Adjustment",

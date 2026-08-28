@@ -27,6 +27,7 @@ describe("DocumentIssuerService", () => {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       findMany: jest.fn(),
     },
     invoice_lines: { createMany: jest.fn(), deleteMany: jest.fn() },
@@ -251,6 +252,8 @@ describe("DocumentIssuerService", () => {
         id: "cn-1",
         number: "KL-CN-2026-0001",
       });
+      // The guarded claim on the invoice's running total succeeds by default.
+      mockPrisma.invoices.updateMany.mockResolvedValue({ count: 1 });
     });
 
     it("splits the credit across tax and pre-tax in the invoice's own ratio", async () => {
@@ -315,12 +318,32 @@ describe("DocumentIssuerService", () => {
         amount: 3000,
       });
 
-      expect(mockPrisma.invoices.update).toHaveBeenCalledWith(
+      // A guarded claim, not a blind update: the `where` carries the
+      // `credited_amount` the remaining value was computed from, so a
+      // concurrent note cannot slip in between the read and the write.
+      expect(mockPrisma.invoices.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: "inv-1" },
+          where: { id: "inv-1", credited_amount: 2000 },
           data: expect.objectContaining({ credited_amount: 5000 }),
         }),
       );
+    });
+
+    it("refuses when a concurrent note moved the running total under it", async () => {
+      // Two admins crediting the same invoice at once must not together credit
+      // it past its own value. The loser's claim misses and its whole
+      // transaction — allocated number included — rolls back.
+      mockPrisma.invoices.findUnique.mockResolvedValue(invoice);
+      mockPrisma.invoices.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.issueCreditNote({
+          invoiceId: "inv-1",
+          reason: "refund",
+          settlement: "refunded",
+          amount: 1000,
+        }),
+      ).rejects.toThrow(/concurrently/);
     });
 
     it("references the invoice it reduces, as section 34 requires", async () => {

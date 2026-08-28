@@ -27,9 +27,13 @@ describe("BookingsService - Reassignment Logic", () => {
     service_requests: {
       update: jest.fn(),
     },
+    payment_installments: {
+      updateMany: jest.fn(),
+    },
     users: {
       findUnique: jest.fn(),
     },
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(mockPrisma)),
   };
 
   const mockRequestsService = {
@@ -63,7 +67,24 @@ describe("BookingsService - Reassignment Logic", () => {
         { provide: MailService, useValue: {} },
         { provide: PaymentsService, useValue: {} },
       ],
-    }).compile();
+    })
+      // Collaborators this suite does not exercise (event emitter, status log,
+      // pricing, progress reports) — one stub object covers the methods the
+      // cancel paths touch.
+      .useMocker(() => ({
+        emit: jest.fn(),
+        writeLog: jest.fn().mockResolvedValue(undefined),
+        calculateCost: jest.fn().mockResolvedValue({
+          totalAmount: 500,
+          appliedRate: 500,
+          subtotalAmount: 500,
+          gstAmount: 0,
+          gstPercent: 0,
+        }),
+        generateReportForBooking: jest.fn().mockResolvedValue(undefined),
+        prefetchServiceCategories: jest.fn().mockResolvedValue(undefined),
+      }))
+      .compile();
 
     service = module.get<BookingsService>(BookingsService);
     prisma = module.get<PrismaService>(PrismaService);

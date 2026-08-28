@@ -113,14 +113,20 @@ export class BookingsService {
       }
     }
 
-    // 2. If no explicit time, try to get from Job
-    if (!finalStartTime && jobId) {
+    // 2. If a job is named, it must belong to the booking parent — an arbitrary
+    // job id here previously attached someone else's job to this booking.
+    if (jobId) {
       const job = await this.prisma.jobs.findUnique({ where: { id: jobId } });
       if (!job) {
         throw new NotFoundException("Job not found");
       }
-      finalStartTime = job.date;
-      // Job doesn't have end time in schema currently, so we leave it null or calculate if duration existed
+      if (job.parent_id && job.parent_id !== parentId) {
+        throw new ForbiddenException("This job does not belong to you");
+      }
+      if (!finalStartTime) {
+        finalStartTime = job.date;
+        // Job doesn't have end time in schema currently, so we leave it null or calculate if duration existed
+      }
     }
 
     // 3. Validate that we have a start time
@@ -128,6 +134,30 @@ export class BookingsService {
       throw new BadRequestException(
         "Date and Start time are required for direct bookings (or provide a valid Job ID)",
       );
+    }
+
+    if (finalStartTime.getTime() < Date.now()) {
+      throw new BadRequestException("Cannot create a booking in the past");
+    }
+
+    // A caregiver can only be in one place at a time. Two CONFIRMED bookings over
+    // the same window were both accepted before; one of them was always going to
+    // be a no-show. Bookings without an end time can't be windowed and are skipped.
+    if (finalEndTime) {
+      const clash = await this.prisma.bookings.findFirst({
+        where: {
+          nanny_id: nannyId,
+          status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS] },
+          start_time: { lt: finalEndTime },
+          end_time: { gt: finalStartTime },
+        },
+        select: { id: true, start_time: true },
+      });
+      if (clash) {
+        throw new BadRequestException(
+          "This caregiver already has a booking that overlaps the requested time",
+        );
+      }
     }
 
     // Create booking with initial status CONFIRMED
@@ -792,9 +822,22 @@ export class BookingsService {
 
     const durationHours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
 
+    // Same arguments as every quote path (getBookingById, the two list paths).
+    // This amount funds the caregiver's manual_pending payout accrual and the
+    // completion notifications — pricing it with the defaults (ONE_TIME, one
+    // day/week) quoted and accrued the wrong figure for any plan booking.
     const { totalAmount } = await this.pricingService.calculateCost(
       booking.service_requests?.category || "CC",
-      durationHours
+      durationHours > 0
+        ? durationHours
+        : Number(booking.service_requests?.duration_hours || 0),
+      Number(booking.service_requests?.["plan_duration_months"] || 1),
+      booking.service_requests?.["plan_type"] || "ONE_TIME",
+      resolveDaysPerWeek({
+        planType: booking.service_requests?.["plan_type"],
+        daysPerWeek: booking.days_per_week,
+        sessionsPerMonth: booking.service_requests?.["sessions_per_month"],
+      }),
     );
 
     // Claim IN_PROGRESS → COMPLETED atomically. The early return above only covers
@@ -974,9 +1017,13 @@ export class BookingsService {
     let cancellationFee = 0;
     let feeStatus = CANCELLATION_FEE_NONE;
 
+    // The fee compensates the caregiver for a slot the *parent* pulled late. A
+    // cancellation by the caregiver, an admin, or the system is not the parent's
+    // doing — computing the fee unconditionally here billed the parent for their
+    // caregiver walking away inside the 24-hour window.
     const now = new Date();
     const startTime = booking.start_time;
-    if (startTime) {
+    if (isParentCancellation && startTime) {
       const hoursUntilStart =
         (startTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
@@ -1262,17 +1309,62 @@ export class BookingsService {
     throw new ForbiddenException("Not authorized to report on this booking.");
   }
 
+  // Nobody has failed to show up for a session that hasn't started yet. Without
+  // this, either party could "report a no-show" hours before the start time and
+  // cancel the booking with a no-show on the other party's record.
+  if (booking.start_time && booking.start_time.getTime() > Date.now()) {
+    throw new BadRequestException(
+      "A no-show can only be reported after the booking's start time.",
+    );
+  }
+
   const isNannyReporting = booking.nanny_id === reportingUserId;
   const noShowTag = isNannyReporting ? "parent_noshow" : "nanny_noshow";
 
-  const updatedBooking = await this.prisma.bookings.update({
-    where: { id },
-    data: {
-      status: BookingStatus.CANCELLED,
-      cancellation_reason: `Reported No-Show by ${isNannyReporting ? "Nanny" : "Parent"}: ${reason}`,
-      tags: { push: ["noshow", noShowTag] },
-    },
+  // One transaction, claimed on the expected status. The bare `update` let two
+  // concurrent reports (or a report racing a start/cancel) both write — stacking
+  // duplicate noshow tags and emitting CANCELLED twice. And a no-show is a
+  // cancellation: like cancelBooking, it must void pending instalments and close
+  // the originating request/assignments, or the balance stays collectible and the
+  // request sits in the matching queue for a session that never happened.
+  const updatedBooking = await this.prisma.$transaction(async (tx) => {
+    const claimed = await tx.bookings.updateMany({
+      where: { id, status: BookingStatus.CONFIRMED },
+      data: {
+        status: BookingStatus.CANCELLED,
+        cancellation_reason: `Reported No-Show by ${isNannyReporting ? "Nanny" : "Parent"}: ${reason}`,
+        tags: { push: ["noshow", noShowTag] },
+      },
+    });
+    if (claimed.count === 0) return null;
+
+    await tx.payment_installments.updateMany({
+      where: { booking_id: id, status: INSTALMENT_PENDING },
+      data: { status: INSTALMENT_VOID, updated_at: new Date() },
+    });
+
+    if (booking.request_id) {
+      await tx.service_requests.updateMany({
+        where: { id: booking.request_id, status: { in: ["pending", "accepted"] } },
+        data: { status: "CANCELLED" },
+      });
+      await tx.assignments.updateMany({
+        where: {
+          request_id: booking.request_id,
+          status: { in: ["pending", "accepted"] },
+        },
+        data: { status: "cancelled", responded_at: new Date() },
+      });
+    }
+
+    return tx.bookings.findUnique({ where: { id } });
   });
+
+  if (!updatedBooking) {
+    throw new BadRequestException(
+      "Only confirmed bookings can be reported as a no-show.",
+    );
+  }
 
   // Notify the other party
   const notifiedUserId = isNannyReporting
@@ -1354,7 +1446,7 @@ export class BookingsService {
   }
 
   // 6. Store original times if this is the first reschedule
-  const updateData: Prisma.bookingsUpdateInput = {
+  const updateData: Prisma.bookingsUpdateManyMutationInput = {
     start_time: newStartDateTime,
     end_time: newEndDateTime,
     reschedule_count: (booking.reschedule_count || 0) + 1,
@@ -1368,6 +1460,23 @@ export class BookingsService {
 
   // 7. Update the booking and associated service request
   const updatedBooking = await this.prisma.$transaction(async (tx) => {
+    // Claim the reschedule on the status we validated above. The read-then-write
+    // gap let a caregiver start the session between the check and this write —
+    // the reschedule then silently rewrote the start/end times of an IN_PROGRESS
+    // (or cancelled) booking.
+    const claimed = await tx.bookings.updateMany({
+      where: {
+        id,
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.REQUESTED] },
+      },
+      data: updateData,
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException(
+        "Only confirmed or requested bookings can be rescheduled",
+      );
+    }
+
     // a. Update service_request if it exists
     if (booking.request_id) {
       const durationHours =
@@ -1385,11 +1494,8 @@ export class BookingsService {
       });
     }
 
-    // b. Update the booking
-    return tx.bookings.update({
-      where: { id },
-      data: updateData,
-    });
+    // b. The booking itself was written by the claim above.
+    return tx.bookings.findUnique({ where: { id } });
   });
 
   // 8. Trigger re-matching if no nanny is assigned

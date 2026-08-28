@@ -82,7 +82,9 @@ export class DocumentIssuerService {
   /**
    * Issue the tax invoice for a captured instalment.
    *
-   * Idempotent on `invoices.installment_id`, which is unique. Razorpay can
+   * Idempotent on the `(booking_id, cycle_number, kind)` unique — one invoice
+   * per billing group, enforced by the database, with the pre-check in
+   * `issueForBillingGroup` as the fast path. Razorpay can
    * deliver `payment.captured` after `api:verify_payment` has already run the
    * same capture, and a second document for one payment would be a second entry
    * in the books for money that arrived once.
@@ -437,13 +439,28 @@ export class DocumentIssuerService {
 
       // Bumped in the same transaction as the note, so the invoice can never
       // read as credited by an amount no note accounts for, or the reverse.
-      await tx.invoices.update({
-        where: { id: invoice.id },
+      //
+      // Guarded on the `credited_amount` this call computed `remaining` from,
+      // not a blind update: two concurrent credit notes (an admin double-submit,
+      // or a refund racing a manual correction) would otherwise both read the
+      // same starting figure, both pass the `remaining` check, and together
+      // credit the invoice past its own value while the running total recorded
+      // only one of them. If the row moved since we read it, the claim misses,
+      // the whole transaction rolls back — allocated number included — and the
+      // caller can retry against the invoice's real remaining value.
+      const claimed = await tx.invoices.updateMany({
+        where: { id: invoice.id, credited_amount: invoice.credited_amount },
         data: {
           credited_amount: round(alreadyCredited + amount),
           updated_at: new Date(),
         },
       });
+      if (claimed.count === 0) {
+        throw new Error(
+          `Cannot credit invoice ${invoice.number}: another credit note was ` +
+            `issued against it concurrently; retry to recompute the remaining value`,
+        );
+      }
 
       this.logger.log(
         `Issued credit note ${number} for ₹${amount} against invoice ${invoice.number} (${input.reason}/${input.settlement})`,
