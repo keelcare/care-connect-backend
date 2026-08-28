@@ -132,7 +132,9 @@ export class TasksService {
 
   @Cron("0 45 3 * * *")
   async remindOutstandingInstallments() {
-    this.logger.debug("Running Cron Job: Checking for due/overdue instalments...");
+    this.logger.debug(
+      "Running Cron Job: Checking for due/overdue instalments...",
+    );
     try {
       const now = new Date();
       // End of today in IST, so "due today" means the parent's today rather than
@@ -147,7 +149,10 @@ export class TasksService {
           status: INSTALMENT_PENDING,
           due_date: { not: null, lte: dueThrough },
           reminder_count: { lt: INSTALMENT_REMINDER_MAX },
-          OR: [{ last_reminded_at: null }, { last_reminded_at: { lte: remindedBefore } }],
+          OR: [
+            { last_reminded_at: null },
+            { last_reminded_at: { lte: remindedBefore } },
+          ],
           bookings: { status: { not: BookingStatus.CANCELLED } },
         },
         take: 500,
@@ -196,7 +201,10 @@ export class TasksService {
               bookingDetails: `Booking #${instalment.booking_id.substring(0, 8)}`,
             })
             .catch((err) =>
-              this.logger.error(`Failed to send instalment reminder to ${parent.email}`, err),
+              this.logger.error(
+                `Failed to send instalment reminder to ${parent.email}`,
+                err,
+              ),
             );
         }
 
@@ -212,14 +220,19 @@ export class TasksService {
         this.logger.log(`Sent ${due.length} outstanding instalment reminders.`);
       }
     } catch (error) {
-      this.logger.error("Error in remindOutstandingInstallments cron job", error);
+      this.logger.error(
+        "Error in remindOutstandingInstallments cron job",
+        error,
+      );
     }
   }
 
   // 4. Payment Plan reminders (due in 3 days) — runs daily at 9am IST (03:30 UTC)
   @Cron("0 30 3 * * *")
   async checkUpcomingBillingCycles() {
-    this.logger.debug("Running Cron Job: Checking for upcoming billing cycles due in 3 days...");
+    this.logger.debug(
+      "Running Cron Job: Checking for upcoming billing cycles due in 3 days...",
+    );
     try {
       const now = new Date();
       // Target date: exactly 3 days from now
@@ -279,29 +292,32 @@ export class TasksService {
 
         // 2. Send email reminder (fire-and-forget)
         if (parent.email) {
-          const parentName = parent.profiles?.first_name 
-            ? `${parent.profiles.first_name} ${parent.profiles.last_name || ''}`.trim() 
+          const parentName = parent.profiles?.first_name
+            ? `${parent.profiles.first_name} ${parent.profiles.last_name || ""}`.trim()
             : "Parent";
-            
+
           const bookingDetails = `Booking #${plan.booking_id.substring(0, 8)}`;
-          
-          this.mailService.sendInstallmentReminderEmail(
-            parent.email,
-            parentName,
-            {
+
+          this.mailService
+            .sendInstallmentReminderEmail(parent.email, parentName, {
               amount: 0, // In reality, we'd snapshot here or preview. 0 means we just tell them to check the app.
               dueDate: plan.next_due_date.toLocaleDateString(),
               installmentNo: cycleNo,
               bookingDetails,
-            }
-          ).catch((err) => 
-            this.logger.error(`Failed to send upcoming cycle email to ${parent.email}`, err)
-          );
+            })
+            .catch((err) =>
+              this.logger.error(
+                `Failed to send upcoming cycle email to ${parent.email}`,
+                err,
+              ),
+            );
         }
       }
 
       if (dueSoon.length > 0) {
-        this.logger.log(`Sent ${dueSoon.length} upcoming billing cycle reminders.`);
+        this.logger.log(
+          `Sent ${dueSoon.length} upcoming billing cycle reminders.`,
+        );
       }
     } catch (error) {
       this.logger.error("Error in checkUpcomingBillingCycles cron job", error);
@@ -311,10 +327,13 @@ export class TasksService {
   // 6. Weekly location updates cleanup — runs weekly (Sundays at midnight UTC)
   @Cron("0 0 0 * * 0")
   async cleanLocationUpdates() {
-    this.logger.debug("Running Cron Job: Cleaning up location updates older than 30 days...");
+    this.logger.debug(
+      "Running Cron Job: Cleaning up location updates older than 90 days...",
+    );
     try {
       const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - 30);
+      // Privacy policy promises session location traces are retained 90 days.
+      cutoffDate.setDate(cutoffDate.getDate() - 90);
 
       const result = await this.prisma.location_updates.deleteMany({
         where: {
@@ -332,4 +351,3 @@ export class TasksService {
     }
   }
 }
-

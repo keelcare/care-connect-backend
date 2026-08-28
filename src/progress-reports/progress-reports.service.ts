@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
@@ -12,6 +13,8 @@ import { PROGRESS_REPORT_DUE_HOURS } from "../common/constants/constants";
 
 @Injectable()
 export class ProgressReportsService {
+  private readonly logger = new Logger(ProgressReportsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async createTemplate(data: CreateTemplateDto, adminId: string) {
@@ -142,9 +145,10 @@ export class ProgressReportsService {
     }
 
     // Validate required questions
-    const requiredQuestions = report.report_templates.report_template_questions.filter(
-      (q) => q.is_required,
-    );
+    const requiredQuestions =
+      report.report_templates.report_template_questions.filter(
+        (q) => q.is_required,
+      );
     const answeredQuestionIds = dto.answers.map((a) => a.question_id);
     const missing = requiredQuestions.filter(
       (q) => !answeredQuestionIds.includes(q.id),
@@ -202,14 +206,14 @@ export class ProgressReportsService {
       where: { is_active: true },
       orderBy: { version: "desc" },
     });
-    
+
     if (!template) {
-      console.error("Cannot generate report: No active template found");
+      this.logger.error("Cannot generate report: No active template found");
       return null;
     }
 
     const dueMs = PROGRESS_REPORT_DUE_HOURS * 60 * 60 * 1000;
-    const dueTime = booking.end_time 
+    const dueTime = booking.end_time
       ? new Date(booking.end_time.getTime() + dueMs)
       : new Date(Date.now() + dueMs);
 

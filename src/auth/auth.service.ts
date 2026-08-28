@@ -15,7 +15,10 @@ import * as crypto from "node:crypto";
 import { SignupDto } from "./dto/signup.dto";
 import { PrismaService } from "../prisma/prisma.service";
 import { MailService } from "../mail/mail.service";
-import { OAUTH_ERROR_UNVERIFIED_ACCOUNT, CONSENT_POLICY_VERSION } from "../constants";
+import {
+  OAUTH_ERROR_UNVERIFIED_ACCOUNT,
+  CONSENT_POLICY_VERSION,
+} from "../constants";
 import { ConsentsService } from "../users/consents.service";
 import { ConsentPurpose } from "../users/dto/consent.dto";
 
@@ -135,12 +138,15 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     try {
-      const refreshSecret = this.configService.get<string>("JWT_REFRESH_SECRET");
+      const refreshSecret =
+        this.configService.get<string>("JWT_REFRESH_SECRET");
       if (!refreshSecret) {
         throw new Error("JWT_REFRESH_SECRET is not configured");
       }
-      const payload = this.jwtService.verify(refreshToken, { secret: refreshSecret });
-      
+      const payload = this.jwtService.verify(refreshToken, {
+        secret: refreshSecret,
+      });
+
       // Check if token was revoked
       const revokedToken = await this.prisma.revoked_tokens.findUnique({
         where: { token: refreshToken },
@@ -168,11 +174,16 @@ export class AuthService {
 
       // Rotate token: revoke the old one
       const expiresAt = new Date((payload.exp || 0) * 1000);
-      await this.prisma.revoked_tokens.create({
-        data: { token: refreshToken, expires_at: expiresAt },
-      }).catch(err => {
-        Logger.warn(`Failed to revoke refresh token: ${err.message}`, AuthService.name);
-      });
+      await this.prisma.revoked_tokens
+        .create({
+          data: { token: refreshToken, expires_at: expiresAt },
+        })
+        .catch((err) => {
+          Logger.warn(
+            `Failed to revoke refresh token: ${err.message}`,
+            AuthService.name,
+          );
+        });
 
       // Generate new tokens
       return this.login(user);
@@ -211,7 +222,6 @@ export class AuthService {
   }
 
   async resetPassword(token: string, newPassword: string) {
-
     const user = await this.usersService.findByResetToken(token);
 
     if (
@@ -301,7 +311,6 @@ export class AuthService {
   }
 
   async register(userDto: SignupDto, ipAddress?: string) {
-
     // Categories are collected during nanny onboarding, not at signup, so they
     // are optional here — the onboarding form is what finally writes them onto
     // nanny_details. Older clients that still send them are still honoured, and
@@ -372,7 +381,9 @@ export class AuthService {
         err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
-        throw new ConflictException("An account with this email already exists");
+        throw new ConflictException(
+          "An account with this email already exists",
+        );
       }
       throw err;
     }
@@ -399,7 +410,10 @@ export class AuthService {
       await this.sendVerificationEmail(user.id);
     } catch (error) {
       // Log error but don't fail registration
-      console.error("Failed to send welcome verification email", error);
+      this.logger.error(
+        "Failed to send welcome verification email",
+        (error as Error)?.stack,
+      );
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -502,7 +516,10 @@ export class AuthService {
           data: { token, expires_at: expiresAt },
         })
         .catch((err) => {
-          Logger.warn(`Session token already revoked or DB error: ${err.message}`, AuthService.name);
+          Logger.warn(
+            `Session token already revoked or DB error: ${err.message}`,
+            AuthService.name,
+          );
         });
 
       return this.login(user);

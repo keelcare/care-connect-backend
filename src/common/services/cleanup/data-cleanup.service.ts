@@ -33,11 +33,39 @@ export class DataCleanupService {
   async cleanupOldData() {
     this.logger.log("Starting daily data cleanup...");
 
-    // 1. Delete messages older than 1 year (Data Minimization)
+    // 1. Delete messages once their booking has ended and a year has passed
+    // (Data Minimization). Privacy policy: "Chat messages are retained for
+    // the life of the booking plus one year" — so a still-active booking's
+    // messages must never be purged purely on message age. Messages whose
+    // chat isn't tied to any booking fall back to the simple age cutoff.
     try {
       const messageCutoff = this.daysAgo(365);
+      const terminalBookingStatuses = [
+        "COMPLETED",
+        "CANCELLED",
+        "EXPIRED",
+        "PARENT_NO_SHOW",
+        "NANNY_NO_SHOW",
+      ];
       const deletedMessages = await this.prisma.messages.deleteMany({
-        where: { created_at: { lt: messageCutoff } },
+        where: {
+          created_at: { lt: messageCutoff },
+          OR: [
+            { chats: null },
+            { chats: { booking_id: null } },
+            {
+              chats: {
+                bookings: {
+                  status: { in: terminalBookingStatuses },
+                  OR: [
+                    { actual_end_time: { lt: messageCutoff } },
+                    { actual_end_time: null, end_time: { lt: messageCutoff } },
+                  ],
+                },
+              },
+            },
+          ],
+        },
       });
       this.logger.log(`Deleted ${deletedMessages.count} old messages.`);
     } catch (error) {

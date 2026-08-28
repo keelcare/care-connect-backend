@@ -12,9 +12,14 @@ async function getToken() {
     process.exit(1);
   }
   
+  if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not set — refusing to sign a token with a fallback secret.");
+    process.exit(1);
+  }
+
   const token = jwt.sign(
     { sub: admin.id, email: admin.email, role: admin.role },
-    process.env.JWT_SECRET || 'your_jwt_secret_change_this_in_production'
+    process.env.JWT_SECRET
   );
   
   console.log(token);

@@ -1,10 +1,12 @@
 import { PassportStrategy } from "@nestjs/passport";
 import { Strategy, VerifyCallback } from "passport-google-oauth20";
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
+  private readonly logger = new Logger(GoogleStrategy.name);
+
   constructor(configService: ConfigService) {
     super({
       clientID: configService.get<string>("GOOGLE_CLIENT_ID") || "client_id",
@@ -16,10 +18,11 @@ export class GoogleStrategy extends PassportStrategy(Strategy, "google") {
       scope: ["email", "profile"],
       passReqToCallback: true,
     });
-    console.log(
-      "Google Strategy Initialized with Callback URL:",
-      configService.get<string>("GOOGLE_CALLBACK_URL") ||
-        "http://localhost:4000/auth/google/callback",
+    this.logger.log(
+      `Google Strategy initialized with callback URL: ${
+        configService.get<string>("GOOGLE_CALLBACK_URL") ||
+        "http://localhost:4000/auth/google/callback"
+      }`,
     );
   }
 

@@ -1,25 +1,20 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as crypto from "node:crypto";
 
 @Injectable()
 export class EncryptionService {
+  private readonly logger = new Logger(EncryptionService.name);
   private readonly algorithm = "aes-256-gcm";
   private readonly key: Buffer;
 
   constructor(private configService: ConfigService) {
     const keyHex = this.configService.get<string>("ENCRYPTION_KEY");
 
-    // Fallback for development if not set (DO NOT USE IN PRODUCTION)
     if (!keyHex) {
-      console.warn(
-        "WARNING: ENCRYPTION_KEY not set. PII encryption will fail.",
+      this.logger.warn(
+        "ENCRYPTION_KEY not set. PII encryption/decryption will throw until it is configured.",
       );
-      // We'll throw error in production-like environments or handle gracefully
-      // For now, let's assume it should match the .env update we will do
-
-      // To prevent crashes during setup, we can use a dummy key if strictly needed for dev
-      // But better to throw to strict enforcement
     }
 
     if (keyHex) {
@@ -36,7 +31,12 @@ export class EncryptionService {
    * Returns: iv:authTag:ciphertext (all hex-encoded)
    */
   encrypt(plaintext: string): string {
-    if (!plaintext || !this.key) return plaintext;
+    if (!plaintext) return plaintext;
+    if (!this.key) {
+      throw new Error(
+        "ENCRYPTION_KEY is not configured — refusing to store sensitive data unencrypted.",
+      );
+    }
 
     try {
       const iv = crypto.randomBytes(16);
@@ -50,8 +50,8 @@ export class EncryptionService {
       // Format: iv:authTag:ciphertext
       return `${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted}`;
     } catch (e) {
-      console.error("Encryption error:", e);
-      return plaintext; // Fail safe? Or throw? Fail safe for now to not break app
+      this.logger.error("Encryption failed", e instanceof Error ? e.stack : e);
+      throw e;
     }
   }
 
@@ -84,9 +84,8 @@ export class EncryptionService {
       decrypted += decipher.final("utf8");
 
       return decrypted;
-    } catch (error) {
+    } catch {
       // If decryption fails, return original (might be legacy unencrypted data)
-      // console.error('Decryption failed:', error.message);
       return encryptedData;
     }
   }

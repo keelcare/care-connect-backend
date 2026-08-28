@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -15,6 +16,8 @@ import { TimeUtils } from "../common/utils/time.utils";
 
 @Injectable()
 export class AssignmentsService {
+  private readonly logger = new Logger(AssignmentsService.name);
+
   constructor(
     private prisma: PrismaService,
     private requestsService: RequestsService,
@@ -160,17 +163,16 @@ export class AssignmentsService {
         tx,
         assignment.request_id,
         updatedBooking.id,
-        updatedAssignment.service_requests.parent_id
+        updatedAssignment.service_requests.parent_id,
       );
 
       // 4. Create Chat for this booking (Atomically)
       try {
         await this.chatService.createChat(updatedBooking.id);
       } catch (error) {
-        console.error(
-          "Failed to create chat for booking in transaction:",
-          updatedBooking.id,
-          error,
+        this.logger.error(
+          `Failed to create chat for booking ${updatedBooking.id} in transaction`,
+          (error as Error)?.stack,
         );
       }
 
@@ -214,7 +216,10 @@ export class AssignmentsService {
           otherPartyName: nannyName,
         })
         .catch((err) =>
-          console.error("Failed to send parent confirmation email", err),
+          this.logger.error(
+            "Failed to send parent confirmation email",
+            err?.stack,
+          ),
         );
 
       // Email to Nanny
@@ -224,7 +229,10 @@ export class AssignmentsService {
           otherPartyName: parentName,
         })
         .catch((err) =>
-          console.error("Failed to send nanny confirmation email", err),
+          this.logger.error(
+            "Failed to send nanny confirmation email",
+            err?.stack,
+          ),
         );
 
       // Emit SSE to parent
@@ -270,12 +278,12 @@ export class AssignmentsService {
     await this.updateAcceptanceRateInternal(nannyId);
 
     // 3. Trigger re-matching
-    console.log(`Assignment ${id} rejected. Triggering re-match...`);
+    this.logger.log(`Assignment ${id} rejected. Triggering re-match...`);
     // Run in background to not block response
     this.requestsService.triggerMatching(assignment.request_id).catch((err) => {
-      console.error(
-        `Error triggering matching for request ${assignment.request_id}:`,
-        err,
+      this.logger.error(
+        `Error triggering matching for request ${assignment.request_id}`,
+        err?.stack,
       );
     });
 

@@ -81,7 +81,10 @@ export class AttendanceRollupService {
         this.logger.warn(`Flagged ${flagged} session(s) as no-shows`);
       }
     } catch (err) {
-      this.logger.error(`No-show sweep failed: ${(err as Error)?.message}`);
+      this.logger.error(
+        `No-show sweep failed: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
+      );
     }
   }
 
@@ -95,7 +98,9 @@ export class AttendanceRollupService {
    */
   @Cron("0 */5 * * * *")
   async sweepOfflineDuringSessions() {
-    const staleBefore = new Date(Date.now() - STALE_PRESENCE_MINUTES * MINUTE_MS);
+    const staleBefore = new Date(
+      Date.now() - STALE_PRESENCE_MINUTES * MINUTE_MS,
+    );
 
     try {
       const live = await this.prisma.bookings.findMany({
@@ -129,11 +134,15 @@ export class AttendanceRollupService {
           detail.last_seen_at === null || detail.last_seen_at < staleBefore;
         if (!dark) continue;
 
-        await this.attendance.recordOfflineDuringSession(booking, detail.last_seen_at);
+        await this.attendance.recordOfflineDuringSession(
+          booking,
+          detail.last_seen_at,
+        );
       }
     } catch (err) {
       this.logger.error(
         `Offline-during-session sweep failed: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
       );
     }
   }
@@ -149,7 +158,10 @@ export class AttendanceRollupService {
     try {
       await this.rollUpDay(istDateOnly());
     } catch (err) {
-      this.logger.error(`Hourly attendance roll-up failed: ${(err as Error)?.message}`);
+      this.logger.error(
+        `Hourly attendance roll-up failed: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
+      );
     }
   }
 
@@ -170,7 +182,10 @@ export class AttendanceRollupService {
         `Attendance roll-up for ${yesterday.toISOString().slice(0, 10)}: ${days} day record(s), ${scored} score(s) refreshed`,
       );
     } catch (err) {
-      this.logger.error(`Nightly attendance roll-up failed: ${(err as Error)?.message}`);
+      this.logger.error(
+        `Nightly attendance roll-up failed: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
+      );
     }
   }
 
@@ -229,7 +244,8 @@ export class AttendanceRollupService {
     for (const nannyId of nannyIds) {
       const myBookings = bookings.filter((b) => b.nanny_id === nannyId);
       const myEvents = events.filter((e) => e.nanny_id === nannyId);
-      const count = (type: string) => myEvents.filter((e) => e.type === type).length;
+      const count = (type: string) =>
+        myEvents.filter((e) => e.type === type).length;
 
       const onTime = count("CHECK_IN");
       const late = count("LATE_CHECK_IN");
@@ -242,7 +258,9 @@ export class AttendanceRollupService {
       // it never counts against her; one she cancelled herself carries its event
       // and stays counted.
       const accountableBookingIds = new Set(
-        myEvents.filter((e) => e.is_session_outcome && e.booking_id).map((e) => e.booking_id!),
+        myEvents
+          .filter((e) => e.is_session_outcome && e.booking_id)
+          .map((e) => e.booking_id!),
       );
       const scheduled = myBookings.filter(
         (b) =>
@@ -264,7 +282,10 @@ export class AttendanceRollupService {
           sum +
           Math.max(
             0,
-            Math.round((b.actual_end_time.getTime() - b.actual_start_time.getTime()) / MINUTE_MS),
+            Math.round(
+              (b.actual_end_time.getTime() - b.actual_start_time.getTime()) /
+                MINUTE_MS,
+            ),
           )
         );
       }, 0);
@@ -280,7 +301,10 @@ export class AttendanceRollupService {
 
       await this.prisma.nanny_attendance_days.upsert({
         where: {
-          nanny_id_attendance_date: { nanny_id: nannyId, attendance_date: attendanceDate },
+          nanny_id_attendance_date: {
+            nanny_id: nannyId,
+            attendance_date: attendanceDate,
+          },
         },
         create: {
           nanny_id: nannyId,
@@ -337,7 +361,9 @@ export class AttendanceRollupService {
    * ones who have just crossed into the at-risk band.
    */
   async refreshAllScores(): Promise<number> {
-    const since = new Date(Date.now() - SCORE_WINDOW_DAYS * 24 * 60 * MINUTE_MS);
+    const since = new Date(
+      Date.now() - SCORE_WINDOW_DAYS * 24 * 60 * MINUTE_MS,
+    );
     const active = await this.prisma.nanny_attendance_events.groupBy({
       by: ["nanny_id"],
       where: { occurred_at: { gte: since } },

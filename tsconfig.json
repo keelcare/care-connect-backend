@@ -31,7 +31,6 @@
     "dist",
     "scripts",
     "prisma",
-    "generated",
-    "debug_index.d.ts"
+    "generated"
   ]
 }

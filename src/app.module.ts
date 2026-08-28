@@ -42,7 +42,7 @@ import { SseModule } from "./sse/sse.module";
 import { MailModule } from "./mail/mail.module";
 import { DisputesModule } from "./disputes/disputes.module";
 import { ProgressReportsModule } from "./progress-reports/progress-reports.module";
-import { RecurringRequestsModule } from './recurring-requests/recurring-requests.module';
+import { RecurringRequestsModule } from "./recurring-requests/recurring-requests.module";
 import { AddressesModule } from "./addresses/addresses.module";
 import { CallsModule } from "./calls/calls.module";
 import { AttendanceModule } from "./attendance/attendance.module";
@@ -66,6 +66,11 @@ import { AttendanceModule } from "./attendance/attendance.module";
           "req.body.token",
           "req.body.access_token",
           "req.body.refresh_token",
+          "req.body.id_number",
+          "req.body.aadhaar",
+          "req.body.pan",
+          "req.body.diagnosis",
+          "req.body.medical_notes",
         ],
         transport:
           process.env.NODE_ENV !== "production"

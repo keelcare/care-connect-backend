@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   Inject,
@@ -27,7 +28,10 @@ import {
   PLAN_STATUS,
   PLAN_STATUSES_GENERATING,
 } from "../common/constants/plan-status.enum";
-import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
+import {
+  MATCHING_RADIUS_KM,
+  ASSIGNMENT_RESPONSE_DEADLINE_MS,
+} from "../common/constants/constants";
 import { PaginationDto } from "./dto/pagination.dto";
 import { ReviewQueryDto } from "./dto/review-query.dto";
 import { AdminAuditService } from "./admin-audit.service";
@@ -36,6 +40,8 @@ import { ResolveDisputeDto } from "../disputes/dto/resolve-dispute.dto";
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
@@ -108,8 +114,6 @@ export class AdminService {
       orderBy: { created_at: "desc" },
     });
 
-
-
     // Day-level filtering above can still let through a slot earlier today.
     const upcomingRequests = requests.filter((req) => {
       try {
@@ -123,198 +127,208 @@ export class AdminService {
       upcomingRequests.map((r) => r.category || "CC"),
     );
 
-    const standardMapped = await Promise.all(upcomingRequests.map(async (req) => {
-      const parent = req.users;
-      const profile = parent?.profiles;
-      const booking = req.bookings;
-      const children =
-        booking?.booking_children?.map((bc) => bc.children) || [];
+    const standardMapped = await Promise.all(
+      upcomingRequests.map(async (req) => {
+        const parent = req.users;
+        const profile = parent?.profiles;
+        const booking = req.bookings;
+        const children =
+          booking?.booking_children?.map((bc) => bc.children) || [];
 
-      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-        req.category || "CC",
-        Number(req.duration_hours),
-        Number((req as any).plan_duration_months || 1),
-        (req as any).plan_type || "ONE_TIME",
-        resolveDaysPerWeek({
-          planType: (req as any).plan_type,
-          daysPerWeek: (req as any).days_per_week,
-          sessionsPerMonth: (req as any).sessions_per_month,
-        }),
-      );
+        const { totalAmount, appliedRate } =
+          await this.pricingService.calculateCost(
+            req.category || "CC",
+            Number(req.duration_hours),
+            Number((req as any).plan_duration_months || 1),
+            (req as any).plan_type || "ONE_TIME",
+            resolveDaysPerWeek({
+              planType: (req as any).plan_type,
+              daysPerWeek: (req as any).days_per_week,
+              sessionsPerMonth: (req as any).sessions_per_month,
+            }),
+          );
 
-      return {
-        id: req.id,
-        category: req.category,
-        date: req.date,
-        start_time: req.start_time,
-        duration_hours: req.duration_hours,
-        status: req.status,
-        location_lat: req.location_lat,
-        location_lng: req.location_lng,
-        address: profile?.address || "Location not specified",
-        parent_name: profile
-          ? `${profile.first_name} ${profile.last_name}`
-          : "Unknown Parent",
-        hourly_rate: appliedRate,
-        total_amount: totalAmount,
-        created_at: req.created_at,
-        children_count: req.num_children || children.length,
-        children_names:
-          children.length > 0
-            ? children.map((c) => c.first_name).join(", ")
-            : "Details not specified",
-        parent: {
-          id: req.parent_id,
-          email: parent?.email,
-          first_name: profile?.first_name,
-          last_name: profile?.last_name,
-          phone: profile?.phone,
-          address: profile?.address,
-        },
-        children: children.map((c) => ({
-          id: c.id,
-          first_name: c.first_name,
-          last_name: c.last_name,
-          age: c.dob
-            ? Math.floor(
-                (new Date().getTime() - new Date(c.dob).getTime()) /
-                  (1000 * 60 * 60 * 24 * 365.25),
-              )
-            : null,
-          profile_type: c.profile_type,
-          diagnosis: c.diagnosis,
-          care_instructions: c.care_instructions,
-        })),
-        special_requirements: req.special_requirements,
-        required_skills: req.required_skills,
-        is_recurring: false,
-      };
-    }));
+        return {
+          id: req.id,
+          category: req.category,
+          date: req.date,
+          start_time: req.start_time,
+          duration_hours: req.duration_hours,
+          status: req.status,
+          location_lat: req.location_lat,
+          location_lng: req.location_lng,
+          address: profile?.address || "Location not specified",
+          parent_name: profile
+            ? `${profile.first_name} ${profile.last_name}`
+            : "Unknown Parent",
+          hourly_rate: appliedRate,
+          total_amount: totalAmount,
+          created_at: req.created_at,
+          children_count: req.num_children || children.length,
+          children_names:
+            children.length > 0
+              ? children.map((c) => c.first_name).join(", ")
+              : "Details not specified",
+          parent: {
+            id: req.parent_id,
+            email: parent?.email,
+            first_name: profile?.first_name,
+            last_name: profile?.last_name,
+            phone: profile?.phone,
+            address: profile?.address,
+          },
+          children: children.map((c) => ({
+            id: c.id,
+            first_name: c.first_name,
+            last_name: c.last_name,
+            age: c.dob
+              ? Math.floor(
+                  (new Date().getTime() - new Date(c.dob).getTime()) /
+                    (1000 * 60 * 60 * 24 * 365.25),
+                )
+              : null,
+            profile_type: c.profile_type,
+            diagnosis: c.diagnosis,
+            care_instructions: c.care_instructions,
+          })),
+          special_requirements: req.special_requirements,
+          required_skills: req.required_skills,
+          is_recurring: false,
+        };
+      }),
+    );
 
-    const recurringRequests = await this.prisma.recurring_service_requests.findMany({
-      // Plans awaiting their first assignment are created as "pending" and only
-      // flip to "active" once a nanny is attached (see manualAssign), so both
-      // states can still hold unassigned sessions. Cancelled/expired/errored
-      // plans are excluded outright. Staffing is a plan-level fact now, so an
-      // unassigned plan is simply one with no nanny_id — which is also what
-      // keeps a wound-down plan out of this queue: it holds onto its caregiver
-      // until the sessions the parent already paid for have been served.
-      where: { status: { in: PLAN_STATUSES_GENERATING }, nanny_id: null },
-      include: {
-        users: {
-          select: {
-            email: true,
-            profiles: {
-              select: {
-                first_name: true,
-                last_name: true,
-                address: true,
-                phone: true,
+    const recurringRequests =
+      await this.prisma.recurring_service_requests.findMany({
+        // Plans awaiting their first assignment are created as "pending" and only
+        // flip to "active" once a nanny is attached (see manualAssign), so both
+        // states can still hold unassigned sessions. Cancelled/expired/errored
+        // plans are excluded outright. Staffing is a plan-level fact now, so an
+        // unassigned plan is simply one with no nanny_id — which is also what
+        // keeps a wound-down plan out of this queue: it holds onto its caregiver
+        // until the sessions the parent already paid for have been served.
+        where: { status: { in: PLAN_STATUSES_GENERATING }, nanny_id: null },
+        include: {
+          users: {
+            select: {
+              email: true,
+              profiles: {
+                select: {
+                  first_name: true,
+                  last_name: true,
+                  address: true,
+                  phone: true,
+                },
+              },
+            },
+          },
+          bookings: {
+            where: { status: { not: BookingStatus.CANCELLED } },
+            include: {
+              booking_children: {
+                include: {
+                  children: true,
+                },
               },
             },
           },
         },
-        bookings: {
-          where: { status: { not: BookingStatus.CANCELLED } },
-          include: {
-            booking_children: {
-              include: {
-                children: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: { created_at: "desc" },
-    });
+        orderBy: { created_at: "desc" },
+      });
 
     // Only plans with at least one *future* session. Past sessions can no longer
     // be served, so a plan made up entirely of them is not something an admin can
     // act on.
-    const unassignedRecurring = recurringRequests.filter(req =>
+    const unassignedRecurring = recurringRequests.filter((req) =>
       req.bookings.some(
-        b =>
+        (b) =>
           b.status === BookingStatus.REQUESTED &&
           b.start_time !== null &&
           b.start_time > now,
-      )
+      ),
     );
 
     await this.pricingService.prefetchServiceCategories(
       unassignedRecurring.map((r) => r.category || "CC"),
     );
 
-    const recurringMapped = await Promise.all(unassignedRecurring.map(async (req) => {
-      const parent = req.users;
-      const profile = parent?.profiles;
-      const booking = req.bookings?.[0];
-      const children = booking?.booking_children?.map((bc) => bc.children) || [];
+    const recurringMapped = await Promise.all(
+      unassignedRecurring.map(async (req) => {
+        const parent = req.users;
+        const profile = parent?.profiles;
+        const booking = req.bookings?.[0];
+        const children =
+          booking?.booking_children?.map((bc) => bc.children) || [];
 
-      const { totalAmount, appliedRate } = await this.pricingService.calculateCost(
-        req.category || "CC",
-        Number(req.duration_hours),
-        Number(req.plan_duration_months || 1),
-        req.plan_type || "ONE_TIME",
-        resolveDaysPerWeek({
-          planType: req.plan_type,
-          daysPerWeek: (req as any).days_per_week,
-          recurrencePattern: req.recurrence_pattern,
-          sessionsPerMonth: req.sessions_per_month,
-        }),
-      );
+        const { totalAmount, appliedRate } =
+          await this.pricingService.calculateCost(
+            req.category || "CC",
+            Number(req.duration_hours),
+            Number(req.plan_duration_months || 1),
+            req.plan_type || "ONE_TIME",
+            resolveDaysPerWeek({
+              planType: req.plan_type,
+              daysPerWeek: (req as any).days_per_week,
+              recurrencePattern: req.recurrence_pattern,
+              sessionsPerMonth: req.sessions_per_month,
+            }),
+          );
 
-      return {
-        id: req.id,
-        category: req.category || "Recurring",
-        date: req.start_date,
-        start_time: req.start_time,
-        duration_hours: req.duration_hours,
-        status: req.status,
-        location_lat: req.location_lat,
-        location_lng: req.location_lng,
-        address: profile?.address || "Location not specified",
-        parent_name: profile
-          ? `${profile.first_name} ${profile.last_name}`
-          : "Unknown Parent",
-        hourly_rate: appliedRate,
-        total_amount: totalAmount,
-        created_at: req.created_at,
-        children_count: req.num_children || children.length,
-        children_names:
-          children.length > 0
-            ? children.map((c) => c.first_name).join(", ")
-            : "Details not specified",
-        parent: {
-          id: req.parent_id,
-          email: parent?.email,
-          first_name: profile?.first_name,
-          last_name: profile?.last_name,
-          phone: profile?.phone,
-          address: profile?.address,
-        },
-        children: children.map((c) => ({
-          id: c.id,
-          first_name: c.first_name,
-          last_name: c.last_name,
-          age: c.dob
-            ? Math.floor(
-                (new Date().getTime() - new Date(c.dob).getTime()) /
-                  (1000 * 60 * 60 * 24 * 365.25),
-              )
-            : null,
-          profile_type: c.profile_type,
-          diagnosis: c.diagnosis,
-          care_instructions: c.care_instructions,
-        })),
-        special_requirements: req.special_requirements,
-        required_skills: req.required_skills,
-        is_recurring: true,
-        total_sessions: req.bookings.length,
-      };
-    }));
+        return {
+          id: req.id,
+          category: req.category || "Recurring",
+          date: req.start_date,
+          start_time: req.start_time,
+          duration_hours: req.duration_hours,
+          status: req.status,
+          location_lat: req.location_lat,
+          location_lng: req.location_lng,
+          address: profile?.address || "Location not specified",
+          parent_name: profile
+            ? `${profile.first_name} ${profile.last_name}`
+            : "Unknown Parent",
+          hourly_rate: appliedRate,
+          total_amount: totalAmount,
+          created_at: req.created_at,
+          children_count: req.num_children || children.length,
+          children_names:
+            children.length > 0
+              ? children.map((c) => c.first_name).join(", ")
+              : "Details not specified",
+          parent: {
+            id: req.parent_id,
+            email: parent?.email,
+            first_name: profile?.first_name,
+            last_name: profile?.last_name,
+            phone: profile?.phone,
+            address: profile?.address,
+          },
+          children: children.map((c) => ({
+            id: c.id,
+            first_name: c.first_name,
+            last_name: c.last_name,
+            age: c.dob
+              ? Math.floor(
+                  (new Date().getTime() - new Date(c.dob).getTime()) /
+                    (1000 * 60 * 60 * 24 * 365.25),
+                )
+              : null,
+            profile_type: c.profile_type,
+            diagnosis: c.diagnosis,
+            care_instructions: c.care_instructions,
+          })),
+          special_requirements: req.special_requirements,
+          required_skills: req.required_skills,
+          is_recurring: true,
+          total_sessions: req.bookings.length,
+        };
+      }),
+    );
 
     return [...standardMapped, ...recurringMapped].sort(
-      (a, b) => new Date(b.created_at as any).getTime() - new Date(a.created_at as any).getTime()
+      (a, b) =>
+        new Date(b.created_at as any).getTime() -
+        new Date(a.created_at as any).getTime(),
     );
   }
 
@@ -329,9 +343,10 @@ export class AdminService {
 
       if (!request) {
         // Fallback: Check if it's a recurring request ID or a booking ID
-        const recurringReq = await this.prisma.recurring_service_requests.findUnique({
-          where: { id }
-        });
+        const recurringReq =
+          await this.prisma.recurring_service_requests.findUnique({
+            where: { id },
+          });
 
         if (recurringReq) {
           request = {
@@ -351,20 +366,25 @@ export class AdminService {
         } else {
           const booking = await this.prisma.bookings.findUnique({
             where: { id },
-            include: { recurring_service_requests: true }
+            include: { recurring_service_requests: true },
           });
 
           if (booking) {
             request = {
-              category: booking.recurring_service_requests?.category || "Recurring",
-              location_lat: booking.recurring_service_requests?.location_lat || 0,
-              location_lng: booking.recurring_service_requests?.location_lng || 0,
+              category:
+                booking.recurring_service_requests?.category || "Recurring",
+              location_lat:
+                booking.recurring_service_requests?.location_lat || 0,
+              location_lng:
+                booking.recurring_service_requests?.location_lng || 0,
               parent_id: booking.parent_id,
             };
             actualStartTime = booking.start_time!;
             requestEndTime = booking.end_time!;
           } else {
-            throw new NotFoundException("Request, Booking, or Recurring Request not found");
+            throw new NotFoundException(
+              "Request, Booking, or Recurring Request not found",
+            );
           }
         }
       } else {
@@ -388,7 +408,13 @@ export class AdminService {
       const busyNannies = await this.prisma.bookings.findMany({
         where: {
           nanny_id: { not: null },
-          status: { in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED] },
+          status: {
+            in: [
+              BookingStatus.CONFIRMED,
+              BookingStatus.IN_PROGRESS,
+              BookingStatus.REQUESTED,
+            ],
+          },
           AND: [
             { start_time: { lt: requestEndTime } },
             { end_time: { gt: actualStartTime } },
@@ -516,12 +542,17 @@ export class AdminService {
         (a, b) => b.match_details.total_score - a.match_details.total_score,
       );
     } catch (error) {
-      console.error("[AdminService] Error finding nannies:", error);
+      this.logger.error("Error finding nannies", (error as Error)?.stack);
       throw error;
     }
   }
 
-  async manuallyAssignNanny(requestId: string | undefined, nannyId: string, bookingId?: string, force?: boolean) {
+  async manuallyAssignNanny(
+    requestId: string | undefined,
+    nannyId: string,
+    bookingId?: string,
+    force?: boolean,
+  ) {
     let request: any;
     let actualStartTime: Date | null = null;
     let requestEndTime: Date | null = null;
@@ -531,17 +562,24 @@ export class AdminService {
     if (bookingId) {
       const booking = await this.prisma.bookings.findUnique({
         where: { id: bookingId },
-        include: { users_bookings_parent_idTousers: { include: { profiles: true } } },
+        include: {
+          users_bookings_parent_idTousers: { include: { profiles: true } },
+        },
       });
       if (!booking) throw new NotFoundException("Booking not found");
-      if (booking.status !== "requested" && booking.status !== "pending_assignment")
+      if (
+        booking.status !== "requested" &&
+        booking.status !== "pending_assignment"
+      )
         throw new BadRequestException(`Booking is already ${booking.status}`);
-        
+
       request = {
         category: "Recurring", // Fallback or fetch from recurring_service_requests
         date: booking.start_time,
         start_time: booking.start_time,
-        duration_hours: (booking.end_time!.getTime() - booking.start_time!.getTime()) / 3600000,
+        duration_hours:
+          (booking.end_time!.getTime() - booking.start_time!.getTime()) /
+          3600000,
         parent_id: booking.parent_id,
         users: booking.users_bookings_parent_idTousers,
       };
@@ -556,9 +594,14 @@ export class AdminService {
       if (!request) {
         request = await this.prisma.recurring_service_requests.findUnique({
           where: { id: requestId },
-          include: { 
+          include: {
             users: { include: { profiles: true } },
-            bookings: { where: { status: { not: BookingStatus.CANCELLED }, nanny_id: null } }
+            bookings: {
+              where: {
+                status: { not: BookingStatus.CANCELLED },
+                nanny_id: null,
+              },
+            },
           },
         });
         if (request) {
@@ -570,7 +613,7 @@ export class AdminService {
       if (!request) throw new NotFoundException("Request not found");
       if (request.status !== "pending" && request.status !== "active")
         throw new BadRequestException(`Request is already ${request.status}`);
-      
+
       if (!isRecurring) {
         // Calculate times for overlap check
         actualStartTime = TimeUtils.combineDateAndTime(
@@ -583,7 +626,9 @@ export class AdminService {
         );
       }
     } else {
-      throw new BadRequestException("Either requestId or bookingId must be provided");
+      throw new BadRequestException(
+        "Either requestId or bookingId must be provided",
+      );
     }
 
     const nanny = await this.prisma.users.findUnique({
@@ -625,16 +670,22 @@ export class AdminService {
         if (!isRecurring) {
           // 2. Create Assignment (directly accepted)
           const assignmentData = {
-            response_deadline: new Date(Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS),
+            response_deadline: new Date(
+              Date.now() + ASSIGNMENT_RESPONSE_DEADLINE_MS,
+            ),
             status: "accepted",
             responded_at: new Date(),
             rank_position: 1,
             nanny_id: nannyId,
-            ...(bookingId ? { booking_id: bookingId } : { request_id: requestId }),
+            ...(bookingId
+              ? { booking_id: bookingId }
+              : { request_id: requestId }),
           };
 
           const existingAssignment = await tx.assignments.findFirst({
-            where: bookingId ? { booking_id: bookingId, nanny_id: nannyId } : { request_id: requestId, nanny_id: nannyId }
+            where: bookingId
+              ? { booking_id: bookingId, nanny_id: nannyId }
+              : { request_id: requestId, nanny_id: nannyId },
           });
 
           let assignment;
@@ -662,7 +713,10 @@ export class AdminService {
           });
 
           await tx.bookings.updateMany({
-            where: { request_id: requestId, status: { not: BookingStatus.CANCELLED } },
+            where: {
+              request_id: requestId,
+              status: { not: BookingStatus.CANCELLED },
+            },
             data: {
               nanny_id: nannyId,
               status: BookingStatus.CONFIRMED,
@@ -678,8 +732,12 @@ export class AdminService {
             data: { status: PLAN_STATUS.ACTIVE, nanny_id: nannyId },
           });
           await tx.bookings.updateMany({
-            where: { recurring_request_id: requestId, status: { not: BookingStatus.CANCELLED }, nanny_id: null },
-            data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED }
+            where: {
+              recurring_request_id: requestId,
+              status: { not: BookingStatus.CANCELLED },
+              nanny_id: null,
+            },
+            data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED },
           });
         } else if (bookingId) {
           await tx.bookings.update({
@@ -724,7 +782,9 @@ export class AdminService {
       "Nanny";
 
     const bookingDetails = {
-      date: isRecurring ? request.start_date.toISOString().split("T")[0] + " (Starts)" : request.date.toISOString().split("T")[0],
+      date: isRecurring
+        ? request.start_date.toISOString().split("T")[0] + " (Starts)"
+        : request.date.toISOString().split("T")[0],
       time: request.start_time.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
@@ -740,7 +800,10 @@ export class AdminService {
         otherPartyName: nannyName,
       })
       .catch((err) =>
-        console.error("Failed to send manual assignment parent email", err),
+        this.logger.error(
+          "Failed to send manual assignment parent email",
+          err?.stack,
+        ),
       );
 
     // Email to Nanny
@@ -750,14 +813,17 @@ export class AdminService {
         otherPartyName: parentName,
       })
       .catch((err) =>
-        console.error("Failed to send manual assignment nanny email", err),
+        this.logger.error(
+          "Failed to send manual assignment nanny email",
+          err?.stack,
+        ),
       );
 
     // --- Side Effects (Outside Transaction) ---
 
     // Fetch the updated booking for chat creation
     const updatedBooking = await this.prisma.bookings.findFirst({
-      where: isRecurring 
+      where: isRecurring
         ? { recurring_request_id: requestId, status: BookingStatus.CONFIRMED }
         : { request_id: requestId, status: BookingStatus.CONFIRMED },
     });
@@ -766,7 +832,10 @@ export class AdminService {
       try {
         await this.chatService.createChat(updatedBooking.id);
       } catch (e) {
-        console.error("Manual Assignment: Failed to create chat", e);
+        this.logger.error(
+          "Manual Assignment: Failed to create chat",
+          (e as Error)?.stack,
+        );
       }
     }
 
@@ -809,9 +878,9 @@ export class AdminService {
         timestamp,
       });
     } catch (e) {
-      console.error(
+      this.logger.error(
         "Manual Assignment: Failed to send notifications or SSE",
-        e,
+        (e as Error)?.stack,
       );
     }
 
@@ -832,7 +901,9 @@ export class AdminService {
     nannyId: string,
     windows: { start: Date; end: Date }[],
   ): Promise<string[]> {
-    const rangeStart = new Date(Math.min(...windows.map((w) => w.start.getTime())));
+    const rangeStart = new Date(
+      Math.min(...windows.map((w) => w.start.getTime())),
+    );
     const rangeEnd = new Date(Math.max(...windows.map((w) => w.end.getTime())));
 
     const [existingBookings, blocks] = await Promise.all([
@@ -840,7 +911,11 @@ export class AdminService {
         where: {
           nanny_id: nannyId,
           status: {
-            in: [BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS, BookingStatus.REQUESTED],
+            in: [
+              BookingStatus.CONFIRMED,
+              BookingStatus.IN_PROGRESS,
+              BookingStatus.REQUESTED,
+            ],
           },
           start_time: { lt: rangeEnd },
           end_time: { gt: rangeStart },
@@ -862,7 +937,9 @@ export class AdminService {
       );
       const blocked =
         clashes ||
-        blocks.some((block) => this.availabilityService.doesBlockOverlap(block, start, end));
+        blocks.some((block) =>
+          this.availabilityService.doesBlockOverlap(block, start, end),
+        );
 
       if (blocked) {
         unavailable.add(start.toISOString().split("T")[0]);
@@ -900,61 +977,68 @@ export class AdminService {
     adminId?: string,
     ipAddress?: string,
   ) {
-    return this.prisma.$transaction(async (prisma) => {
-      const existingRequest = await prisma.nanny_category_requests.findUnique({
-        where: { id: requestId },
-      });
-
-      if (!existingRequest) {
-        throw new NotFoundException("Category request not found");
-      }
-
-      if (existingRequest.status !== "pending") {
-        throw new BadRequestException(
-          `Request is already ${existingRequest.status}`,
+    return this.prisma
+      .$transaction(async (prisma) => {
+        const existingRequest = await prisma.nanny_category_requests.findUnique(
+          {
+            where: { id: requestId },
+          },
         );
-      }
 
-      const request = await prisma.nanny_category_requests.update({
-        where: { id: requestId },
-        data: {
-          status,
-          admin_notes: adminNotes,
-          updated_at: new Date(),
-        },
-      });
+        if (!existingRequest) {
+          throw new NotFoundException("Category request not found");
+        }
 
-      if (status === "approved") {
-        // Use upsert to handle cases where nanny_details record doesn't exist yet
-        await prisma.nanny_details.upsert({
-          where: { user_id: request.nanny_id },
-          update: {
-            categories: request.requested_categories,
-            tags: request.requested_categories, // Sync to tags for backward compatibility
+        if (existingRequest.status !== "pending") {
+          throw new BadRequestException(
+            `Request is already ${existingRequest.status}`,
+          );
+        }
+
+        const request = await prisma.nanny_category_requests.update({
+          where: { id: requestId },
+          data: {
+            status,
+            admin_notes: adminNotes,
             updated_at: new Date(),
           },
-          create: {
-            user_id: request.nanny_id,
-            categories: request.requested_categories,
-            tags: request.requested_categories, // Sync to tags for backward compatibility
-          },
         });
-      }
 
-      return request;
-    }).then(async (result) => {
-      if (adminId) {
-        await this.auditService.logAction({
-          adminId,
-          action: status === "approved" ? "APPROVE_CATEGORY_REQUEST" : "REJECT_CATEGORY_REQUEST",
-          targetType: "nanny_category_request",
-          targetId: requestId,
-          metadata: { status, adminNotes },
-          ipAddress,
-        });
-      }
-      return result;
-    });
+        if (status === "approved") {
+          // Use upsert to handle cases where nanny_details record doesn't exist yet
+          await prisma.nanny_details.upsert({
+            where: { user_id: request.nanny_id },
+            update: {
+              categories: request.requested_categories,
+              tags: request.requested_categories, // Sync to tags for backward compatibility
+              updated_at: new Date(),
+            },
+            create: {
+              user_id: request.nanny_id,
+              categories: request.requested_categories,
+              tags: request.requested_categories, // Sync to tags for backward compatibility
+            },
+          });
+        }
+
+        return request;
+      })
+      .then(async (result) => {
+        if (adminId) {
+          await this.auditService.logAction({
+            adminId,
+            action:
+              status === "approved"
+                ? "APPROVE_CATEGORY_REQUEST"
+                : "REJECT_CATEGORY_REQUEST",
+            targetType: "nanny_category_request",
+            targetId: requestId,
+            metadata: { status, adminNotes },
+            ipAddress,
+          });
+        }
+        return result;
+      });
   }
 
   // User Management
@@ -985,7 +1069,7 @@ export class AdminService {
           },
         },
       }),
-      this.prisma.users.count()
+      this.prisma.users.count(),
     ]);
 
     return {
@@ -995,7 +1079,7 @@ export class AdminService {
         page,
         pageSize,
         totalPages: Math.ceil(total / pageSize),
-      }
+      },
     };
   }
 
@@ -1092,7 +1176,12 @@ export class AdminService {
     return result;
   }
 
-  async banUser(userId: string, reason?: string, adminId?: string, ipAddress?: string) {
+  async banUser(
+    userId: string,
+    reason?: string,
+    adminId?: string,
+    ipAddress?: string,
+  ) {
     const result = await this.prisma.users.update({
       where: { id: userId },
       data: {
@@ -1212,7 +1301,7 @@ export class AdminService {
           },
         },
       }),
-      this.prisma.bookings.count()
+      this.prisma.bookings.count(),
     ]);
 
     return {
@@ -1222,7 +1311,7 @@ export class AdminService {
         page,
         pageSize,
         totalPages: Math.ceil(total / pageSize),
-      }
+      },
     };
   }
 
@@ -1250,34 +1339,44 @@ export class AdminService {
             },
           },
           _count: {
-            select: { bookings: { where: { status: { not: "CANCELLED" } } } }
+            select: { bookings: { where: { status: { not: "CANCELLED" } } } },
           },
           // Lets the admin list flag unstaffed plans without opening each one.
           nanny: {
             select: {
               id: true,
-              profiles: { select: { first_name: true, last_name: true, profile_image_url: true } },
+              profiles: {
+                select: {
+                  first_name: true,
+                  last_name: true,
+                  profile_image_url: true,
+                },
+              },
             },
           },
           bookings: {
-            where: { start_time: { gte: new Date() }, status: { not: "CANCELLED" } },
-            orderBy: { start_time: 'asc' },
+            where: {
+              start_time: { gte: new Date() },
+              status: { not: "CANCELLED" },
+            },
+            orderBy: { start_time: "asc" },
             take: 1,
-            select: { start_time: true }
-          }
+            select: { start_time: true },
+          },
         },
       }),
-      this.prisma.recurring_service_requests.count()
+      this.prisma.recurring_service_requests.count(),
     ]);
 
     return {
-      items: items.map(req => {
+      items: items.map((req) => {
         const { bookings, _count, ...rest } = req;
         return {
           ...rest,
           start_time_formatted: TimeUtils.formatShortTime(req.start_time),
           total_bookings: _count.bookings,
-          next_upcoming_date: bookings.length > 0 ? bookings[0].start_time : null
+          next_upcoming_date:
+            bookings.length > 0 ? bookings[0].start_time : null,
         };
       }),
       pagination: {
@@ -1285,7 +1384,7 @@ export class AdminService {
         page,
         pageSize,
         totalPages: Math.ceil(total / pageSize),
-      }
+      },
     };
   }
 
@@ -1353,7 +1452,7 @@ export class AdminService {
           },
         },
       }),
-      this.prisma.payments.count()
+      this.prisma.payments.count(),
     ]);
 
     return {
@@ -1363,7 +1462,7 @@ export class AdminService {
         page,
         pageSize,
         totalPages: Math.ceil(total / pageSize),
-      }
+      },
     };
   }
 
@@ -1404,15 +1503,16 @@ export class AdminService {
   }
 
   async getPaymentPlanStats() {
-    const [totalPlans, activePlans, completedPlans, installmentsAmount] = await Promise.all([
-      this.prisma.payment_plans.count(),
-      this.prisma.payment_plans.count({ where: { status: "active" } }),
-      this.prisma.payment_plans.count({ where: { status: "completed" } }),
-      this.prisma.price_snapshots.aggregate({
-        _sum: { final_amount: true },
-        where: { status: "charged" },
-      }),
-    ]);
+    const [totalPlans, activePlans, completedPlans, installmentsAmount] =
+      await Promise.all([
+        this.prisma.payment_plans.count(),
+        this.prisma.payment_plans.count({ where: { status: "active" } }),
+        this.prisma.payment_plans.count({ where: { status: "completed" } }),
+        this.prisma.price_snapshots.aggregate({
+          _sum: { final_amount: true },
+          where: { status: "charged" },
+        }),
+      ]);
 
     return {
       totalPlans,
@@ -1455,7 +1555,7 @@ export class AdminService {
           bookings: true,
         },
       }),
-      this.prisma.reviews.count({ where })
+      this.prisma.reviews.count({ where }),
     ]);
 
     return {
@@ -1465,7 +1565,7 @@ export class AdminService {
         page,
         pageSize,
         totalPages: Math.ceil(total / pageSize),
-      }
+      },
     };
   }
 
@@ -1500,7 +1600,12 @@ export class AdminService {
     });
   }
 
-  async updateSetting(key: string, value: any, adminId?: string, ipAddress?: string) {
+  async updateSetting(
+    key: string,
+    value: any,
+    adminId?: string,
+    ipAddress?: string,
+  ) {
     const result = await this.prisma.system_settings.upsert({
       where: { key },
       update: { value, updated_at: new Date() },
@@ -1537,7 +1642,9 @@ export class AdminService {
     const [totalUsers, totalBookings, activeBookings] = await Promise.all([
       this.prisma.users.count(),
       this.prisma.bookings.count(),
-      this.prisma.bookings.count({ where: { status: BookingStatus.IN_PROGRESS } }),
+      this.prisma.bookings.count({
+        where: { status: BookingStatus.IN_PROGRESS },
+      }),
     ]);
 
     return {
@@ -1558,8 +1665,12 @@ export class AdminService {
       bookings,
     ] = await Promise.all([
       this.prisma.service_requests.count(),
-      this.prisma.bookings.count({ where: { status: BookingStatus.COMPLETED } }),
-      this.prisma.bookings.count({ where: { status: BookingStatus.CANCELLED } }),
+      this.prisma.bookings.count({
+        where: { status: BookingStatus.COMPLETED },
+      }),
+      this.prisma.bookings.count({
+        where: { status: BookingStatus.CANCELLED },
+      }),
       this.prisma.assignments.count(),
       this.prisma.assignments.count({ where: { status: "accepted" } }),
       // Only money that actually settled. Without the status filter this also

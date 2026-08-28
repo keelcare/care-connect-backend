@@ -169,6 +169,10 @@ export class VerificationService {
     if (user.role !== "nanny")
       throw new ForbiddenException("Only nannies can be verified");
 
+    // Verified caregivers' identity documents (Aadhaar/PAN) are retained
+    // indefinitely, not deleted on approval — kept for safety, dispute, and
+    // re-verification purposes. See the privacy policy's "Data we collect" /
+    // "How long we keep it" sections in keel-mobile for the current wording.
     return this.prisma.users.update({
       where: { id },
       data: {

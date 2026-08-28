@@ -1,5 +1,15 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from "@nestjs/common";
-import { Prisma, attendance_event_type, attendance_day_status, bookings } from "@prisma/client";
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from "@nestjs/common";
+import {
+  Prisma,
+  attendance_event_type,
+  attendance_day_status,
+  bookings,
+} from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { GeoUtils } from "../common/utils/geo.utils";
@@ -29,7 +39,8 @@ export function istDateOnly(ref: Date = new Date()): Date {
 }
 
 const MINUTE_MS = 60 * 1000;
-const minutesBetween = (a: Date, b: Date) => Math.round((a.getTime() - b.getTime()) / MINUTE_MS);
+const minutesBetween = (a: Date, b: Date) =>
+  Math.round((a.getTime() - b.getTime()) / MINUTE_MS);
 
 interface RecordOptions {
   bookingId?: string | null;
@@ -88,7 +99,8 @@ export class AttendanceService {
           booking_id: opts.bookingId ?? null,
           type,
           attendance_date:
-            opts.attendanceDate ?? istDateOnly(opts.scheduledStart ?? occurredAt),
+            opts.attendanceDate ??
+            istDateOnly(opts.scheduledStart ?? occurredAt),
           scheduled_start: opts.scheduledStart ?? null,
           occurred_at: occurredAt,
           minutes_delta: opts.minutesDelta ?? null,
@@ -121,7 +133,9 @@ export class AttendanceService {
    * that cancelled, or that nobody was home to receive care from, must not cost
    * the caregiver a point — she made the trip either way.
    */
-  private isCaregiverAccountable(booking: Pick<bookings, "status" | "nanny_id">) {
+  private isCaregiverAccountable(
+    booking: Pick<bookings, "status" | "nanny_id">,
+  ) {
     if (!booking.nanny_id) return false;
     return !PARENT_FAULT_STATUSES.includes(booking.status ?? "");
   }
@@ -144,7 +158,9 @@ export class AttendanceService {
         scheduledStart,
         occurredAt: arrived,
         minutesDelta: minutesLate,
-        weight: onTime ? SCORE_WEIGHTS.CHECK_IN : lateArrivalWeight(minutesLate),
+        weight: onTime
+          ? SCORE_WEIGHTS.CHECK_IN
+          : lateArrivalWeight(minutesLate),
         source: "app",
         notes: onTime
           ? undefined
@@ -337,7 +353,9 @@ export class AttendanceService {
 
       // Every ping since the tolerance began. If any of them was inside the
       // fence, the caregiver has not been continuously away.
-      const windowStart = new Date(now.getTime() - GEOFENCE_BREACH_MINUTES * MINUTE_MS);
+      const windowStart = new Date(
+        now.getTime() - GEOFENCE_BREACH_MINUTES * MINUTE_MS,
+      );
       const pings = await this.prisma.location_updates.findMany({
         where: { booking_id: bookingId, timestamp: { gte: windowStart } },
         select: { lat: true, lng: true, timestamp: true },
@@ -349,7 +367,8 @@ export class AttendanceService {
       // ago, or one whose app went quiet and has just resurfaced somewhere else,
       // gives us one distant fix and no evidence of what happened in between —
       // which is not the same as an absence, and must not be recorded as one.
-      const trailAgeMs = pings.length > 0 ? now.getTime() - pings[0].timestamp.getTime() : 0;
+      const trailAgeMs =
+        pings.length > 0 ? now.getTime() - pings[0].timestamp.getTime() : 0;
       const requiredTrailMs =
         (GEOFENCE_BREACH_MINUTES - GEOFENCE_TRAIL_SLACK_MINUTES) * MINUTE_MS;
       if (pings.length < 2 || trailAgeMs < requiredTrailMs) return;
@@ -380,6 +399,7 @@ export class AttendanceService {
     } catch (err) {
       this.logger.warn(
         `Geofence breach evaluation failed for booking ${bookingId}: ${(err as Error)?.message}`,
+        (err as Error)?.stack,
       );
     }
   }
@@ -397,7 +417,11 @@ export class AttendanceService {
     const since = new Date(Date.now() - windowDays * 24 * 60 * MINUTE_MS);
 
     const events = await this.prisma.nanny_attendance_events.findMany({
-      where: { nanny_id: nannyId, waived_at: null, occurred_at: { gte: since } },
+      where: {
+        nanny_id: nannyId,
+        waived_at: null,
+        occurred_at: { gte: since },
+      },
       select: { type: true, score_weight: true, is_session_outcome: true },
     });
 
@@ -447,7 +471,11 @@ export class AttendanceService {
       this.computeScore(nannyId, windowDays),
       this.prisma.nanny_attendance_events.groupBy({
         by: ["type"],
-        where: { nanny_id: nannyId, waived_at: null, occurred_at: { gte: since } },
+        where: {
+          nanny_id: nannyId,
+          waived_at: null,
+          occurred_at: { gte: since },
+        },
         _count: { _all: true },
         _sum: { minutes_delta: true },
       }),
@@ -466,7 +494,8 @@ export class AttendanceService {
     const lateMinutes =
       events.find((e) => e.type === "LATE_CHECK_IN")?._sum.minutes_delta ?? 0;
 
-    const effective = (d: (typeof days)[number]) => d.override_status ?? d.status;
+    const effective = (d: (typeof days)[number]) =>
+      d.override_status ?? d.status;
     const presentDays = days.filter((d) => effective(d) === "PRESENT").length;
     const absentDays = days.filter((d) => effective(d) === "ABSENT").length;
 
@@ -514,7 +543,12 @@ export class AttendanceService {
    * skipped rather than counted or breaking the run — a caregiver's streak
    * should not end because a family had no session on Sunday.
    */
-  private currentStreak(days: { status: attendance_day_status; override_status: attendance_day_status | null }[]) {
+  private currentStreak(
+    days: {
+      status: attendance_day_status;
+      override_status: attendance_day_status | null;
+    }[],
+  ) {
     let streak = 0;
     for (const day of days) {
       const status = day.override_status ?? day.status;
@@ -617,7 +651,9 @@ export class AttendanceService {
             }
           : null,
       })),
-      nextCursor: hasMore ? page[page.length - 1].occurred_at.toISOString() : null,
+      nextCursor: hasMore
+        ? page[page.length - 1].occurred_at.toISOString()
+        : null,
     };
   }
 
@@ -633,7 +669,11 @@ export class AttendanceService {
 
     const updated = await this.prisma.nanny_attendance_events.update({
       where: { id: eventId },
-      data: { waived_at: new Date(), waived_by: adminId, waiver_reason: reason },
+      data: {
+        waived_at: new Date(),
+        waived_by: adminId,
+        waiver_reason: reason,
+      },
     });
 
     await this.refreshScore(event.nanny_id);
@@ -670,7 +710,12 @@ export class AttendanceService {
     const attendanceDate = new Date(`${date}T00:00:00.000Z`);
 
     return this.prisma.nanny_attendance_days.upsert({
-      where: { nanny_id_attendance_date: { nanny_id: nannyId, attendance_date: attendanceDate } },
+      where: {
+        nanny_id_attendance_date: {
+          nanny_id: nannyId,
+          attendance_date: attendanceDate,
+        },
+      },
       create: {
         nanny_id: nannyId,
         attendance_date: attendanceDate,
@@ -707,7 +752,9 @@ export class AttendanceService {
           select: {
             id: true,
             email: true,
-            profiles: { select: { first_name: true, last_name: true, phone: true } },
+            profiles: {
+              select: { first_name: true, last_name: true, phone: true },
+            },
             nanny_details: { select: { attendance_score: true } },
           },
         },
@@ -748,7 +795,14 @@ export class AttendanceService {
       },
       // Absences first — the rows anyone opening this screen is looking for.
       nannies: rows.sort((a, b) => {
-        const rank = { ABSENT: 0, PARTIAL: 1, LATE: 2, PRESENT: 3, LEAVE: 4, OFF: 5 };
+        const rank = {
+          ABSENT: 0,
+          PARTIAL: 1,
+          LATE: 2,
+          PRESENT: 3,
+          LEAVE: 4,
+          OFF: 5,
+        };
         return rank[a.status] - rank[b.status];
       }),
     };
@@ -769,7 +823,9 @@ export class AttendanceService {
         users: {
           select: {
             email: true,
-            profiles: { select: { first_name: true, last_name: true, phone: true } },
+            profiles: {
+              select: { first_name: true, last_name: true, phone: true },
+            },
           },
         },
       },
