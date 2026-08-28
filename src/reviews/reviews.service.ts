@@ -133,10 +133,27 @@ export class ReviewsService {
       throw new ForbiddenException("You can only update your own reviews");
     }
 
-    // 3. Update the review
+    // 3. Update the review.
+    //
+    // Editing content that needed moderation sends it back through moderation.
+    // Without this, an author could get a mild review approved and then rewrite
+    // it to anything — the approval would still stand, which is exactly the
+    // bypass the pending state exists to prevent. Only reviews that were
+    // moderated in the first place are re-queued, so a parent→nanny review
+    // (auto-approved on create) is unaffected.
+    const editsContent =
+      updateReviewDto.rating !== undefined || updateReviewDto.comment !== undefined;
+    // Same rule as createReview: caregiver→parent reviews are the moderated ones.
+    const requiresRemoderation = editsContent && review.reviewer_role === "nanny";
+
     return this.prisma.reviews.update({
       where: { id: reviewId },
-      data: updateReviewDto,
+      data: {
+        ...updateReviewDto,
+        ...(requiresRemoderation
+          ? { is_approved: false, moderation_status: "pending" }
+          : {}),
+      },
       include: {
         users_reviews_reviewee_idTousers: {
           select: {
@@ -178,10 +195,22 @@ export class ReviewsService {
     return { message: "Review deleted successfully" };
   }
 
+  /**
+   * Reviews displayed on someone's public profile.
+   *
+   * Only approved reviews are returned. Caregiver→parent reviews are created
+   * `is_approved: false, moderation_status: "pending"` precisely so an admin
+   * sees them first, but every read path here was unfiltered *and* the routes
+   * are unauthenticated — so a pending or admin-rejected review (exactly the
+   * content moderation exists to catch) was publicly readable the moment it was
+   * written. `getReviewsForNanny`/`getReviewsForParent` both delegate here, so
+   * this one filter covers all three public paths.
+   */
   async getReviewsForUser(userId: string) {
     return this.prisma.reviews.findMany({
       where: {
         reviewee_id: userId,
+        is_approved: true,
       },
       include: {
         users_reviews_reviewer_idTousers: {

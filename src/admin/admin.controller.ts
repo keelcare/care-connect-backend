@@ -27,6 +27,7 @@ import { BookingStatusLogService } from "../bookings/booking-status-log.service"
 import { AdminAuditService } from "./admin-audit.service";
 import { AuditLogQueryDto } from "./dto/audit-log-query.dto";
 import { ReviewQueryDto } from "./dto/review-query.dto";
+import { ResolveDisputeDto } from "../disputes/dto/resolve-dispute.dto";
 
 /** Helper: extract the real client IP from the request */
 function getClientIp(req: any): string {
@@ -174,10 +175,12 @@ export class AdminController {
   @Put("disputes/:id/resolve")
   async resolveDispute(
     @Param("id") id: string,
-    @Body("resolution") resolution: string,
+    // Full DTO rather than @Body("resolution"): the financial outcome is now an
+    // explicit, validated field instead of being guessed from the note text.
+    @Body() dto: ResolveDisputeDto,
     @Req() req: any,
   ) {
-    return this.adminService.resolveDispute(id, resolution, req.user.id, getClientIp(req));
+    return this.adminService.resolveDispute(id, dto, req.user.id, getClientIp(req));
   }
 
   // Payment Monitoring

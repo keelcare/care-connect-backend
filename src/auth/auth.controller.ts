@@ -46,8 +46,13 @@ export class AuthController {
   @ApiOperation({ summary: "Register a new user" })
   @ApiResponse({ status: 201, description: "User successfully registered" })
   @ApiResponse({ status: 400, description: "Invalid input" })
-  async signup(@Body() userDto: SignupDto) {
-    return this.authService.register(userDto);
+  async signup(@Body() userDto: SignupDto, @Req() req: any) {
+    // IP forms part of the consent evidence recorded during registration.
+    const ip =
+      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      undefined;
+    return this.authService.register(userDto, ip);
   }
 
   private getCookieOptions(res: Response) {

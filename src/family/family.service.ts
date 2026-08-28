@@ -6,10 +6,16 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateChildDto } from "./dto/create-child.dto";
 import { UpdateChildDto } from "./dto/update-child.dto";
+import { ConsentsService } from "../users/consents.service";
+import { ConsentPurpose } from "../users/dto/consent.dto";
+import { CONSENT_POLICY_VERSION } from "../constants";
 
 @Injectable()
 export class FamilyService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly consents: ConsentsService,
+  ) {}
 
   private buildMetadata(dto: CreateChildDto | UpdateChildDto): Record<string, any> | undefined {
     const meta: Record<string, any> = {};
@@ -58,7 +64,7 @@ export class FamilyService {
     return { ...rest, ...(metadata ?? {}) };
   }
 
-  async create(parentId: string, dto: CreateChildDto) {
+  async create(parentId: string, dto: CreateChildDto, ipAddress?: string) {
     // Support both emergency_contact and emergency_contact_override
     const emergencyContact = dto.emergency_contact ?? dto.emergency_contact_override;
     const metadata = this.buildMetadata(dto);
@@ -83,6 +89,28 @@ export class FamilyService {
         ...(metadata ? { metadata } : {}),
       },
     });
+
+    // DPDPA s.9 requires verifiable parental consent before a child's personal
+    // data — here including health data (allergies, diagnosis, care
+    // instructions) — is processed. The apps show that notice at this exact
+    // point, but nothing was ever persisted, so the platform held no evidence
+    // that consent was given for any child. One record per child, written
+    // against the version of the notice in force.
+    //
+    // Recorded rather than enforced as a precondition: the parent's act of
+    // saving the profile *is* the consent, so this must not fail the write.
+    await this.consents.storeConsentSafe(
+      parentId,
+      ConsentPurpose.CHILD_DATA,
+      CONSENT_POLICY_VERSION,
+      {
+        subjectType: "child",
+        subjectId: row.id,
+        ipAddress,
+        metadata: { captured_at: "family.create", profile_type: row.profile_type },
+      },
+    );
+
     return this.mergeMetadata(row);
   }
 

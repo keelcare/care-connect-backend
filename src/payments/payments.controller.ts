@@ -109,9 +109,12 @@ export class PaymentsController {
   async handleWebhook(
     @Headers("x-razorpay-signature") signature: string,
     @Body() payload: any,
+    @Req() req: any,
   ) {
     if (!signature) throw new BadRequestException("Missing signature");
-    return this.paymentsService.handleWebhook(signature, payload);
+    // Raw bytes, not the parsed body — the HMAC is over what Razorpay actually
+    // sent, and re-serialising the parsed JSON does not reliably reproduce it.
+    return this.paymentsService.handleWebhook(signature, payload, req.rawBody);
   }
 
   @Get("audit")

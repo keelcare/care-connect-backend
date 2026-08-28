@@ -406,6 +406,15 @@ export class RequestsService {
       JOIN profiles p ON u.id = p.user_id
       JOIN nanny_details nd ON u.id = nd.user_id
       WHERE u.role = 'nanny'
+      -- SAFETY: never auto-match a caregiver who is not identity-verified. This
+      -- filter was removed for E2E testing (docs/nanny-verification-removal.md,
+      -- which flagged it as must-revert-before-prod) and the revert only reached
+      -- bookings.service.ts, leaving this path able to place an unverified adult
+      -- with a child. is_active/deleted_at were never checked here at all, so
+      -- banned and pending-deletion accounts were matchable too.
+      AND u.identity_verification_status = 'verified'
+      AND u.is_active = true
+      AND u.deleted_at IS NULL
       AND nd.is_available_now = true
       ${excludedNannyIds.length > 0 ? Prisma.sql`AND u.id NOT IN (${Prisma.join(excludedNannyIds)})` : Prisma.empty}
       ${

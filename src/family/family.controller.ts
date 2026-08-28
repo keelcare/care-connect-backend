@@ -39,7 +39,12 @@ export class FamilyController {
 
   @Post()
   async create(@Body() dto: CreateChildDto, @Request() req) {
-    return this.familyService.create(req.user.id, dto);
+    // IP is captured as part of the s.9 consent evidence recorded on create.
+    const ip =
+      (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      undefined;
+    return this.familyService.create(req.user.id, dto, ip);
   }
 
   @Patch(":id")

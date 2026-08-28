@@ -93,15 +93,34 @@ export class PaymentGatewayService {
     return generatedSignature === signature;
   }
 
-  verifyWebhookSignature(payload: any, signature: string): boolean {
+  /**
+   * Verified against the **raw** request bytes, not a re-serialised object.
+   *
+   * This used to hash `JSON.stringify(payload)` — the Express-parsed body run
+   * back through Node's stringify. That only verifies correctly while the
+   * parse/stringify round-trip happens to reproduce Razorpay's exact bytes:
+   * key order, unicode escaping and number formatting all have to survive. When
+   * it didn't, a *genuine* `payment.captured` failed verification and was
+   * dropped — Razorpay had taken the money but the booking never confirmed,
+   * with only a `logger.warn` to show for it.
+   *
+   * Mirrors RazorpayxService.verifyWebhookSignature, which already did this
+   * correctly and whose comment flagged this implementation as unsafe.
+   */
+  verifyWebhookSignature(rawBody: Buffer | string, signature: string): boolean {
     const secret = this.configService.get<string>("RAZORPAY_WEBHOOK_SECRET");
-    if (!secret) return false;
+    if (!secret || !signature) return false;
 
-    const shasum = crypto.createHmac("sha256", secret);
-    shasum.update(JSON.stringify(payload));
-    const digest = shasum.digest("hex");
+    const digest = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody)
+      .digest("hex");
 
-    return digest === signature;
+    // Constant-time: a length mismatch would throw, so guard it first.
+    const expected = Buffer.from(digest, "utf8");
+    const received = Buffer.from(signature, "utf8");
+    if (expected.length !== received.length) return false;
+    return crypto.timingSafeEqual(expected, received);
   }
 
   async refund(paymentId: string, amountPaise?: number) {

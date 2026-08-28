@@ -15,7 +15,9 @@ import * as crypto from "node:crypto";
 import { SignupDto } from "./dto/signup.dto";
 import { PrismaService } from "../prisma/prisma.service";
 import { MailService } from "../mail/mail.service";
-import { OAUTH_ERROR_UNVERIFIED_ACCOUNT } from "../constants";
+import { OAUTH_ERROR_UNVERIFIED_ACCOUNT, CONSENT_POLICY_VERSION } from "../constants";
+import { ConsentsService } from "../users/consents.service";
+import { ConsentPurpose } from "../users/dto/consent.dto";
 
 /**
  * SECURITY: Password Complexity Regex
@@ -38,6 +40,7 @@ export class AuthService {
     private configService: ConfigService,
     private prisma: PrismaService,
     private mailService: MailService,
+    private consentsService: ConsentsService,
   ) {
     if (!this.configService.get<string>("JWT_SECRET")) {
       throw new Error("JWT_SECRET must be configured");
@@ -297,7 +300,7 @@ export class AuthService {
     return { message: "Email verified successfully" };
   }
 
-  async register(userDto: SignupDto) {
+  async register(userDto: SignupDto, ipAddress?: string) {
 
     // Categories are collected during nanny onboarding, not at signup, so they
     // are optional here — the onboarding form is what finally writes them onto
@@ -333,11 +336,19 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(userDto.password, 10);
     let user: Awaited<ReturnType<typeof this.usersService.create>>;
+
+    // SECURITY: never honour a privileged role from a public request body. The
+    // DTO already restricts this to parent/nanny; this is the second gate, so a
+    // future caller that skips the pipe (internal call, changed DTO) still
+    // cannot self-provision an admin.
+    const requestedRole = userDto.role || "parent";
+    const safeRole = requestedRole === "nanny" ? "nanny" : "parent";
+
     try {
       user = await this.usersService.create({
         email: userDto.email,
         password_hash: hashedPassword,
-        role: userDto.role || "parent", // Use provided role or default to parent
+        role: safeRole,
         profiles: {
           create: {
             first_name: userDto.firstName,
@@ -364,6 +375,23 @@ export class AuthService {
         throw new ConflictException("An account with this email already exists");
       }
       throw err;
+    }
+
+    // Record the Terms and Privacy Notice acceptance that the signup screen
+    // presented. DPDPA s.5-6 require consent to be recorded against the version
+    // of the notice actually shown; the /consents endpoint existed for this but
+    // no client ever called it, so the platform held no evidence of consent for
+    // any account. Recorded here rather than client-side so it cannot be skipped.
+    for (const purpose of [
+      ConsentPurpose.TERMS_OF_SERVICE,
+      ConsentPurpose.PRIVACY_POLICY,
+    ]) {
+      await this.consentsService.storeConsentSafe(
+        user.id,
+        purpose,
+        CONSENT_POLICY_VERSION,
+        { ipAddress, metadata: { captured_at: "auth.register" } },
+      );
     }
 
     // Send verification email

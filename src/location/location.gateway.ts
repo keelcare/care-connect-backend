@@ -12,6 +12,7 @@ import { JwtService } from "@nestjs/jwt";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AttendanceService } from "../attendance/attendance.service";
+import { TokenBlacklistService } from "../auth/token-blacklist.service";
 
 @WebSocketGateway({
   namespace: "/location",
@@ -45,6 +46,7 @@ export class LocationGateway implements OnGatewayConnection {
     private notificationsService: NotificationsService,
     private jwtService: JwtService,
     private attendanceService: AttendanceService,
+    private tokenBlacklist: TokenBlacklistService,
   ) {}
 
   /** Authenticate the socket handshake (JWT via cookie, auth.token or header). */
@@ -60,7 +62,16 @@ export class LocationGateway implements OnGatewayConnection {
         client.disconnect();
         return;
       }
-      const payload = this.jwtService.verify(token.replace("Bearer ", ""));
+      const cleanToken = token.replace("Bearer ", "");
+      // Reject tokens revoked by logout or a ban. The REST JWT strategy does
+      // this (jwt.strategy.ts) but the gateways did not, so a logged-out or
+      // banned session kept working over sockets until the JWT expired.
+      if (await this.tokenBlacklist.isRevoked(cleanToken)) {
+        this.logger.warn("Socket rejected: token has been revoked");
+        client.disconnect();
+        return;
+      }
+      const payload = this.jwtService.verify(cleanToken);
       client.data.user = payload;
     } catch (error) {
       this.logger.warn(`Location socket unauthorized: ${error.message}`);

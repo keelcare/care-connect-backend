@@ -942,7 +942,9 @@ model admin_audit_log {
   @@index([action])
 }
 
-/// User consent records for DPDPA 2023 compliance (CI-026)
+/// User consent records for DPDPA 2023 compliance (CI-026).
+/// Rows are append-only evidence: a withdrawal sets withdrawn_at rather than
+/// deleting the row, so we can always show what was consented to and when.
 model user_consents {
   id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   user_id      String   @db.Uuid
@@ -950,9 +952,21 @@ model user_consents {
   version      String   @db.VarChar(20)
   consented_at DateTime @default(now()) @db.Timestamptz(6)
   ip_address   String?  @db.VarChar(45)
+  /// Set when the Data Principal withdraws this consent. DPDPA s.6(4)-(6) requires
+  /// withdrawal to be as easy as giving consent; the grant is retained as evidence.
+  withdrawn_at DateTime? @db.Timestamptz(6)
+  /// Who the consent is *about*, when that is not the consenting user. For a
+  /// s.9 verifiable parental consent this is the child ("child" / children.id),
+  /// which is what makes the consent auditable per-child rather than per-account.
+  subject_type String?  @db.VarChar(50)
+  subject_id   String?  @db.Uuid
+  /// Free-form evidence of how consent was captured (app version, screen, locale).
+  metadata     Json?
   users        users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([user_id])
+  @@index([user_id, purpose])
+  @@index([subject_id])
 }
 
 model children {

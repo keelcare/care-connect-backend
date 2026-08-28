@@ -1,4 +1,19 @@
-# Nanny Verification Removal (Temporary for Testing)
+# Nanny Verification Removal (Temporary for Testing) — REVERTED
+
+> [!WARNING]
+> **This relaxation has been fully reverted. The document is kept for history only.**
+>
+> The revert originally reached only `BookingsService`, leaving three of the four
+> paths below able to place an unverified — or banned, or pending-deletion —
+> caregiver with a child. All four now enforce
+> `identity_verification_status = 'verified'`, and the two raw-SQL matching
+> queries additionally check `is_active` and `deleted_at`, which they had never
+> checked at all.
+>
+> Do not re-apply any of the changes described below to relax verification. If a
+> test environment needs unverified caregivers, verify them in that environment
+> rather than removing the check from application code.
+
 
 To facilitate smooth end-to-end testing and development of the nanny assignment and booking flows, the strict requirement for nannies to be "verified" has been temporarily relaxed across the backend services.
 

@@ -166,7 +166,10 @@ export class UsersService {
         // Exclude deactivated and pending-deletion accounts from discovery.
         is_active: true,
         deleted_at: null,
-        // identity_verification_status: "verified", // Relaxed for testing
+        // Restored: browsing must not surface caregivers who have not cleared
+        // identity verification. Was commented out "for testing" per
+        // docs/nanny-verification-removal.md and never put back.
+        identity_verification_status: "verified",
       },
       include: {
         profiles: true,

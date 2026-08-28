@@ -97,3 +97,14 @@ export const OAUTH_ERROR_GENERIC = "auth_failed";
  */
 export const CANCELLATION_FEE_NONE = "no_fee";
 export const CANCELLATION_FEE_OWED = "owed";
+
+/**
+ * Version of the Privacy Notice currently in force. Must be kept in step with
+ * `LEGAL.version` in the mobile apps (src/lib/legal.ts) — a consent row records
+ * the version of the notice the user was actually shown, so if these drift the
+ * audit trail points at the wrong document.
+ *
+ * Bump whenever the substance of the notice changes; users are then re-prompted
+ * and a fresh consent row is written against the new version.
+ */
+export const CONSENT_POLICY_VERSION = "1.2";

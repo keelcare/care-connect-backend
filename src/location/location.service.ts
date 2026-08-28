@@ -15,6 +15,11 @@ export interface Coordinates {
   lng: number;
 }
 
+/**
+ * Internal shape of a nearby-caregiver row. Note this carries contact details and
+ * exact home coordinates — it is NOT safe to return over the wire. The controller
+ * projects it down to a redacted discovery view; keep that projection in place.
+ */
 export interface NearbyNanny {
   id: string;
   email: string;
@@ -25,6 +30,7 @@ export interface NearbyNanny {
     address: string | null;
     lat: Decimal | null;
     lng: Decimal | null;
+    profile_image_url: string | null;
   } | null;
   nanny_details: {
     skills: string[];
@@ -45,6 +51,7 @@ export interface NearbyJob {
   location_lng: Decimal | null;
   status: string | null;
   parent: {
+    id: string;
     email: string;
     profiles: {
       first_name: string | null;

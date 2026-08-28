@@ -5,6 +5,7 @@ import { CallsService } from "./calls.service";
 import { CallsGateway } from "./calls.gateway";
 import { CallsController } from "./calls.controller";
 import { PrismaService } from "../prisma/prisma.service";
+import { TokenBlacklistService } from "../auth/token-blacklist.service";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PrismaService } from "../prisma/prisma.service";
     }),
   ],
   controllers: [CallsController],
-  providers: [CallsService, CallsGateway, PrismaService],
+  // See ChatModule: provided directly to avoid an AuthModule import cycle.
+  providers: [CallsService, CallsGateway, TokenBlacklistService, PrismaService],
 })
 export class CallsModule {}

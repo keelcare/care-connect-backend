@@ -7,6 +7,7 @@ import { LocationGateway } from "./location.gateway";
 import { PrismaModule } from "../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { AttendanceModule } from "../attendance/attendance.module";
+import { TokenBlacklistService } from "../auth/token-blacklist.service";
 
 @Module({
   imports: [
@@ -23,7 +24,8 @@ import { AttendanceModule } from "../attendance/attendance.module";
       inject: [ConfigService],
     }),
   ],
-  providers: [LocationService, LocationGateway],
+  // See ChatModule: provided directly to avoid an AuthModule import cycle.
+  providers: [LocationService, LocationGateway, TokenBlacklistService],
   controllers: [LocationController],
   exports: [LocationService],
 })

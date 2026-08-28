@@ -10,6 +10,7 @@ import {
   Logger,
   BadRequestException,
   ForbiddenException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -61,10 +62,19 @@ export class WhatsAppWebhookController {
     @Headers("x-hub-signature-256") signature: string | undefined,
     @Body() payload: any,
   ): Promise<{ status: string }> {
-    // Validate HMAC signature
-    if (this.appSecret) {
-      this.validateSignature(signature, payload);
+    // Validate HMAC signature. Fails closed: a missing secret means we *cannot*
+    // authenticate the caller, so the request is refused rather than trusted.
+    // This previously skipped validation entirely when the secret was unset, so
+    // a blank env var in a new environment silently turned this into an open,
+    // unauthenticated endpoint that processes anything sent to it — the opposite
+    // of every other signature check in this codebase, which all fail closed.
+    if (!this.appSecret) {
+      this.logger.error(
+        "WHATSAPP_APP_SECRET is not configured — refusing inbound webhook (cannot verify signature).",
+      );
+      throw new ServiceUnavailableException("Webhook verification unavailable");
     }
+    this.validateSignature(signature, payload);
 
     const entry = payload?.entry?.[0];
     const changes = entry?.changes?.[0];

@@ -13,6 +13,9 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    // DO NOT UNCOMMENT — see registerEncryptionMiddleware() below. This call
+    // would throw at boot on Prisma 6 ($use no longer exists), and even if it
+    // ran it would corrupt reads of existing plaintext rows.
     // this.registerEncryptionMiddleware();
   }
 
@@ -20,6 +23,24 @@ export class PrismaService
     await this.$disconnect();
   }
 
+  /**
+   * DEAD CODE — application-level PII encryption for profiles.phone /
+   * profiles.address / identity_documents.id_number. It is deliberately not
+   * wired up, and re-enabling it is a migration project, not a one-line change:
+   *
+   *  1. `$use` was removed in Prisma 6 (this project runs 6.19.2), so calling
+   *     this method throws `this.$use is not a function` at startup. A port to
+   *     client extensions (`$extends`) is required.
+   *  2. Every existing row is plaintext. Turning decryption on without a
+   *     backfill makes reads either throw or return garbage for all current
+   *     users, so a one-off re-encryption migration must land first.
+   *  3. Encrypting `phone` breaks every lookup and uniqueness check that filters
+   *     on it — ciphertext is not comparable. Those call sites need a separate
+   *     blind index (e.g. an HMAC column) before the field can be encrypted.
+   *
+   * Until that work is done these fields are protected by database-level
+   * encryption at rest and access control only. Tracked in the audit report.
+   */
   private registerEncryptionMiddleware() {
     // Fields to encrypt/decrypt
     const encryptedFields = {

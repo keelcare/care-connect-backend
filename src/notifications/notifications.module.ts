@@ -8,6 +8,7 @@ import { FcmService } from "./fcm.service";
 import { ApnsService } from "./apns.service";
 import { PushService } from "./push.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { TokenBlacklistService } from "../auth/token-blacklist.service";
 
 @Global() // Make it global so it can be easily injected into other modules (Bookings, Chat, etc.)
 @Module({
@@ -16,6 +17,7 @@ import { PrismaService } from "../prisma/prisma.service";
   providers: [
     NotificationsService,
     NotificationsGateway,
+    TokenBlacklistService,
     FcmService,
     ApnsService,
     PushService,

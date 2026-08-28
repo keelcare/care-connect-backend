@@ -18,6 +18,31 @@ export class RecurringBookingsService {
   constructor(private prisma: PrismaService) {}
 
   async create(parentId: string, data: CreateRecurringBookingDto) {
+    // `nannyId` arrives as a bare @IsUUID from the request body, and the nightly
+    // cron turns these rows into real CONFIRMED bookings. Without these checks a
+    // parent could name any user id — including an unverified, rejected or
+    // banned caregiver — and have the platform schedule a child into their care.
+    // Same bar as BookingsService.createBooking and the matching queries.
+    const nanny = await this.prisma.users.findUnique({
+      where: { id: data.nannyId },
+      select: {
+        role: true,
+        is_active: true,
+        deleted_at: true,
+        identity_verification_status: true,
+      },
+    });
+
+    if (!nanny || nanny.role !== "nanny") {
+      throw new NotFoundException("Nanny not found");
+    }
+    if (!nanny.is_active || nanny.deleted_at) {
+      throw new ForbiddenException("This caregiver is not available for booking");
+    }
+    if (nanny.identity_verification_status !== "verified") {
+      throw new ForbiddenException("Cannot book an unverified caregiver");
+    }
+
     return this.prisma.recurring_bookings.create({
       data: {
         parent_id: parentId,

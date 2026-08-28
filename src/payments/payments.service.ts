@@ -599,8 +599,21 @@ export class PaymentsService {
   }
 
   // 3. Webhook Handler (Source of Truth)
-  async handleWebhook(signature: string, payload: any) {
-    if (!this.gateway.verifyWebhookSignature(payload, signature)) {
+  //
+  // `rawBody` is the untouched request bytes (main.ts sets `rawBody: true` for
+  // exactly this). The signature must be checked against those bytes, not the
+  // parsed-then-restringified payload — see verifyWebhookSignature.
+  async handleWebhook(signature: string, payload: any, rawBody?: Buffer | string) {
+    if (!rawBody) {
+      // Without the raw bytes the signature cannot be verified honestly, and
+      // processing an unverified payment event is not an option.
+      this.logger.error(
+        "Webhook received without a raw body — cannot verify signature. Check that rawBody is enabled on the Nest app.",
+      );
+      throw new BadRequestException("Invalid webhook signature");
+    }
+
+    if (!this.gateway.verifyWebhookSignature(rawBody, signature)) {
       this.logger.warn(
         "Webhook signature mismatch - potential spoofing attempt",
       );

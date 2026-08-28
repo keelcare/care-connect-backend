@@ -32,6 +32,7 @@ import { PaginationDto } from "./dto/pagination.dto";
 import { ReviewQueryDto } from "./dto/review-query.dto";
 import { AdminAuditService } from "./admin-audit.service";
 import { EncryptionService } from "../common/services/encryption.service";
+import { ResolveDisputeDto } from "../disputes/dto/resolve-dispute.dto";
 
 @Injectable()
 export class AdminService {
@@ -439,6 +440,13 @@ export class AdminService {
         JOIN profiles p ON u.id = p.user_id
         JOIN nanny_details nd ON u.id = nd.user_id
         WHERE u.role = 'nanny'
+        -- SAFETY: manual admin assignment is still an assignment to a child, so
+        -- it applies the same verification bar as auto-matching and booking
+        -- creation. An unverified caregiver must be verified first, not assigned
+        -- around. See docs/nanny-verification-removal.md for why this was absent.
+        AND u.identity_verification_status = 'verified'
+        AND u.is_active = true
+        AND u.deleted_at IS NULL
         AND nd.is_available_now = true
         ${allExcludedIds.length > 0 ? Prisma.sql`AND u.id != ALL(ARRAY[${Prisma.join(allExcludedIds)}]::uuid[])` : Prisma.empty}
         ${
@@ -1290,14 +1298,25 @@ export class AdminService {
     return this.disputesService.findOne(id);
   }
 
-  async resolveDispute(id: string, resolution: string, resolvedBy: string, ipAddress?: string) {
-    const result = await this.disputesService.resolve(id, resolvedBy, { resolution });
+  async resolveDispute(
+    id: string,
+    dto: ResolveDisputeDto,
+    resolvedBy: string,
+    ipAddress?: string,
+  ) {
+    const result = await this.disputesService.resolve(id, resolvedBy, dto);
     await this.auditService.logAction({
       adminId: resolvedBy,
       action: "RESOLVE_DISPUTE",
       targetType: "dispute",
       targetId: id,
-      metadata: { resolution },
+      // The outcome and any partial amount are the money-moving part of this
+      // action, so they belong in the audit record alongside the note.
+      metadata: {
+        resolution: dto.resolution,
+        outcome: dto.outcome,
+        ...(dto.amount != null ? { amount: dto.amount } : {}),
+      },
       ipAddress,
     });
     return result;

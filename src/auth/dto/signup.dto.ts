@@ -29,6 +29,19 @@ export enum UserRole {
   ADMIN = "admin",
 }
 
+/**
+ * SECURITY: the roles a caller may assign to *themselves* at signup.
+ *
+ * `UserRole` must keep ADMIN because @Roles(UserRole.ADMIN) is used across the
+ * admin surface — but validating the signup body against it meant
+ * `POST /v1/auth/signup {"role":"admin"}` minted a fully privileged account for
+ * an anonymous caller. Admins are provisioned out of band, never self-served.
+ */
+export enum SelfAssignableRole {
+  PARENT = "parent",
+  NANNY = "nanny",
+}
+
 export class SignupDto {
   /**
    * Email address - must be valid email format
@@ -84,12 +97,12 @@ export class SignupDto {
    * User role - must be either 'parent' or 'nanny'
    */
   @ApiProperty({
-    enum: UserRole,
-    example: UserRole.PARENT,
+    enum: SelfAssignableRole,
+    example: SelfAssignableRole.PARENT,
     description: "The role of the user (parent or nanny)",
   })
-  @IsEnum(UserRole, { message: "Role must be either parent or nanny" })
-  role: UserRole;
+  @IsEnum(SelfAssignableRole, { message: "Role must be either parent or nanny" })
+  role: SelfAssignableRole;
 
   /**
    * First name - sanitized to prevent XSS attacks

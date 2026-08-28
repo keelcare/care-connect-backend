@@ -18,11 +18,15 @@ import {
 import { RecurringRequestsService } from "./recurring-requests.service";
 import { CreateRecurringRequestDto } from "./dto/create-recurring-request.dto";
 import { TransparentJwtAuthGuard } from "../auth/guards/transparent-jwt-auth.guard";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 
 @ApiTags("Recurring Requests")
 @ApiBearerAuth()
 @Controller("recurring-requests")
-@UseGuards(TransparentJwtAuthGuard)
+// ActiveUserGuard matches every other user-facing controller: without it a
+// suspended account could still create and cancel service requests, which made
+// the suspension cosmetic on exactly the flow that books care.
+@UseGuards(TransparentJwtAuthGuard, ActiveUserGuard)
 export class RecurringRequestsController {
   constructor(
     private readonly recurringRequestsService: RecurringRequestsService,

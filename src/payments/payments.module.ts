@@ -2,7 +2,10 @@ import { Module } from "@nestjs/common";
 import { PaymentsService } from "./payments.service";
 import { PaymentsController } from "./payments.controller";
 import { PrismaService } from "../prisma/prisma.service";
-import { NotificationsModule } from "src/notifications/notifications.module";
+// Relative, like every other import in the codebase. The `src/`-rooted form
+// resolved under tsc's baseUrl but not under Jest, so any test that transitively
+// imported this module failed to run.
+import { NotificationsModule } from "../notifications/notifications.module";
 import { ConfigModule } from "@nestjs/config";
 import { PaymentGatewayService } from "./payment-gateway.service";
 import { PaymentAuditService } from "./payment-audit.service";

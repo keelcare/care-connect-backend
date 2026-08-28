@@ -11,6 +11,7 @@ import { Logger, BadRequestException } from "@nestjs/common";
 import { Server, Socket } from "socket.io";
 import { ChatService } from "./chat.service";
 import { JwtService } from "@nestjs/jwt";
+import { TokenBlacklistService } from "../auth/token-blacklist.service";
 
 @WebSocketGateway({
   cors: {
@@ -35,6 +36,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
+    private readonly tokenBlacklist: TokenBlacklistService,
   ) {}
 
   async handleConnection(client: Socket) {
@@ -55,6 +57,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       const cleanToken = token.replace("Bearer ", "");
+      // Reject tokens revoked by logout or a ban. The REST JWT strategy does
+      // this (jwt.strategy.ts) but the gateways did not, so a logged-out or
+      // banned session kept working over sockets until the JWT expired.
+      if (await this.tokenBlacklist.isRevoked(cleanToken)) {
+        this.logger.warn("Socket rejected: token has been revoked");
+        client.disconnect();
+        return;
+      }
       const payload = this.jwtService.verify(cleanToken);
 
       // Store user info in socket
