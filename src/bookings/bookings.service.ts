@@ -39,6 +39,7 @@ import {
   PaymentStatus,
   INSTALMENT_PAID,
   INSTALMENT_PENDING,
+  INSTALMENT_VOID,
   CANCELLATION_FEE_NONE,
   CANCELLATION_FEE_OWED,
 } from "../constants";
@@ -1002,6 +1003,17 @@ export class BookingsService {
           cancellation_fee: cancellationFee,
           cancellation_fee_status: feeStatus,
         },
+      });
+
+      // Money that stopped being owed is voided, not left `pending`. The pending
+      // list and the dunning cron both filter cancelled bookings out, but the
+      // instalment ids stay valid — a stale checkout could still settle one, and
+      // any query that forgets the booking-status filter would resurrect the
+      // balance. Paid instalments are untouched: whether they are refunded is an
+      // admin decision made through `refundPayment`, not a side effect of cancel.
+      await tx.payment_installments.updateMany({
+        where: { booking_id: id, status: INSTALMENT_PENDING },
+        data: { status: INSTALMENT_VOID, updated_at: new Date() },
       });
 
       if (isParentCancellation && booking.request_id) {

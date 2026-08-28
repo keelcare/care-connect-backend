@@ -30,6 +30,8 @@ import {
   INSTALMENT_PENDING,
   INSTALMENT_REFUNDED,
   INSTALMENT_VOID,
+  CANCELLATION_FEE_OWED,
+  CANCELLATION_FEE_PAID,
 } from "../constants";
 import {
   EARNING_STATUSES,
@@ -314,6 +316,21 @@ export class PaymentsService {
 
     if (!booking) throw new NotFoundException("Booking not found");
 
+    // A cancelled or expired booking has nothing left to collect — its pending
+    // instalments are voided at cancellation, but a stale checkout screen (or a
+    // client that cached the pending list) can still call this with the old ids.
+    // COMPLETED stays payable on purpose: a session can finish before its cycle
+    // is settled, and that money is genuinely owed.
+    if (
+      [BookingStatus.CANCELLED, BookingStatus.EXPIRED].includes(
+        booking.status as BookingStatus,
+      )
+    ) {
+      throw new BadRequestException(
+        "This booking has been cancelled; there is nothing to pay.",
+      );
+    }
+
     // Care is never billed before someone is assigned to deliver it. The matching
     // fee is the deliberate exception: it is charged when the parent confirms the
     // booking, which is by definition before any caregiver exists.
@@ -546,7 +563,11 @@ export class PaymentsService {
   }
 
   // 1.5. Retry Failed Order
-  async retryOrder(bookingId: string, requestingUserId: string) {
+  async retryOrder(
+    bookingId: string,
+    requestingUserId: string,
+    installmentId?: string,
+  ) {
     // Check if there is a failed payment for this booking
     const failedPayment = await this.prisma.payments.findFirst({
       where: { booking_id: bookingId, status: "failed" },
@@ -573,7 +594,131 @@ export class PaymentsService {
 
     this.logger.log(`Retrying order calculation for booking: ${bookingId}`);
     // Pass the requesting user so createOrder's ownership guard still applies.
-    return this.createOrder(bookingId, requestingUserId);
+    // `installmentId` lets a client retry the specific balance it was showing;
+    // without it, createOrder falls back to the oldest unpaid instalment.
+    return this.createOrder(bookingId, requestingUserId, installmentId);
+  }
+
+  /**
+   * Open a checkout for a cancellation fee.
+   *
+   * The fee is recorded on the booking as `cancellation_fee_status: "owed"` at
+   * cancellation and *never* auto-charged — we hold no mandate. This is the
+   * collection path the cancel flow's comments promise: a real gateway order, a
+   * real capture, a refundable payment id. Before it existed the fee sat at
+   * `owed` forever, because `createOrder` only charges instalments and a
+   * cancelled booking has none (they are voided at cancellation).
+   *
+   * The resulting `payments` row deliberately has no snapshot and no instalment:
+   * that is exactly the shape `getParentTransactions` classifies as a
+   * cancellation fee and `CAREGIVER_SHARE_ONLY` excludes from caregiver earnings
+   * — a charge for care that never happened carries no caregiver share.
+   */
+  async createCancellationFeeOrder(bookingId: string, requestingUserId: string) {
+    if (!this.configService.get("RAZORPAY_KEY_ID")) {
+      throw new BadRequestException("Payment service is currently unavailable");
+    }
+
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id: bookingId },
+    });
+    if (!booking) throw new NotFoundException("Booking not found");
+    if (booking.parent_id !== requestingUserId) {
+      throw new BadRequestException("You are not authorised to pay for this booking");
+    }
+    if (booking.cancellation_fee_status !== CANCELLATION_FEE_OWED) {
+      throw new BadRequestException("No cancellation fee is owed on this booking");
+    }
+
+    const feeRupees = Number(booking.cancellation_fee ?? 0);
+    const feePaise = Math.round(feeRupees * RAZORPAY_PAISE_MULTIPLIER);
+    if (feePaise < RAZORPAY_MIN_AMOUNT_PAISE) {
+      throw new BadRequestException(`Amount too low to create order: ₹${feeRupees} INR`);
+    }
+
+    // Idempotency. A fee payment is the booking's only payments row with no
+    // instalment attached (cycle orders always link one at creation), so an open
+    // one is this same fee's abandoned checkout. Same replay rules as
+    // createOrder: reuse only while the gateway still honours it at this amount.
+    const existing = await this.prisma.payments.findFirst({
+      where: {
+        booking_id: bookingId,
+        status: PaymentStatus.CREATED,
+        payment_installments: { none: {} },
+        price_snapshots: { none: {} },
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    const checkoutShape = (orderId: string) => ({
+      orderId,
+      order_id: orderId,
+      amount: feeRupees,
+      amount_due: feePaise,
+      currency: "INR",
+      key: this.configService.get("RAZORPAY_KEY_ID"),
+      key_id: this.configService.get("RAZORPAY_KEY_ID"),
+      name: "Care Connect",
+      description: `Cancellation fee for Booking #${bookingId}`,
+      kind: "cancellation_fee",
+    });
+
+    if (existing) {
+      const liveOrder = await this.gateway.fetchOrder(existing.order_id);
+      const reusable =
+        liveOrder !== null &&
+        (liveOrder.status === "created" || liveOrder.status === "attempted") &&
+        liveOrder.amount === feePaise &&
+        Math.round(Number(existing.amount) * RAZORPAY_PAISE_MULTIPLIER) === feePaise;
+
+      if (reusable) return checkoutShape(existing.order_id);
+
+      await this.prisma.payments.update({
+        where: { id: existing.id },
+        data: {
+          status: PaymentStatus.FAILED,
+          error_description: "Order no longer usable at gateway",
+        },
+      });
+      await this.audit.writeLog(
+        this.prisma,
+        existing.id,
+        existing.order_id,
+        PaymentStatus.CREATED,
+        PaymentStatus.FAILED,
+        "api:create_cancellation_fee_order_stale",
+      );
+    }
+
+    const order = await this.gateway.createOrder(
+      feePaise,
+      `cfee_${bookingId.substring(0, 10)}`,
+      { booking_id: bookingId, purpose: "cancellation_fee" },
+    );
+
+    const created = await this.prisma.payments.create({
+      data: {
+        booking_id: bookingId,
+        // No caregiver share on a cancellation fee — see CAREGIVER_SHARE_ONLY.
+        nanny_id: null,
+        amount: feeRupees,
+        currency: "INR",
+        provider: "razorpay",
+        order_id: order.id,
+        status: PaymentStatus.CREATED,
+      },
+    });
+
+    await this.audit.writeLog(
+      this.prisma,
+      created.id,
+      order.id,
+      null,
+      PaymentStatus.CREATED,
+      "api:create_cancellation_fee_order",
+    );
+
+    return checkoutShape(order.id);
   }
 
   // 2. Verify Payment (HMAC SHA256 Signature Check)
@@ -649,16 +794,58 @@ export class PaymentsService {
       });
 
       if (!existingPayment) {
-        throw new NotFoundException("Payment record not found");
+        // Not ours (another environment sharing the webhook, or a deleted row).
+        // A 404 here makes Razorpay retry the delivery forever and eventually
+        // disable the endpoint; there is nothing a retry could ever find.
+        this.logger.warn(
+          `payment.failed webhook for unknown order ${orderId}; ignoring`,
+        );
+        return { status: "ignored" };
       }
 
-      const payment = await this.prisma.payments.update({
-        where: { order_id: orderId },
+      // Webhooks arrive out of order: an order can take a failed attempt and then
+      // a successful one, and the failure's delivery can land *after* the capture.
+      // A payment that has already been captured (or gone further — released,
+      // refunded, voided) must never be dragged back to failed by that straggler.
+      if (existingPayment.status !== PaymentStatus.CREATED) {
+        this.logger.warn(
+          `payment.failed webhook for order ${orderId} arrived while payment is ` +
+            `'${existingPayment.status}'; recording the attempt but not downgrading.`,
+        );
+        await this.audit.writeLog(
+          this.prisma,
+          existingPayment.id,
+          orderId,
+          existingPayment.status,
+          existingPayment.status,
+          "webhook:payment.failed:stale",
+          paymentId,
+          {
+            error_code: paymentEntity.error_code,
+            error_description: paymentEntity.error_description,
+          },
+        );
+        return { status: "stale_failure_ignored" };
+      }
+
+      // Guarded on the status we just read, so a capture racing this webhook wins.
+      const { count } = await this.prisma.payments.updateMany({
+        where: { order_id: orderId, status: PaymentStatus.CREATED },
         data: {
           status: "failed",
           error_code: paymentEntity.error_code,
           error_description: paymentEntity.error_description,
         },
+      });
+      if (count === 0) {
+        this.logger.warn(
+          `payment.failed for order ${orderId} lost the race to a concurrent capture; ignoring.`,
+        );
+        return { status: "stale_failure_ignored" };
+      }
+
+      const payment = await this.prisma.payments.findUnique({
+        where: { order_id: orderId },
         include: { bookings: true },
       });
 
@@ -676,7 +863,7 @@ export class PaymentsService {
         },
       );
 
-      if (payment.bookings) {
+      if (payment?.bookings) {
         await this.notificationsService.createNotification(
           payment.bookings.parent_id,
           "Payment Failed",
@@ -868,6 +1055,24 @@ export class PaymentsService {
         ? installment.kind === MATCHING_FEE_KIND
         : snapshot?.cycle_number === MATCHING_FEE_CYCLE;
 
+      // A payment with neither an instalment nor a snapshot is a standalone
+      // charge — today that means a cancellation fee (see
+      // createCancellationFeeOrder). It settles itself and nothing else: no
+      // billing cycle to consume, no plan to advance, no placeholder to retire,
+      // and certainly no booking to confirm — its booking is cancelled.
+      const isStandaloneCharge = !installment && !snapshot;
+
+      if (isStandaloneCharge) {
+        // Guarded so a duplicate capture (verify + webhook) flips it once.
+        await tx.bookings.updateMany({
+          where: {
+            id: payment.booking_id,
+            cancellation_fee_status: CANCELLATION_FEE_OWED,
+          },
+          data: { cancellation_fee_status: CANCELLATION_FEE_PAID },
+        });
+      }
+
       // ── Retire the completion placeholder ──────────────────────────────────
       // A booking completed before its cycle was paid gets a `manual_pending`
       // placeholder for the session's full value, so the caregiver's payout is not
@@ -879,7 +1084,7 @@ export class PaymentsService {
       // Bounded to non-matching-fee captures: the fee is collected before the
       // caregiver exists and is not the session being paid for, so it must never
       // retire the placeholder standing in for the session's value.
-      if (!isMatchingFee) {
+      if (!isMatchingFee && !isStandaloneCharge) {
         const placeholders = await tx.payments.findMany({
           where: {
             booking_id: payment.booking_id,
@@ -932,7 +1137,7 @@ export class PaymentsService {
           });
         }
 
-        if (paymentPlan && !isMatchingFee) {
+        if (paymentPlan && !isMatchingFee && !isStandaloneCharge) {
           // Guarded on the cycle we believe we just finished, so a racing capture
           // cannot advance the plan a second time.
           await this.pricingService.advancePaymentPlanTx(
@@ -942,7 +1147,7 @@ export class PaymentsService {
           );
         }
 
-        if (!isMatchingFee) {
+        if (!isMatchingFee && !isStandaloneCharge) {
           // Money arriving confirms a booking; it does not deliver the care.
           // COMPLETED is terminal and belongs to completeBooking() (nanny checkout)
           // and the stuck-in-progress sweep, which set actual_end_time and emit
@@ -989,6 +1194,7 @@ export class PaymentsService {
         paymentPlan,
         snapshot,
         installment,
+        isStandaloneCharge,
         cycleSettled,
         updatedBooking,
       };
@@ -1048,9 +1254,11 @@ export class PaymentsService {
       .createNotification(
         updatedBooking.parent_id,
         "Payment Successful",
-        balanceDue > 0
-          ? `Your advance payment of ₹${payment.amount} is confirmed. The remaining ₹${round2(balanceDue)} is due in ${advanceDueDays} days.`
-          : `Your payment of ₹${payment.amount} has been processed successfully.`,
+        result.isStandaloneCharge
+          ? `Your cancellation fee of ₹${payment.amount} has been settled.`
+          : balanceDue > 0
+            ? `Your advance payment of ₹${payment.amount} is confirmed. The remaining ₹${round2(balanceDue)} is due in ${advanceDueDays} days.`
+            : `Your payment of ₹${payment.amount} has been processed successfully.`,
         "success",
         "payment",
         updatedBooking.id,
@@ -1059,8 +1267,10 @@ export class PaymentsService {
         this.logger.error("Failed to notify parent of payment", err),
       );
 
-    // Notify Nanny
-    if (updatedBooking.nanny_id) {
+    // Notify Nanny — but not about a cancellation fee: it carries no caregiver
+    // share and its booking was called off, so "payment received for your
+    // booking" would be untrue on both counts.
+    if (updatedBooking.nanny_id && !result.isStandaloneCharge) {
       await this.notificationsService
         .createNotification(
           updatedBooking.nanny_id,
@@ -1547,21 +1757,23 @@ export class PaymentsService {
 
     const totalEarned = Number(capturedPayments._sum.amount || 0);
 
-    // 2. Fetch pending bookings to calculate pending earnings
-    // "Pending" could mean bookings that are CONFIRMED or IN_PROGRESS, but not yet paid.
-    // To simplify, we sum up the amount from created/pending payments for this nanny, or estimate from bookings.
-    // Let's sum the amount from payments with status 'created' for this nanny.
-    const pendingPayments = await this.prisma.payments.aggregate({
+    // 2. Pending = what parents still owe on this caregiver's live bookings —
+    // the pending instalments themselves. This used to sum `created` payments,
+    // i.e. every checkout ever opened and abandoned, so "pending" was inflated
+    // by orders nobody would ever pay (and re-inflated each time a stale order
+    // was reminted).
+    const pendingInstallments = await this.prisma.payment_installments.aggregate({
       where: {
-        nanny_id: nannyId,
-        status: PaymentStatus.CREATED,
+        status: INSTALMENT_PENDING,
+        bookings: {
+          nanny_id: nannyId,
+          status: { not: BookingStatus.CANCELLED },
+        },
       },
-      _sum: {
-        amount: true,
-      },
+      _sum: { amount: true },
     });
 
-    const pendingEarned = Number(pendingPayments._sum.amount || 0);
+    const pendingEarned = Number(pendingInstallments._sum.amount || 0);
 
     // 3. Fetch recent transactions (captured payments)
     const recentTransactions = await this.prisma.payments.findMany({
@@ -1839,18 +2051,55 @@ export class PaymentsService {
       );
     }
 
+    const fullAmount = Number(payment.amount);
+    if (amount != null && (amount <= 0 || amount > fullAmount)) {
+      throw new BadRequestException(
+        `Refund amount must be between ₹0 and the captured ₹${fullAmount}`,
+      );
+    }
+    // A partial refund keeps the payment `captured`: the un-refunded remainder is
+    // real settled money, and flipping the whole row to `refunded` used to erase
+    // all of it from earnings, the revenue ledger and the parent's paid total. The
+    // credit note still records exactly what went back. One refund per payment —
+    // the schema has a single `refund_id`, so a second (partial) refund on the
+    // same payment is refused rather than overwriting the first one's trail.
+    const isFull = amount == null || amount >= fullAmount;
+
     const amountPaise = amount ? Math.round(amount * RAZORPAY_PAISE_MULTIPLIER) : undefined;
 
-    // Call Razorpay refund
-    const refund = await this.gateway.refund(payment.payment_id, amountPaise);
+    // Claim the row before calling the gateway. Two admins double-clicking (or two
+    // instances) would otherwise both pass the `captured` check above and both call
+    // Razorpay — and a *partial* refund really does go out twice there. The claim is
+    // `refund_id`, not status, so a partial refund (which stays `captured`) is
+    // claimed the same way; it is reverted if the gateway says no.
+    const claimToken = `claim_${crypto.randomUUID()}`;
+    const claimed = await this.prisma.payments.updateMany({
+      where: { id: paymentDbId, status: PaymentStatus.CAPTURED, refund_id: null },
+      data: {
+        refund_id: claimToken,
+        ...(isFull ? { status: PaymentStatus.REFUNDED } : {}),
+      },
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException(
+        "This payment has already been refunded, has a refund in progress, or is no longer refundable",
+      );
+    }
 
-    // Update DB
+    let refund;
+    try {
+      refund = await this.gateway.refund(payment.payment_id, amountPaise);
+    } catch (error) {
+      await this.prisma.payments.update({
+        where: { id: paymentDbId },
+        data: { status: PaymentStatus.CAPTURED, refund_id: null },
+      });
+      throw error;
+    }
+
     const updatedPayment = await this.prisma.payments.update({
       where: { id: paymentDbId },
-      data: {
-        refund_id: refund.id,
-        status: PaymentStatus.REFUNDED,
-      },
+      data: { refund_id: refund.id },
     });
 
     // Money that came back is no longer owed, and nor is the rest of its cycle:
@@ -1863,18 +2112,24 @@ export class PaymentsService {
     // below is what reduces it. Previously `refunded` simply dropped out of the
     // live query the invoice was rendered from, so a refund made a payment vanish
     // from the document rather than being shown as returned.
-    if (refundedInstallment) {
-      await this.prisma.payment_installments.update({
-        where: { id: refundedInstallment.id },
-        data: { status: INSTALMENT_REFUNDED, updated_at: new Date() },
-      });
-      await this.prisma.payment_installments.updateMany({
-        where: {
-          price_snapshot_id: refundedInstallment.price_snapshot_id,
-          status: INSTALMENT_PENDING,
-        },
-        data: { status: INSTALMENT_VOID, updated_at: new Date() },
-      });
+    // A *partial* refund leaves the instalments alone: the instalment was still
+    // (mostly) paid for, and voiding the cycle's balance over a token amount going
+    // back would forgive money genuinely owed. The credit note carries the actual
+    // reduction. Only a full refund unwinds the instalment and its cycle.
+    if (refundedInstallment && isFull) {
+      await this.prisma.$transaction([
+        this.prisma.payment_installments.update({
+          where: { id: refundedInstallment.id },
+          data: { status: INSTALMENT_REFUNDED, updated_at: new Date() },
+        }),
+        this.prisma.payment_installments.updateMany({
+          where: {
+            price_snapshot_id: refundedInstallment.price_snapshot_id,
+            status: INSTALMENT_PENDING,
+          },
+          data: { status: INSTALMENT_VOID, updated_at: new Date() },
+        }),
+      ]);
     }
 
     // ── Credit note (GST s.34) ─────────────────────────────────────────────────
@@ -1909,12 +2164,13 @@ export class PaymentsService {
       payment.id,
       payment.order_id,
       payment.status,
-      PaymentStatus.REFUNDED,
-      "admin:refund",
+      isFull ? PaymentStatus.REFUNDED : PaymentStatus.CAPTURED,
+      isFull ? "admin:refund" : "admin:refund_partial",
       payment.payment_id,
       {
         refund_id: refund.id,
-        amount_refunded: amount || Number(payment.amount),
+        amount_refunded: amount || fullAmount,
+        partial: !isFull,
         credit_note: creditNoteNumber,
       }
     );

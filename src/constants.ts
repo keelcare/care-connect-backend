@@ -97,6 +97,13 @@ export const OAUTH_ERROR_GENERIC = "auth_failed";
  */
 export const CANCELLATION_FEE_NONE = "no_fee";
 export const CANCELLATION_FEE_OWED = "owed";
+/**
+ * The parent settled the fee through the real checkout path
+ * (`createCancellationFeeOrder` → Razorpay → capture). Unlike the historical
+ * `charged`, a row only ever reaches `paid` off the back of a gateway capture
+ * with a payment id, so it is refundable like any other charge.
+ */
+export const CANCELLATION_FEE_PAID = "paid";
 
 /**
  * Version of the Privacy Notice currently in force. Must be kept in step with

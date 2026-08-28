@@ -40,6 +40,24 @@ export class PaymentsController {
     );
   }
 
+  @Post("cancellation-fee-order/:bookingId")
+  @UseGuards(AuthGuard("jwt"))
+  @ApiOperation({
+    summary: "Create a Razorpay order to settle a booking's cancellation fee",
+    description:
+      "Only the booking's parent can call this, and only while " +
+      "`cancellation_fee_status` is `owed`. Settlement runs through the same " +
+      "checkout → verify/webhook path as any other charge; on capture the " +
+      "booking's fee status becomes `paid`.",
+  })
+  @ApiResponse({ status: 201, description: "Order created successfully" })
+  async createCancellationFeeOrder(
+    @Req() req: any,
+    @Param("bookingId") bookingId: string,
+  ) {
+    return this.paymentsService.createCancellationFeeOrder(bookingId, req.user.id);
+  }
+
   @Post("retry-order/:bookingId")
   @UseGuards(AuthGuard("jwt"))
   @ApiOperation({ summary: "Retry a failed Razorpay order for a booking" })
@@ -47,8 +65,12 @@ export class PaymentsController {
     status: 201,
     description: "New order created successfully for retry",
   })
-  async retryOrder(@Req() req: any, @Param("bookingId") bookingId: string) {
-    return this.paymentsService.retryOrder(bookingId, req.user.id);
+  async retryOrder(
+    @Req() req: any,
+    @Param("bookingId") bookingId: string,
+    @Body("installmentId") installmentId?: string,
+  ) {
+    return this.paymentsService.retryOrder(bookingId, req.user.id, installmentId);
   }
 
   @Post("verify")
