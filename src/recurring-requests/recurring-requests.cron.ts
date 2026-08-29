@@ -18,6 +18,7 @@ import {
 } from '../common/constants/plan-status.enum';
 import { SseService } from '../sse/sse.service';
 import { SSE_EVENTS } from '../events/sse-event.types';
+import { INSTALMENT_PENDING, INSTALMENT_VOID } from '../constants';
 
 // If generation has been stuck (latest booking further in the past than this)
 // for a plan, stop retrying it automatically and flag it for the parent.
@@ -109,20 +110,55 @@ export class RecurringRequestsCron {
 
     for (const req of stale) {
       try {
-        await this.prisma.$transaction([
-          this.prisma.recurring_service_requests.update({
-            where: { id: req.id },
+        const expired = await this.prisma.$transaction(async (tx) => {
+          // Guarded claim: an admin can assign a caregiver between the read
+          // above and this write, which sets status ACTIVE and nanny_id. A bare
+          // update here would expire a plan that just went live and cancel its
+          // freshly-staffed sessions.
+          const claimed = await tx.recurring_service_requests.updateMany({
+            where: {
+              id: req.id,
+              status: { in: PLAN_STATUSES_GENERATING },
+              nanny_id: null,
+            },
             data: { status: PLAN_STATUS.EXPIRED },
-          }),
-          // Leave no orphaned sessions behind that can never be served.
-          this.prisma.bookings.updateMany({
+          });
+          if (claimed.count === 0) return false;
+
+          // Leave no orphaned sessions behind that can never be served. Only
+          // the unstaffed, still-requested ones: a session staffed directly by
+          // booking id (which never sets the plan's nanny_id) may be CONFIRMED,
+          // IN_PROGRESS or even COMPLETED, and the old `status != CANCELLED`
+          // filter rewrote delivered care as cancelled.
+          await tx.bookings.updateMany({
             where: {
               recurring_request_id: req.id,
-              status: { not: BookingStatus.CANCELLED },
+              status: BookingStatus.REQUESTED,
+              nanny_id: null,
             },
-            data: { status: BookingStatus.CANCELLED },
-          }),
-        ]);
+            data: {
+              status: BookingStatus.CANCELLED,
+              cancellation_reason:
+                "Recurring plan expired before a caregiver could be matched",
+            },
+          });
+
+          // Money billed against a plan nobody ever served stops being owed —
+          // the matching fee is raised at creation, before any assignment, and
+          // used to stay PENDING (collectible) forever after expiry. The fee is
+          // *not* carved out here as it is at cancellation: cancellation keeps
+          // it because the placement was made, and here it never was.
+          await tx.payment_installments.updateMany({
+            where: {
+              bookings: { recurring_request_id: req.id },
+              status: INSTALMENT_PENDING,
+            },
+            data: { status: INSTALMENT_VOID, updated_at: new Date() },
+          });
+
+          return true;
+        });
+        if (!expired) continue;
 
         await this.notificationsService.createNotification(
           req.parent_id,
@@ -159,22 +195,33 @@ export class RecurringRequestsCron {
 
     for (const plan of plans) {
       try {
+        // Outstanding means *still deliverable*: a session under way (whatever
+        // its clock says), or one whose window has not closed yet. A REQUESTED/
+        // CONFIRMED session whose end time has already passed can never be
+        // served — cancellation deliberately leaves past-dated sessions alone,
+        // so counting them here deadlocked the plan in winding_down forever and
+        // the caregiver was never released.
         const outstanding = await this.prisma.bookings.count({
           where: {
             recurring_request_id: plan.id,
-            status: {
-              in: [
-                BookingStatus.REQUESTED,
-                BookingStatus.CONFIRMED,
-                BookingStatus.IN_PROGRESS,
-              ],
-            },
+            OR: [
+              { status: BookingStatus.IN_PROGRESS },
+              {
+                status: {
+                  in: [BookingStatus.REQUESTED, BookingStatus.CONFIRMED],
+                },
+                end_time: { gt: new Date() },
+              },
+            ],
           },
         });
         if (outstanding > 0) continue;
 
-        await this.prisma.recurring_service_requests.update({
-          where: { id: plan.id },
+        // Guarded claim: the count above is a separate read, and the plan list
+        // itself was fetched earlier still. Only complete a plan that is *still*
+        // winding down, and only notify when this run was the one that did it.
+        const claimed = await this.prisma.recurring_service_requests.updateMany({
+          where: { id: plan.id, status: PLAN_STATUS.WINDING_DOWN },
           data: {
             status: PLAN_STATUS.COMPLETED,
             // Nothing left to serve — the caregiver is free.
@@ -182,6 +229,7 @@ export class RecurringRequestsCron {
             updated_at: new Date(),
           },
         });
+        if (claimed.count === 0) continue;
 
         await this.notificationsService
           .createNotification(
@@ -242,11 +290,86 @@ export class RecurringRequestsCron {
         // Check if latest booking is within 7 days from now
         const daysUntilLatestBooking = (latestBookingDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
 
+        // Where generation would resume, and which natural cycle that falls in.
+        // Computed before the stuck check because the two must be told apart:
+        // a plan whose sold term has simply run out has nothing left to
+        // generate *by design*, and the stuck detector used to catch it two
+        // weeks after its last session, flip it to ERROR and send the parent a
+        // "we couldn't generate your sessions" warning about a plan that had
+        // finished exactly as promised.
+        const nextStartDate = new Date(latestBookingDate);
+        nextStartDate.setDate(nextStartDate.getDate() + 1);
+
+        // Roll forward by whole natural cycles anchored on the plan's start
+        // date, not by a flat 30 days. A 30-day step drifts off the anchor —
+        // after a few months a plan that began on the 4th is generating from
+        // the 1st — and it under-generates every 31-day month.
+        const cycle = cycleNumberFor(req.start_date, nextStartDate);
+
+        // The sold term is a count of natural months. Plans predating the
+        // column (no duration stored) keep rolling indefinitely as before,
+        // rather than being cut off after a single month.
+        const termMonths = req.plan_duration_months
+          ? Number(req.plan_duration_months)
+          : null;
+        const termExhausted =
+          (termMonths !== null && cycle.number > termMonths) ||
+          (!!req.end_date && nextStartDate > new Date(req.end_date));
+
+        if (termExhausted) {
+          // Nothing more will ever be generated. Once the last session's
+          // window has closed (or it is not in progress), the plan ran its
+          // full term: close it and release the caregiver, mirroring the
+          // wind-down completion rule.
+          const outstanding = await this.prisma.bookings.count({
+            where: {
+              recurring_request_id: req.id,
+              OR: [
+                { status: BookingStatus.IN_PROGRESS },
+                {
+                  status: {
+                    in: [BookingStatus.REQUESTED, BookingStatus.CONFIRMED],
+                  },
+                  end_time: { gt: new Date() },
+                },
+              ],
+            },
+          });
+          if (outstanding === 0) {
+            const claimed = await this.prisma.recurring_service_requests.updateMany({
+              where: { id: req.id, status: { in: PLAN_STATUSES_GENERATING } },
+              data: {
+                status: PLAN_STATUS.COMPLETED,
+                nanny_id: null,
+                updated_at: new Date(),
+              },
+            });
+            if (claimed.count > 0) {
+              await this.notificationsService
+                .createNotification(
+                  req.parent_id,
+                  'Recurring plan completed',
+                  'Your recurring plan has run its full term and is now complete. You can create a new plan at any time.',
+                  'info',
+                  'recurring_request',
+                  req.id,
+                )
+                .catch((err) =>
+                  this.logger.error(`Failed to notify parent of plan ${req.id} completing`, err),
+                );
+              this.logger.log(`Recurring plan ${req.id} ran its full term; marked completed.`);
+            }
+          }
+          continue;
+        }
+
         // Generation has been stuck for two+ weeks — stop retrying and alert the parent
         // instead of silently failing every night.
         if (daysUntilLatestBooking < -STUCK_GENERATION_DAYS) {
-          await this.prisma.recurring_service_requests.update({
-            where: { id: req.id },
+          await this.prisma.recurring_service_requests.updateMany({
+            // Guarded so a plan cancelled or completed in the gap is not
+            // dragged back to ERROR.
+            where: { id: req.id, status: { in: PLAN_STATUSES_GENERATING } },
             data: { status: PLAN_STATUS.ERROR },
           });
           await this.notificationsService.createNotification(
@@ -262,25 +385,6 @@ export class RecurringRequestsCron {
         }
 
         if (daysUntilLatestBooking <= 7) {
-          const nextStartDate = new Date(latestBookingDate);
-          nextStartDate.setDate(nextStartDate.getDate() + 1);
-
-          // Roll forward by whole natural cycles anchored on the plan's start
-          // date, not by a flat 30 days. A 30-day step drifts off the anchor —
-          // after a few months a plan that began on the 4th is generating from
-          // the 1st — and it under-generates every 31-day month.
-          const cycle = cycleNumberFor(req.start_date, nextStartDate);
-
-          // The sold term is a count of natural months. Plans predating the
-          // column (no duration stored) keep rolling indefinitely as before,
-          // rather than being cut off after a single month.
-          const termMonths = req.plan_duration_months
-            ? Number(req.plan_duration_months)
-            : null;
-          if (termMonths && cycle.number > termMonths) {
-            continue;
-          }
-
           // `generateDates` takes an *inclusive* end date, and the cycle window's
           // end is exclusive — step back a day so the next cycle's first session
           // isn't generated twice.

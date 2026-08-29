@@ -137,13 +137,32 @@ export class AuthController {
     // whichever token they presented rather than from `req.user`.
     let userId: string | null = null;
 
-    /** Blacklist a token for whatever is left of its lifetime. */
-    const revoke = async (token: string, fallbackSeconds: number) => {
-      const decoded: any = this.jwtService.decode(token);
+    /**
+     * Blacklist a token for whatever is left of its lifetime.
+     *
+     * The token must *verify* against its secret before we act on it. decode()
+     * reads the payload without checking the signature, so the old shape let an
+     * anonymous caller POST a forged JWT carrying any user's `sub` and have
+     * their `refresh_token_hash` nulled below — logging the victim out of every
+     * device on demand. Expiry is deliberately ignored: logging out with an
+     * expired access token must still identify the caller, and a token past its
+     * exp cannot authenticate anyway. A token that fails verification is simply
+     * skipped — it can never authenticate, so there is nothing to revoke.
+     */
+    const revoke = async (token: string, secret: string) => {
+      let decoded: any;
+      try {
+        decoded = this.jwtService.verify(token, {
+          secret,
+          ignoreExpiration: true,
+        });
+      } catch {
+        return; // Forged or foreign token — not ours to act on.
+      }
       if (decoded?.sub) userId = decoded.sub;
       const expiresInSeconds = decoded?.exp
         ? Math.max(0, decoded.exp - Math.floor(Date.now() / 1000))
-        : fallbackSeconds;
+        : 0;
       if (expiresInSeconds > 0) {
         await this.tokenBlacklist.revokeToken(token, expiresInSeconds);
       }
@@ -157,7 +176,8 @@ export class AuthController {
         : null);
     if (accessToken) {
       try {
-        await revoke(accessToken, 15 * 60);
+        const secret = this.configService.get<string>("JWT_SECRET");
+        if (secret) await revoke(accessToken, secret);
       } catch (err) {
         this.logger.warn(`Failed to revoke access token on logout: ${err.message}`);
       }
@@ -170,7 +190,10 @@ export class AuthController {
       req.cookies?.refresh_token || req.body?.refresh_token || null;
     if (refreshToken) {
       try {
-        await revoke(refreshToken, 7 * 24 * 60 * 60);
+        // Refresh tokens are signed with their own secret (see AuthService).
+        const refreshSecret =
+          this.configService.get<string>("JWT_REFRESH_SECRET");
+        if (refreshSecret) await revoke(refreshToken, refreshSecret);
       } catch (err) {
         this.logger.warn(
           `Failed to revoke refresh token on logout: ${err.message}`,

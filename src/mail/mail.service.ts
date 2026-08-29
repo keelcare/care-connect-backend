@@ -35,12 +35,16 @@ export class MailService {
     const from =
       this.configService.get<string>("MAIL_FROM") || "noreply@careconnect.com";
 
-    // Simple HTML generation for now (can be replaced with ejs/handlebars later if needed)
+    // Safe HTML placeholder substitution: using a replacer function prevents
+    // JavaScript String.prototype.replace from treating '$' characters in context values
+    // (e.g. passwords, tokens, prices) as regex replacement patterns ($1, $&, $$).
     let body = template;
-    Object.keys(context).forEach((key) => {
-      const placeholder = new RegExp(`{{${key}}}`, "g");
-      body = body.replace(placeholder, context[key]);
-    });
+    if (context && typeof context === "object") {
+      Object.keys(context).forEach((key) => {
+        const placeholder = new RegExp(`{{${key}}}`, "g");
+        body = body.replace(placeholder, () => String(context[key] ?? ""));
+      });
+    }
 
     try {
       await this.transporter.sendMail({

@@ -168,6 +168,20 @@ export class RecurringBookingsService {
           continue;
         }
 
+        // The end date is inclusive: care is still owed *on* it, but never past
+        // it. The deactivation check above compares the end date to *today*, so
+        // on the end date itself the pattern is still live — and generation is
+        // always for *tomorrow*, which by then is one day beyond the end date.
+        // Without this guard every plan with an end date got exactly one extra
+        // session scheduled past the day the parent agreed to.
+        if (recurring.end_date) {
+          const tomorrowCivil = new Date(tomorrow.getTime() + (5 * 60 + 30) * 60 * 1000)
+            .toISOString()
+            .split("T")[0];
+          const endCivil = recurring.end_date.toISOString().split("T")[0];
+          if (tomorrowCivil > endCivil) continue;
+        }
+
         // Check if tomorrow matches the recurrence pattern
         if (this.shouldCreateBooking(tomorrow, recurring.recurrence_pattern)) {
           // Calculate potential booking times

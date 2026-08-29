@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   NotFoundException,
+  BadRequestException,
   ParseUUIDPipe,
 } from "@nestjs/common";
 import {
@@ -174,6 +175,23 @@ export class AdminWhatsAppController {
       where: { id },
     });
     if (!enquiry) throw new NotFoundException("Enquiry not found");
+
+    if (dto.assigned_to !== undefined && dto.assigned_to !== null) {
+      const admin = await this.prisma.users.findFirst({
+        where: {
+          id: dto.assigned_to,
+          role: "admin",
+          is_active: true,
+          deleted_at: null,
+        },
+        select: { id: true },
+      });
+      if (!admin) {
+        throw new BadRequestException(
+          "Target user is not an active administrator",
+        );
+      }
+    }
 
     return this.prisma.whatsapp_enquiries.update({
       where: { id },

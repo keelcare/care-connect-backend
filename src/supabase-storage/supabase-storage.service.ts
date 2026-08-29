@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { Readable } from "stream";
@@ -9,16 +14,32 @@ const AVATAR_BUCKET = "avatars";
 @Injectable()
 export class SupabaseStorageService {
   private readonly logger = new Logger(SupabaseStorageService.name);
-  private readonly supabase: SupabaseClient;
+  private readonly supabase: SupabaseClient | null;
+  private readonly configured: boolean;
   private avatarBucketReady = false;
 
   constructor(private readonly configService: ConfigService) {
     const url = this.configService.get<string>("SUPABASE_URL");
     const key = this.configService.get<string>("SUPABASE_SERVICE_ROLE_KEY");
-    if (!url || !key) {
-      throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
+    this.configured = Boolean(url && key);
+
+    if (!this.configured) {
+      this.logger.warn(
+        "SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured. Storage operations will fail closed.",
+      );
+      this.supabase = null;
+    } else {
+      this.supabase = createClient(url!, key!);
     }
-    this.supabase = createClient(url, key);
+  }
+
+  private assertConfigured(): SupabaseClient {
+    if (!this.configured || !this.supabase) {
+      throw new ServiceUnavailableException(
+        "Supabase Storage service is not configured",
+      );
+    }
+    return this.supabase;
   }
 
   /**
@@ -30,10 +51,14 @@ export class SupabaseStorageService {
     folderName: string,
     file: Express.Multer.File,
   ): Promise<string> {
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const client = this.assertConfigured();
+    const sanitizedName = (file?.originalname || "file").replace(
+      /[^a-zA-Z0-9._-]/g,
+      "_",
+    );
     const storagePath = `${folderName}/${Date.now()}-${sanitizedName}`;
 
-    const { error } = await this.supabase.storage
+    const { error } = await client.storage
       .from(BUCKET)
       .upload(storagePath, file.buffer, {
         contentType: file.mimetype,
@@ -56,17 +81,18 @@ export class SupabaseStorageService {
    */
   private async ensureAvatarBucket(): Promise<void> {
     if (this.avatarBucketReady) return;
+    const client = this.assertConfigured();
     try {
-      const { data } = await this.supabase.storage.getBucket(AVATAR_BUCKET);
+      const { data } = await client.storage.getBucket(AVATAR_BUCKET);
       if (!data) {
-        await this.supabase.storage.createBucket(AVATAR_BUCKET, {
+        await client.storage.createBucket(AVATAR_BUCKET, {
           public: true,
           fileSizeLimit: 5 * 1024 * 1024,
         });
       }
     } catch {
       // Best-effort: attempt create, ignore if it already exists
-      await this.supabase.storage
+      await client.storage
         .createBucket(AVATAR_BUCKET, { public: true })
         .catch(() => undefined);
     }
@@ -81,11 +107,15 @@ export class SupabaseStorageService {
     folderName: string,
     file: Express.Multer.File,
   ): Promise<string> {
+    const client = this.assertConfigured();
     await this.ensureAvatarBucket();
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const sanitizedName = (file?.originalname || "image").replace(
+      /[^a-zA-Z0-9._-]/g,
+      "_",
+    );
     const storagePath = `${folderName}/${Date.now()}-${sanitizedName}`;
 
-    const { error } = await this.supabase.storage
+    const { error } = await client.storage
       .from(AVATAR_BUCKET)
       .upload(storagePath, file.buffer, {
         contentType: file.mimetype,
@@ -97,7 +127,7 @@ export class SupabaseStorageService {
       throw new Error(error.message);
     }
 
-    const { data } = this.supabase.storage
+    const { data } = client.storage
       .from(AVATAR_BUCKET)
       .getPublicUrl(storagePath);
 
@@ -112,7 +142,8 @@ export class SupabaseStorageService {
   async getFileStream(
     storagePath: string,
   ): Promise<{ stream: Readable; mimeType: string }> {
-    const { data, error } = await this.supabase.storage
+    const client = this.assertConfigured();
+    const { data, error } = await client.storage
       .from(BUCKET)
       .download(storagePath);
 
@@ -135,7 +166,8 @@ export class SupabaseStorageService {
    * Deletes a file from Supabase Storage.
    */
   async deleteFile(storagePath: string): Promise<void> {
-    const { error } = await this.supabase.storage
+    const client = this.assertConfigured();
+    const { error } = await client.storage
       .from(BUCKET)
       .remove([storagePath]);
 

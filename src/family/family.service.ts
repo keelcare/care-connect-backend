@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateChildDto } from "./dto/create-child.dto";
@@ -60,11 +61,17 @@ export class FamilyService {
   }
 
   private mergeMetadata(child: any) {
+    if (!child) return null;
     const { metadata, ...rest } = child;
     return { ...rest, ...(metadata ?? {}) };
   }
 
   async create(parentId: string, dto: CreateChildDto, ipAddress?: string) {
+    const dobDate = new Date(dto.dob);
+    if (isNaN(dobDate.getTime()) || dobDate > new Date()) {
+      throw new BadRequestException("Date of birth cannot be in the future");
+    }
+
     // Support both emergency_contact and emergency_contact_override
     const emergencyContact = dto.emergency_contact ?? dto.emergency_contact_override;
     const metadata = this.buildMetadata(dto);
@@ -74,7 +81,7 @@ export class FamilyService {
         parent_id: parentId,
         first_name: dto.first_name,
         last_name: dto.last_name,
-        dob: new Date(dto.dob),
+        dob: dobDate,
         gender: dto.gender,
         profile_type: dto.profile_type ?? "STANDARD",
         allergies: dto.allergies ?? [],
@@ -141,7 +148,13 @@ export class FamilyService {
     delete data.medical_notes;
     delete data.report_url;
 
-    if (dto.dob) data.dob = new Date(dto.dob);
+    if (dto.dob) {
+      const dobDate = new Date(dto.dob);
+      if (isNaN(dobDate.getTime()) || dobDate > new Date()) {
+        throw new BadRequestException("Date of birth cannot be in the future");
+      }
+      data.dob = dobDate;
+    }
     if (dietary_restrictions !== undefined) {
       data.dietary_notes = dietary_restrictions.length ? dietary_restrictions.join(", ") : null;
     }
@@ -156,21 +169,26 @@ export class FamilyService {
   }
 
   async remove(id: string, parentId: string) {
-    const child = await this.prisma.children.findFirst({
-      where: { id, deleted_at: null },
-      select: { parent_id: true },
-    });
-
-    if (!child) throw new NotFoundException(`Child ${id} not found`);
-    if (child.parent_id !== parentId) throw new ForbiddenException("Permission denied");
-
-    // Soft delete: hide the child for 30 days (recoverable from "Recently
-    // removed"), keeping past bookings intact. The daily cleanup cron
-    // hard-deletes rows whose retention window has elapsed.
-    await this.prisma.children.update({
-      where: { id },
+    // Atomic updateMany claim guards against double deletion races
+    const result = await this.prisma.children.updateMany({
+      where: { id, parent_id: parentId, deleted_at: null },
       data: { deleted_at: new Date(), updated_at: new Date() },
     });
+
+    if (result.count === 0) {
+      const exists = await this.prisma.children.findUnique({
+        where: { id },
+        select: { parent_id: true, deleted_at: true },
+      });
+      if (!exists || exists.deleted_at !== null) {
+        throw new NotFoundException(`Child ${id} not found`);
+      }
+      if (exists.parent_id !== parentId) {
+        throw new ForbiddenException("Permission denied");
+      }
+      throw new NotFoundException(`Child ${id} not found`);
+    }
+
     return { success: true };
   }
 
@@ -178,18 +196,28 @@ export class FamilyService {
     const cutoff = new Date(
       Date.now() - FamilyService.RETENTION_DAYS * 24 * 60 * 60 * 1000,
     );
-    const child = await this.prisma.children.findFirst({
-      where: { id, deleted_at: { not: null, gte: cutoff } },
-      select: { parent_id: true },
-    });
 
-    if (!child) throw new NotFoundException(`Child ${id} not found`);
-    if (child.parent_id !== parentId) throw new ForbiddenException("Permission denied");
-
-    const row = await this.prisma.children.update({
-      where: { id },
+    // Atomic updateMany claim guards against concurrent restore races
+    const result = await this.prisma.children.updateMany({
+      where: { id, parent_id: parentId, deleted_at: { not: null, gte: cutoff } },
       data: { deleted_at: null, updated_at: new Date() },
     });
+
+    if (result.count === 0) {
+      const exists = await this.prisma.children.findUnique({
+        where: { id },
+        select: { parent_id: true, deleted_at: true },
+      });
+      if (!exists) {
+        throw new NotFoundException(`Child ${id} not found`);
+      }
+      if (exists.parent_id !== parentId) {
+        throw new ForbiddenException("Permission denied");
+      }
+      throw new NotFoundException(`Child ${id} not found or retention period expired`);
+    }
+
+    const row = await this.prisma.children.findUnique({ where: { id } });
     return this.mergeMetadata(row);
   }
 }

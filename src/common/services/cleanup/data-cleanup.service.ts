@@ -113,22 +113,31 @@ export class DataCleanupService {
     const noticeThreshold = this.daysAgo(
       DataCleanupService.RETENTION_DAYS - DataCleanupService.NOTICE_LEAD_DAYS,
     );
-    const purgeThreshold = this.daysAgo(DataCleanupService.RETENTION_DAYS);
 
+    // No lower bound on deleted_at: an account already past the purge threshold
+    // that was never notified (mail outage, cron gap) must still get its 48-hour
+    // notice — purge is gated on the notice having been sent (see
+    // purgeExpiredAccounts), so excluding these rows here would deadlock them,
+    // and the old `gt: purgeThreshold` bound purged them with no notice at all.
     const candidates = await this.prisma.users.findMany({
       where: {
         is_active: false,
         deletion_notice_sent_at: null,
-        deleted_at: { not: null, lte: noticeThreshold, gt: purgeThreshold },
+        deleted_at: { not: null, lte: noticeThreshold },
       },
       select: { id: true, email: true, deleted_at: true },
     });
 
     for (const user of candidates) {
       if (this.isAnonymised(user.email)) continue;
+      // Never promise a date already in the past: an account notified late
+      // (past the nominal retention window) is erased 48 hours from now.
       const eraseOn = new Date(
-        user.deleted_at!.getTime() +
-          DataCleanupService.RETENTION_DAYS * 24 * 60 * 60 * 1000,
+        Math.max(
+          user.deleted_at!.getTime() +
+            DataCleanupService.RETENTION_DAYS * 24 * 60 * 60 * 1000,
+          Date.now() + DataCleanupService.NOTICE_LEAD_DAYS * 24 * 60 * 60 * 1000,
+        ),
       );
       const body = `
         <p>Hello,</p>
@@ -156,8 +165,19 @@ export class DataCleanupService {
 
   private async purgeExpiredAccounts() {
     const cutoff = this.daysAgo(DataCleanupService.RETENTION_DAYS);
+    // DPDP Rules 2025: erasure only after the Data Principal has been informed
+    // at least 48 hours in advance. Purge is therefore gated on the notice
+    // having actually been sent that long ago — a user whose notice failed (or
+    // who crossed the threshold during a cron gap) is picked up by
+    // sendPreErasureNotices on this same run and purged two days later, rather
+    // than being erased with no warning.
+    const noticeCutoff = this.daysAgo(DataCleanupService.NOTICE_LEAD_DAYS);
     const candidates = await this.prisma.users.findMany({
-      where: { is_active: false, deleted_at: { not: null, lte: cutoff } },
+      where: {
+        is_active: false,
+        deleted_at: { not: null, lte: cutoff },
+        deletion_notice_sent_at: { not: null, lte: noticeCutoff },
+      },
       select: { id: true, email: true },
     });
 

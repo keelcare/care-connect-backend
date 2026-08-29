@@ -6,6 +6,7 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 
 import { CreateTemplateDto } from "./dto/create-template.dto";
 import { SubmitReportDto } from "./dto/submit-report.dto";
@@ -15,9 +16,25 @@ import { PROGRESS_REPORT_DUE_HOURS } from "../common/constants/constants";
 export class ProgressReportsService {
   private readonly logger = new Logger(ProgressReportsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async createTemplate(data: CreateTemplateDto, adminId: string) {
+    if (!data.questions || data.questions.length === 0) {
+      throw new BadRequestException("Template must contain at least one question");
+    }
+
+    // Validate that MULTI_CHOICE questions have options
+    for (const q of data.questions) {
+      if (q.input_type === "MULTI_CHOICE" && (!q.options || q.options.length === 0)) {
+        throw new BadRequestException(
+          `Question "${q.question_text}" is MULTI_CHOICE but has no options configured`,
+        );
+      }
+    }
+
     return this.prisma.report_templates.create({
       data: {
         created_by: adminId,
@@ -31,7 +48,11 @@ export class ProgressReportsService {
           })),
         },
       },
-      include: { report_template_questions: true },
+      include: {
+        report_template_questions: {
+          orderBy: { display_order: "asc" },
+        },
+      },
     });
   }
 
@@ -49,12 +70,24 @@ export class ProgressReportsService {
 
   async getReportsForNanny(nannyId: string, status?: string) {
     const whereClause: any = { nanny_id: nannyId };
-    if (status) {
+    if (status === "PENDING") {
+      // Pending queue for nanny must include both unexpired PENDING reports and OVERDUE reports
+      // that are still awaiting submission, so overdue reports do not vanish from the nanny's action list.
+      whereClause.status = { in: ["PENDING", "OVERDUE"] };
+    } else if (status) {
       whereClause.status = status as any;
     }
+
     return this.prisma.progress_reports.findMany({
       where: whereClause,
       include: {
+        report_templates: {
+          include: {
+            report_template_questions: {
+              orderBy: { display_order: "asc" },
+            },
+          },
+        },
         bookings: {
           include: {
             users_bookings_parent_idTousers: {
@@ -75,6 +108,13 @@ export class ProgressReportsService {
         status: "SUBMITTED",
       },
       include: {
+        report_templates: {
+          include: {
+            report_template_questions: {
+              orderBy: { display_order: "asc" },
+            },
+          },
+        },
         report_answers: true,
         bookings: {
           include: {
@@ -116,13 +156,20 @@ export class ProgressReportsService {
 
     if (!report) throw new NotFoundException("Report not found");
 
-    // Scope the read to the report's nanny, the booking's parent, or an admin.
-    // Return NotFound for anyone else so a report's existence isn't leaked.
     const isNanny = report.nanny_id === userId;
     const isParent = report.bookings?.parent_id === userId;
-    if (!isNanny && !isParent && role !== "admin") {
+    const isAdmin = role === "admin";
+
+    if (!isNanny && !isParent && !isAdmin) {
       throw new NotFoundException("Report not found");
     }
+
+    // Parents can only view reports after they have been submitted.
+    // An unsubmitted draft (PENDING/OVERDUE) is hidden from parents.
+    if (isParent && !isNanny && !isAdmin && report.status !== "SUBMITTED") {
+      throw new NotFoundException("Report not found");
+    }
+
     return report;
   }
 
@@ -133,6 +180,7 @@ export class ProgressReportsService {
         report_templates: {
           include: { report_template_questions: true },
         },
+        bookings: true,
       },
     });
 
@@ -144,24 +192,134 @@ export class ProgressReportsService {
       throw new BadRequestException("Report is already submitted");
     }
 
-    // Validate required questions
-    const requiredQuestions =
-      report.report_templates.report_template_questions.filter(
-        (q) => q.is_required,
-      );
-    const answeredQuestionIds = dto.answers.map((a) => a.question_id);
-    const missing = requiredQuestions.filter(
-      (q) => !answeredQuestionIds.includes(q.id),
-    );
+    const templateQuestions = report.report_templates?.report_template_questions || [];
+    const questionMap = new Map(templateQuestions.map((q) => [q.id, q]));
 
-    if (missing.length > 0) {
-      throw new BadRequestException(
-        `Missing answers for required questions: ${missing.map((q) => q.question_text).join(", ")}`,
-      );
+    // 1. Validate that all submitted answer question_ids exist on the report's template
+    // and that there are no duplicate answers for the same question.
+    const seenQuestionIds = new Set<string>();
+    for (const answer of dto.answers) {
+      if (!questionMap.has(answer.question_id)) {
+        throw new BadRequestException(
+          `Question ID ${answer.question_id} does not belong to this report template`,
+        );
+      }
+      if (seenQuestionIds.has(answer.question_id)) {
+        throw new BadRequestException(
+          `Duplicate answer submitted for question ID ${answer.question_id}`,
+        );
+      }
+      seenQuestionIds.add(answer.question_id);
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      // Delete any existing answers if resubmitting (just in case)
+    // 2. Validate required questions and value correctness
+    for (const q of templateQuestions) {
+      const submittedAnswer = dto.answers.find((a) => a.question_id === q.id);
+
+      if (q.is_required) {
+        if (!submittedAnswer) {
+          throw new BadRequestException(
+            `Missing answer for required question: "${q.question_text}"`,
+          );
+        }
+
+        if (q.input_type === "TEXT") {
+          if (!submittedAnswer.answer_text || !submittedAnswer.answer_text.trim()) {
+            throw new BadRequestException(
+              `Answer text is required for question: "${q.question_text}"`,
+            );
+          }
+        } else if (q.input_type === "RATING") {
+          if (
+            submittedAnswer.answer_rating === undefined ||
+            submittedAnswer.answer_rating === null ||
+            submittedAnswer.answer_rating < 1 ||
+            submittedAnswer.answer_rating > 5
+          ) {
+            throw new BadRequestException(
+              `Rating (1-5) is required for question: "${q.question_text}"`,
+            );
+          }
+        } else if (q.input_type === "YES_NO") {
+          const val = submittedAnswer.answer_text?.trim().toLowerCase();
+          if (val !== "yes" && val !== "no") {
+            throw new BadRequestException(
+              `Answer must be "yes" or "no" for question: "${q.question_text}"`,
+            );
+          }
+        } else if (q.input_type === "MULTI_CHOICE") {
+          if (
+            !submittedAnswer.answer_choices ||
+            submittedAnswer.answer_choices.length === 0
+          ) {
+            throw new BadRequestException(
+              `At least one choice is required for question: "${q.question_text}"`,
+            );
+          }
+        }
+      }
+
+      // If optional answer is provided, validate its format
+      if (submittedAnswer) {
+        if (
+          q.input_type === "RATING" &&
+          submittedAnswer.answer_rating !== undefined &&
+          submittedAnswer.answer_rating !== null
+        ) {
+          if (submittedAnswer.answer_rating < 1 || submittedAnswer.answer_rating > 5) {
+            throw new BadRequestException(
+              `Rating must be between 1 and 5 for question: "${q.question_text}"`,
+            );
+          }
+        }
+        if (q.input_type === "YES_NO" && submittedAnswer.answer_text) {
+          const val = submittedAnswer.answer_text.trim().toLowerCase();
+          if (val !== "yes" && val !== "no") {
+            throw new BadRequestException(
+              `Answer must be "yes" or "no" for question: "${q.question_text}"`,
+            );
+          }
+        }
+        if (
+          q.input_type === "MULTI_CHOICE" &&
+          submittedAnswer.answer_choices &&
+          submittedAnswer.answer_choices.length > 0
+        ) {
+          const validOptions = new Set(q.options);
+          for (const choice of submittedAnswer.answer_choices) {
+            if (!validOptions.has(choice)) {
+              throw new BadRequestException(
+                `Choice "${choice}" is not a valid option for question: "${q.question_text}"`,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    const submittedAt = new Date();
+
+    // Atomic submission claim inside transaction
+    const updatedReport = await this.prisma.$transaction(async (tx) => {
+      // Guarded atomic state transition
+      const claim = await tx.progress_reports.updateMany({
+        where: {
+          id,
+          nanny_id: nannyId,
+          status: { in: ["PENDING", "OVERDUE"] },
+        },
+        data: {
+          status: "SUBMITTED",
+          submitted_at: submittedAt,
+          personal_remark: dto.personal_remark?.trim() || null,
+        },
+      });
+
+      if (claim.count === 0) {
+        throw new BadRequestException("Report is already submitted or not found");
+      }
+
+      // Delete any pre-existing answers
       await tx.report_answers.deleteMany({
         where: { report_id: id },
       });
@@ -171,27 +329,52 @@ export class ProgressReportsService {
         data: dto.answers.map((a) => ({
           report_id: id,
           question_id: a.question_id,
-          answer_text: a.answer_text,
-          answer_rating: a.answer_rating,
+          answer_text: a.answer_text?.trim() || null,
+          answer_rating: a.answer_rating ?? null,
           answer_choices: a.answer_choices || [],
         })),
       });
 
-      // Update report status
-      return tx.progress_reports.update({
+      return tx.progress_reports.findUnique({
         where: { id },
-        data: {
-          status: "SUBMITTED",
-          submitted_at: new Date(),
-          personal_remark: dto.personal_remark,
+        include: {
+          report_answers: true,
+          report_templates: {
+            include: {
+              report_template_questions: {
+                orderBy: { display_order: "asc" },
+              },
+            },
+          },
         },
       });
     });
+
+    // Notify Parent (after transaction successfully commits)
+    if (report.bookings?.parent_id) {
+      await this.notificationsService
+        .createNotification(
+          report.bookings.parent_id,
+          "Progress Report Submitted",
+          `Your caregiver has submitted the progress report for booking #${report.booking_id}.`,
+          "success",
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to notify parent about submitted progress report: ${err.message}`,
+          ),
+        );
+    }
+
+    return updatedReport;
   }
 
   async generateReportForBooking(bookingId: string) {
     const booking = await this.prisma.bookings.findUnique({
       where: { id: bookingId },
+      include: {
+        booking_children: true,
+      },
     });
     if (!booking || !booking.nanny_id) return null;
 
@@ -212,19 +395,38 @@ export class ProgressReportsService {
       return null;
     }
 
-    const dueMs = PROGRESS_REPORT_DUE_HOURS * 60 * 60 * 1000;
-    const dueTime = booking.end_time
-      ? new Date(booking.end_time.getTime() + dueMs)
-      : new Date(Date.now() + dueMs);
+    // Due time: PROGRESS_REPORT_DUE_HOURS from completion (or scheduled end, whichever is later)
+    // to prevent instant overdue status on late completions.
+    const completionAnchor = booking.actual_end_time
+      ? booking.actual_end_time.getTime()
+      : booking.end_time
+        ? Math.max(booking.end_time.getTime(), Date.now())
+        : Date.now();
 
-    return this.prisma.progress_reports.create({
-      data: {
-        booking_id: bookingId,
-        nanny_id: booking.nanny_id,
-        template_id: template.id,
-        due_at: dueTime,
-        status: "PENDING",
-      },
-    });
+    const dueMs = PROGRESS_REPORT_DUE_HOURS * 60 * 60 * 1000;
+    const dueTime = new Date(completionAnchor + dueMs);
+
+    const childId = booking.booking_children?.[0]?.child_id ?? null;
+
+    try {
+      return await this.prisma.progress_reports.create({
+        data: {
+          booking_id: bookingId,
+          nanny_id: booking.nanny_id,
+          child_id: childId,
+          template_id: template.id,
+          due_at: dueTime,
+          status: "PENDING",
+        },
+      });
+    } catch (err: any) {
+      // Gracefully handle race condition where concurrent completion calls create the report
+      if (err?.code === "P2002") {
+        return this.prisma.progress_reports.findUnique({
+          where: { booking_id: bookingId },
+        });
+      }
+      throw err;
+    }
   }
 }

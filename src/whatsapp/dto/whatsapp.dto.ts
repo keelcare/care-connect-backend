@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEmail, IsEnum } from "class-validator";
+import { IsString, IsOptional, IsEnum, IsUUID } from "class-validator";
 import { WhatsAppEnquiryStatus } from "@prisma/client";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
@@ -14,10 +14,13 @@ export class UpdateEnquiryDto {
   @IsEnum(WhatsAppEnquiryStatus)
   status?: WhatsAppEnquiryStatus;
 
-  @ApiPropertyOptional({ description: "UUID of the support agent to assign" })
+  @ApiPropertyOptional({
+    description: "UUID of the support agent to assign. Pass null to unassign.",
+    nullable: true,
+  })
   @IsOptional()
-  @IsString()
-  assigned_to?: string;
+  @IsUUID()
+  assigned_to?: string | null;
 
   @ApiPropertyOptional({ description: "Internal agent notes" })
   @IsOptional()

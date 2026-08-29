@@ -150,6 +150,7 @@ export class LocationService {
       }
 
       const address = response.data.results[0].formatted_address;
+      this.capCache(this.geocodeCache);
       this.geocodeCache.set(cacheKey, { address, expiresAt: Date.now() + this.GEOCODE_CACHE_TTL_MS });
       return address;
     } catch (error) {
@@ -193,6 +194,38 @@ export class LocationService {
    */
   private toRadians(degrees: number): number {
     return degrees * (Math.PI / 180);
+  }
+
+  /** Unrounded haversine distance in metres (geofence checks need metre precision). */
+  private haversineMeters(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number,
+  ): number {
+    const R = 6371e3;
+    const dLat = this.toRadians(lat2 - lat1);
+    const dLng = this.toRadians(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(this.toRadians(lat1)) *
+        Math.cos(this.toRadians(lat2)) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  /**
+   * Both caches key on caller-supplied coordinates, so a client sweeping the
+   * grid could grow them without bound for the life of the process. Cap them:
+   * evict the oldest insertions once full (Map preserves insertion order).
+   */
+  private capCache(cache: Map<string, unknown>, max = 1000): void {
+    while (cache.size >= max) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
   }
 
   /**
@@ -276,6 +309,7 @@ export class LocationService {
         distance: Math.round(nanny.distance * 100) / 100,
       }));
 
+      this.capCache(this.nearbyCache);
       this.nearbyCache.set(cacheKey, { results, expiresAt: Date.now() + this.NEARBY_CACHE_TTL_MS });
       return results;
     } catch (error) {
@@ -355,6 +389,7 @@ export class LocationService {
         distance: Math.round(job.distance * 100) / 100,
       }));
 
+      this.capCache(this.nearbyCache);
       this.nearbyCache.set(cacheKey, { results, expiresAt: Date.now() + this.NEARBY_CACHE_TTL_MS });
       return results;
     } catch (error) {
@@ -407,15 +442,21 @@ export class LocationService {
       ? { lat: Number(trail[0].lat), lng: Number(trail[0].lng), timestamp: trail[0].timestamp }
       : null;
 
+    // Metre-precise haversine, matching the gateway's arithmetic exactly.
+    // Previously this took calculateDistance() — which rounds to 2dp *km*,
+    // i.e. 10m granularity — and multiplied by 1000, so near the fence this
+    // REST snapshot could disagree with the socket stream about `inside`
+    // (e.g. a true 104m against a 100m radius rounds to 0.10km → 100m →
+    // "inside" here, "outside" on the socket).
     let distance: number | null = null;
     if (careLocation && latest) {
       distance = Math.round(
-        this.calculateDistance(
+        this.haversineMeters(
           latest.lat,
           latest.lng,
           careLocation.lat,
           careLocation.lng,
-        ) * 1000,
+        ),
       );
     }
 

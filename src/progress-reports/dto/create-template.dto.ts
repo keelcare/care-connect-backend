@@ -1,4 +1,14 @@
-import { IsString, IsNotEmpty, IsArray, ValidateNested, IsBoolean, IsInt, IsEnum, IsOptional } from "class-validator";
+import {
+  IsString,
+  IsNotEmpty,
+  IsArray,
+  ValidateNested,
+  IsBoolean,
+  IsInt,
+  IsEnum,
+  IsOptional,
+  ArrayMinSize,
+} from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { report_input_type } from "@prisma/client";
@@ -32,6 +42,7 @@ export class QuestionDto {
 export class CreateTemplateDto {
   @ApiProperty({ type: [QuestionDto] })
   @IsArray()
+  @ArrayMinSize(1, { message: "Template must contain at least one question" })
   @ValidateNested({ each: true })
   @Type(() => QuestionDto)
   questions: QuestionDto[];

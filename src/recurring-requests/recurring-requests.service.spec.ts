@@ -14,7 +14,15 @@ describe('RecurringRequestsService', () => {
   let service: RecurringRequestsService;
 
   const mockPrisma = {
-    recurring_service_requests: { findMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    users: { findUnique: jest.fn() },
+    recurring_service_requests: {
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      // The cancel path claims the plan atomically (guarded updateMany), so a
+      // concurrent cancel/cron transition loses the claim instead of racing.
+      updateMany: jest.fn(),
+    },
     bookings: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -47,6 +55,7 @@ describe('RecurringRequestsService', () => {
     cyclesToVoid: jest.fn(),
   };
 
+  const mockAddresses = { resolveForUser: jest.fn() };
   const mockEmitter = { emit: jest.fn() };
   const mockSse = { emitToUser: jest.fn(), emitToUsers: jest.fn() };
   const mockDocuments = { issueSettlement: jest.fn() };
@@ -72,7 +81,7 @@ describe('RecurringRequestsService', () => {
       providers: [
         RecurringRequestsService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: AddressesService, useValue: { resolveForUser: jest.fn() } },
+        { provide: AddressesService, useValue: mockAddresses },
         { provide: NotificationsService, useValue: { createNotification: jest.fn() } },
         { provide: PricingEngineService, useValue: mockPricing },
         { provide: PlanEntitlementService, useValue: mockEntitlement },
@@ -137,6 +146,20 @@ describe('RecurringRequestsService', () => {
       expect(dates[dates.length - 1] < new Date('2026-10-04T00:00:00')).toBe(true);
     });
 
+    it('accepts the recurrence type in either casing', () => {
+      // The column stores the DTO's lowercase values; older rows and callers
+      // carry uppercase. Both must classify identically or generation and
+      // entitlement drift apart.
+      const upper = service.generateDates(
+        '2026-09-01', undefined, 'SPECIFIC_DATES' as RecurrenceType, { dates: [1, 15] }, 1,
+      );
+      const lower = service.generateDates(
+        '2026-09-01', undefined, RecurrenceType.SPECIFIC_DATES, { dates: [1, 15] }, 1,
+      );
+      expect(upper.map((d) => d.toISOString())).toEqual(lower.map((d) => d.toISOString()));
+      expect(lower).toHaveLength(2);
+    });
+
     it('only emits the weekdays that were selected', () => {
       const dates = service.generateDates(
         '2026-09-01',
@@ -147,6 +170,47 @@ describe('RecurringRequestsService', () => {
       );
       expect(dates.length).toBeGreaterThan(0);
       expect(dates.every((d) => [1, 3].includes(d.getDay()))).toBe(true);
+    });
+  });
+
+  describe('create — date validation', () => {
+    const dto: any = {
+      recurrence_type: 'weekly',
+      recurrence_pattern: { days: ['Mon', 'Wed'] },
+      start_time: '09:00',
+      duration_hours: 4,
+      num_children: 1,
+      category: 'CC',
+      plan_type: 'MONTHLY',
+    };
+
+    beforeEach(() => {
+      mockAddresses.resolveForUser.mockResolvedValue({ lat: 12.9, lng: 77.6 });
+      mockPrisma.users.findUnique.mockResolvedValue({
+        id: 'parent-1',
+        profiles: { lat: 12.9, lng: 77.6 },
+      });
+    });
+
+    it('rejects a start date that has already passed', async () => {
+      // Past sessions can never be served, and the unassigned-expiry cron would
+      // kill the plan the same night — after the matching fee had been raised.
+      await expect(
+        service.create('parent-1', { ...dto, start_date: '2020-01-01' }),
+      ).rejects.toThrow("The plan's start date cannot be in the past.");
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an end date before the start date', async () => {
+      const future = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      const beforeIt = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      await expect(
+        service.create('parent-1', { ...dto, start_date: future, end_date: beforeIt }),
+      ).rejects.toThrow("The plan's end date cannot be before its start date.");
     });
   });
 
@@ -323,7 +387,9 @@ describe('RecurringRequestsService', () => {
       mockPrisma.bookings.findMany.mockResolvedValue(futureSessions(over.future ?? 0));
       mockPrisma.bookings.updateMany.mockResolvedValue({ count: 0 });
       mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 0 });
-      mockPrisma.recurring_service_requests.update.mockResolvedValue({});
+      // The guarded claim succeeds by default; individual tests set count 0 to
+      // simulate losing the race.
+      mockPrisma.recurring_service_requests.updateMany.mockResolvedValue({ count: 1 });
     }
 
     it('keeps the sessions the parent already paid for', async () => {
@@ -357,12 +423,17 @@ describe('RecurringRequestsService', () => {
 
       await service.cancel('plan-1', 'parent-1');
 
-      const update = mockPrisma.recurring_service_requests.update.mock.calls[0][0];
+      const update = mockPrisma.recurring_service_requests.updateMany.mock.calls[0][0];
       expect(update.data.nanny_id).toBe('nanny-1');
       expect(update.data.status).toBe('winding_down');
       expect(update.data.sessions_entitled_at_cancellation).toBe(10);
       expect(update.data.cancellation_reason).toBeTruthy();
       expect(update.data.cancelled_at).toBeInstanceOf(Date);
+      // The write is a claim, not a bare update: it only lands on a plan that
+      // is still cancellable, so a concurrent transition rolls this cancel back.
+      expect(update.where.status.notIn).toEqual(
+        expect.arrayContaining(['cancelled', 'completed', 'expired', 'winding_down']),
+      );
     });
 
     it('cancels outright and releases the caregiver when nothing was paid for', async () => {
@@ -373,7 +444,7 @@ describe('RecurringRequestsService', () => {
       expect(result.retainedSessions).toBe(0);
       expect(result.cancelledSessions).toBe(12);
       expect(result.status).toBe('cancelled');
-      const update = mockPrisma.recurring_service_requests.update.mock.calls[0][0];
+      const update = mockPrisma.recurring_service_requests.updateMany.mock.calls[0][0];
       expect(update.data.nanny_id).toBeNull();
     });
 
@@ -458,7 +529,7 @@ describe('RecurringRequestsService', () => {
       const result = await service.cancel('plan-1', 'parent-1');
 
       expect(result).toEqual({ success: true, cancelledSessions: 0, retainedSessions: 7 });
-      expect(mockPrisma.recurring_service_requests.update).not.toHaveBeenCalled();
+      expect(mockPrisma.recurring_service_requests.updateMany).not.toHaveBeenCalled();
       expect(mockEmitter.emit).not.toHaveBeenCalled();
     });
 
@@ -476,6 +547,38 @@ describe('RecurringRequestsService', () => {
       setup();
       await expect(service.cancel('plan-1', 'intruder')).rejects.toThrow(
         'You can only cancel your own recurring plans',
+      );
+    });
+
+    it('answers idempotently when a concurrent cancel wins the claim', async () => {
+      // The status was valid on the pre-read, but the guarded claim found the
+      // plan already moved on (a double-tap racing itself, or the cron). The
+      // transaction rolls back — shortfall sessions included — and the caller
+      // gets the same answer the earlier winner produced.
+      setup({ entitled: 10, delivered: 3, future: 17 });
+      mockPrisma.recurring_service_requests.updateMany.mockResolvedValue({ count: 0 });
+      // The post-loss re-read sees the state the winner left behind.
+      mockPrisma.recurring_service_requests.findUnique
+        .mockResolvedValueOnce(planRow())
+        .mockResolvedValueOnce({ status: 'winding_down' });
+      mockPrisma.bookings.count.mockResolvedValue(7);
+
+      const result = await service.cancel('plan-1', 'parent-1');
+
+      expect(result).toEqual({ success: true, cancelledSessions: 0, retainedSessions: 7 });
+      expect(mockEmitter.emit).not.toHaveBeenCalled();
+      expect(mockDocuments.issueSettlement).not.toHaveBeenCalled();
+    });
+
+    it('reports the winning terminal state when the claim is lost to a full cancellation', async () => {
+      setup({ entitled: 0, delivered: 0, future: 5 });
+      mockPrisma.recurring_service_requests.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.recurring_service_requests.findUnique
+        .mockResolvedValueOnce(planRow())
+        .mockResolvedValueOnce({ status: 'cancelled' });
+
+      await expect(service.cancel('plan-1', 'parent-1')).rejects.toThrow(
+        'This plan is already cancelled',
       );
     });
 

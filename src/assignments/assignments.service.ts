@@ -13,6 +13,7 @@ import { SseService } from "../sse/sse.service";
 import { SSE_EVENTS } from "../events/sse-event.types";
 import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
+import { BookingStatus } from "../common/constants/booking-status.enum";
 
 @Injectable()
 export class AssignmentsService {
@@ -88,15 +89,64 @@ export class AssignmentsService {
     if (assignment.status !== "pending")
       throw new BadRequestException("Assignment is not pending");
 
+    // The request window this acceptance would occupy — needed for the in-tx
+    // availability re-check below.
+    const requestStartTime = TimeUtils.combineDateAndTime(
+      assignment.service_requests.date,
+      assignment.service_requests.start_time,
+    );
+    const requestEndTime = TimeUtils.getEndTime(
+      requestStartTime,
+      Number(assignment.service_requests.duration_hours),
+    );
+
     // Use a transaction to ensure all updates happen atomically and safely
-    return await this.prisma.$transaction(async (tx) => {
-      // 1. Update assignment status
-      const updatedAssignment = await tx.assignments.update({
-        where: { id },
+    const { updatedAssignment, updatedBooking } = await this.prisma.$transaction(async (tx) => {
+      // 1. Atomically CLAIM the acceptance. The status check above was a stale
+      // read: the timeout cron, a concurrent reject, or a parent cancellation
+      // can flip this assignment between that read and this write. An unguarded
+      // update would overwrite that transition and confirm a booking for an
+      // assignment that already timed out or was cancelled. The status guard
+      // makes exactly one responder win; a count of 0 means we lost the race.
+      const claimed = await tx.assignments.updateMany({
+        where: { id, status: "pending" },
         data: {
           status: "accepted",
           responded_at: new Date(),
         },
+      });
+      if (claimed.count === 0) {
+        throw new BadRequestException("Assignment is not pending");
+      }
+
+      // 1b. RE-VERIFY AVAILABILITY. Auto-matching re-checks for overlapping
+      // bookings inside its transaction, but the manual accept path never did —
+      // a nanny holding a pending assignment could get booked for an
+      // overlapping slot (auto-match, admin assignment) and still accept this
+      // one, double-booking themselves. Throwing rolls the claim back, so the
+      // assignment stays pending for them to reject.
+      const overlap = await tx.bookings.findFirst({
+        where: {
+          nanny_id: nannyId,
+          status: {
+            in: [
+              BookingStatus.CONFIRMED,
+              BookingStatus.IN_PROGRESS,
+              BookingStatus.REQUESTED,
+            ],
+          },
+          start_time: { lt: requestEndTime },
+          end_time: { gt: requestStartTime },
+        },
+      });
+      if (overlap) {
+        throw new BadRequestException(
+          "You already have a booking that overlaps this time slot.",
+        );
+      }
+
+      const updatedAssignment = await tx.assignments.findUniqueOrThrow({
+        where: { id },
         include: {
           service_requests: {
             include: {
@@ -107,11 +157,22 @@ export class AssignmentsService {
         },
       });
 
-      // 2. Update request status
-      await tx.service_requests.update({
-        where: { id: assignment.request_id },
-        data: { status: "accepted" },
+      // 2. Update request status — guarded, so accepting can never resurrect a
+      // request that was cancelled/expired between the read and this write.
+      // current_assignment_id is set here for parity with the auto-accept path
+      // in triggerMatching(), which has always recorded it.
+      const requestClaim = await tx.service_requests.updateMany({
+        where: {
+          id: assignment.request_id,
+          status: { in: ["pending", "accepted", "assigned"] },
+        },
+        data: { status: "accepted", current_assignment_id: id },
       });
+      if (requestClaim.count === 0) {
+        throw new BadRequestException(
+          "This request is no longer active. It may have been cancelled.",
+        );
+      }
 
       // 3. Find and Update Existing Booking
       // We look for any booking associated with this request that isn't cancelled.
@@ -129,11 +190,18 @@ export class AssignmentsService {
         );
       }
 
-      const updatedBooking = await tx.bookings.update({
-        where: { id: existingBooking.id },
+      // Guarded claim: only a booking still awaiting assignment (or already
+      // confirmed for this request) may be confirmed here. Without the status
+      // guard a booking cancelled/started between the findFirst above and this
+      // write would be silently flipped back to CONFIRMED.
+      const bookingClaim = await tx.bookings.updateMany({
+        where: {
+          id: existingBooking.id,
+          status: { in: [BookingStatus.REQUESTED, BookingStatus.CONFIRMED] },
+        },
         data: {
           nanny_id: nannyId,
-          status: "CONFIRMED",
+          status: BookingStatus.CONFIRMED,
           // Update times from request just in case
           start_time: TimeUtils.combineDateAndTime(
             updatedAssignment.service_requests.date.toISOString().split("T")[0],
@@ -149,6 +217,14 @@ export class AssignmentsService {
             Number(updatedAssignment.service_requests.duration_hours),
           ),
         },
+      });
+      if (bookingClaim.count === 0) {
+        throw new BadRequestException(
+          "The booking for this request can no longer be confirmed.",
+        );
+      }
+      const updatedBooking = await tx.bookings.findUniqueOrThrow({
+        where: { id: existingBooking.id },
       });
 
       // 3.5 Create recurring booking record if subscription
@@ -166,28 +242,40 @@ export class AssignmentsService {
         updatedAssignment.service_requests.parent_id,
       );
 
-      // 4. Create Chat for this booking (Atomically)
-      try {
-        await this.chatService.createChat(updatedBooking.id);
-      } catch (error) {
-        this.logger.error(
-          `Failed to create chat for booking ${updatedBooking.id} in transaction`,
-          (error as Error)?.stack,
-        );
-      }
-
-      // 5. Update acceptance rate
+      // 4. Update acceptance rate
       await this.updateAcceptanceRateInternal(nannyId, tx);
 
-      // 6. Notify Parent
-      await this.notificationsService.createNotification(
-        updatedAssignment.service_requests.parent_id,
-        "Booking Confirmed!",
-        `A nanny has accepted your request. Tap to view booking details.`,
-        "success",
-      );
+      return { updatedAssignment, updatedBooking };
+    });
 
-      // 7. Send Emails (Outside the core logic but within the transaction's success scope - actually, better to do after transaction fails, but Nest will rollback if any error occurs here)
+    // ---- Post-commit side effects ----
+    // Everything below used to run INSIDE the transaction. Notifications write
+    // through the main prisma client (not the tx), and emails/SSE are external
+    // sends — none of them roll back. A failure in a later transactional step
+    // therefore left the parent with a "Booking Confirmed!" notification and
+    // confirmation emails for a booking that was never confirmed. They now run
+    // only after the transaction has committed, matching the events-after-commit
+    // pattern used across the codebase.
+
+    // Create Chat for this booking
+    try {
+      await this.chatService.createChat(updatedBooking.id);
+    } catch (error) {
+      this.logger.error(
+        `Failed to create chat for booking ${updatedBooking.id}`,
+        (error as Error)?.stack,
+      );
+    }
+
+    // Notify Parent
+    await this.notificationsService.createNotification(
+      updatedAssignment.service_requests.parent_id,
+      "Booking Confirmed!",
+      `A nanny has accepted your request. Tap to view booking details.`,
+      "success",
+    );
+
+    {
       const parent = updatedAssignment.service_requests.users;
       const nanny = updatedAssignment.users;
       const parentName =
@@ -247,9 +335,9 @@ export class AssignmentsService {
         data: updatedBooking,
         timestamp: new Date().toISOString(),
       });
+    }
 
-      return { assignment: updatedAssignment, booking: updatedBooking };
-    });
+    return { assignment: updatedAssignment, booking: updatedBooking };
   }
 
   async reject(id: string, nannyId: string, reason?: string) {
@@ -264,15 +352,22 @@ export class AssignmentsService {
     if (assignment.status !== "pending")
       throw new BadRequestException("Assignment is not pending");
 
-    // 1. Update assignment status
-    await this.prisma.assignments.update({
-      where: { id },
+    // 1. Atomically CLAIM the rejection. Guarded for the same reason as
+    // accept(): a concurrent accept, the timeout cron, or a parent cancellation
+    // can flip this row after the read above, and an unguarded update would
+    // stamp "rejected" over an assignment that was already accepted — and then
+    // trigger a re-match against a request that is confirmed.
+    const claimed = await this.prisma.assignments.updateMany({
+      where: { id, status: "pending" },
       data: {
         status: "rejected",
         rejection_reason: reason,
         responded_at: new Date(),
       },
     });
+    if (claimed.count === 0) {
+      throw new BadRequestException("Assignment is not pending");
+    }
 
     // 2. Update acceptance rate
     await this.updateAcceptanceRateInternal(nannyId);

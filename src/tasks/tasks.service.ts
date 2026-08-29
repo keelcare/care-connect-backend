@@ -208,10 +208,10 @@ export class TasksService {
             );
         }
 
-        // Recorded per-row after sending, so a crash midway through the batch
-        // re-reminds only the parents we hadn't reached.
-        await this.prisma.payment_installments.update({
-          where: { id: instalment.id },
+        // Recorded per-row after sending; guarded on INSTALMENT_PENDING status so a concurrent
+        // payment capture doesn't have its settled record mutated by the reminder job.
+        await this.prisma.payment_installments.updateMany({
+          where: { id: instalment.id, status: INSTALMENT_PENDING },
           data: { last_reminded_at: now, reminder_count: { increment: 1 } },
         });
       }
@@ -249,6 +249,11 @@ export class TasksService {
           next_due_date: {
             gte: targetDateMin,
             lte: targetDateMax,
+          },
+          bookings: {
+            status: {
+              not: BookingStatus.CANCELLED,
+            },
           },
         },
         include: {

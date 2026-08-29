@@ -155,9 +155,13 @@ export class AuthService {
         throw new UnauthorizedException("Refresh token has been revoked");
       }
 
-      // Directly using findUnique to be 100% sure we get the hash
+      // Look up by id, not email. The token identifies an *account*; email is a
+      // mutable attribute of it. Resolving by `payload.email` broke every
+      // outstanding session the moment a user changed their address — and would
+      // resolve to the wrong account entirely if the old address were ever
+      // re-registered. Directly on prisma to be 100% sure we get the hash.
       const user = await this.prisma.users.findUnique({
-        where: { email: payload.email },
+        where: { id: payload.sub },
       });
 
       if (!user || !user.refresh_token_hash) {
@@ -172,18 +176,30 @@ export class AuthService {
         throw new UnauthorizedException("Invalid refresh token");
       }
 
-      // Rotate token: revoke the old one
+      // Rotate token: the insert into revoked_tokens *is* the claim — the unique
+      // index on `token` means exactly one concurrent caller wins. The old shape
+      // checked revocation on a read (above), then inserted with the duplicate
+      // error swallowed, so two racing refreshes both passed the read, both
+      // bcrypt-compared successfully, and both minted sessions from one token.
+      // Non-duplicate DB errors still only warn: failing rotation-bookkeeping
+      // must not log a legitimate user out.
       const expiresAt = new Date((payload.exp || 0) * 1000);
-      await this.prisma.revoked_tokens
-        .create({
+      try {
+        await this.prisma.revoked_tokens.create({
           data: { token: refreshToken, expires_at: expiresAt },
-        })
-        .catch((err) => {
-          Logger.warn(
-            `Failed to revoke refresh token: ${err.message}`,
-            AuthService.name,
-          );
         });
+      } catch (err) {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          throw new UnauthorizedException("Refresh token has been revoked");
+        }
+        Logger.warn(
+          `Failed to revoke refresh token: ${err.message}`,
+          AuthService.name,
+        );
+      }
 
       // Generate new tokens
       return this.login(user);
@@ -291,6 +307,15 @@ export class AuthService {
   }
 
   async verifyEmail(token: string) {
+    // The controller passes `req.query.token` through raw, so this can be
+    // undefined (no param) or an array (?token=a&token=b). Prisma treats an
+    // undefined filter as *no filter at all*, turning the lookup into
+    // findFirst() over the whole users table — GET /auth/verify with no token
+    // must not resolve to an arbitrary account.
+    if (!token || typeof token !== "string") {
+      throw new BadRequestException("Invalid or expired verification token");
+    }
+
     const user = await this.usersService.findByVerificationToken(token);
 
     if (
@@ -495,7 +520,12 @@ export class AuthService {
   }
 
   async generateSessionToken(user: any) {
-    const payload = { sub: user.id };
+    // `type` distinguishes this one-shot exchange token from the 15m access
+    // token, which is signed with the *same* JWT_SECRET and also carries `sub`.
+    // Without it, POST /auth/session accepted any access token — including a
+    // blacklisted one from logout — and minted a brand-new session from it,
+    // quietly bypassing both logout revocation and refresh-token rotation.
+    const payload = { sub: user.id, type: "session" };
     // Short-lived token specifically for the exchange
     return this.jwtService.sign(payload, { expiresIn: "1m" });
   }
@@ -503,24 +533,37 @@ export class AuthService {
   async exchangeSessionToken(token: string) {
     try {
       const payload = this.jwtService.verify(token);
-      const user = await this.usersService.findOne(payload.sub);
 
-      if (!user) {
+      // Only tokens minted by generateSessionToken are exchangeable (see above).
+      if (payload.type !== "session") {
         throw new UnauthorizedException("Invalid session token");
       }
 
-      // Blacklist the session token immediately after use to prevent reuse
+      // Single-use claim. The insert into revoked_tokens *is* the claim: the
+      // unique index on `token` guarantees exactly one caller wins. The old
+      // shape inserted after use and swallowed the duplicate-key error, so a
+      // replayed token sailed through — the "blacklist" never blocked anything
+      // because nothing ever read it on this path. Claim before issuing, and a
+      // duplicate means the token was already spent.
       const expiresAt = new Date(payload.exp * 1000);
-      await this.prisma.revoked_tokens
-        .create({
+      try {
+        await this.prisma.revoked_tokens.create({
           data: { token, expires_at: expiresAt },
-        })
-        .catch((err) => {
-          Logger.warn(
-            `Session token already revoked or DB error: ${err.message}`,
-            AuthService.name,
-          );
         });
+      } catch (err) {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          throw new UnauthorizedException("Session token already used");
+        }
+        throw err;
+      }
+
+      const user = await this.usersService.findOne(payload.sub);
+      if (!user) {
+        throw new UnauthorizedException("Invalid session token");
+      }
 
       return this.login(user);
     } catch (error) {

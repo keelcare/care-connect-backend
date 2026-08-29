@@ -94,6 +94,13 @@ export class TransparentJwtAuthGuard extends AuthGuard("jwt") {
         secure: isSecure,
         sameSite: isSecure ? ("none" as const) : ("lax" as const),
         path: "/",
+        // Must match AuthController.getCookieOptions exactly. Login sets these
+        // cookies with `partitioned: true` in production; a Set-Cookie that
+        // differs only in Partitioned targets a *different* cookie jar in
+        // Chrome 114+, so a transparent refresh here left the stale login-time
+        // pair alive alongside the new one — and which copy the browser sent
+        // back was unspecified, intermittently resurrecting revoked tokens.
+        ...(isSecure ? { partitioned: true } : {}),
       };
 
       response.cookie("access_token", loginData.access_token, {

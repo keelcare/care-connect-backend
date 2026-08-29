@@ -314,3 +314,241 @@ describe('PricingEngineService — raising the fee at confirmation', () => {
     expect((await svc.raiseMatchingFee('booking-1'))?.amount).toBe(249);
   });
 });
+
+/**
+ * The dedupe/credit pair must agree about which fee rows are alive. A fee voided
+ * at cancellation (or refunded) is money the platform never kept — treating it
+ * as the live fee blocks re-raising, and crediting it against cycle 1 gives the
+ * parent a discount for a fee they never paid.
+ */
+describe('PricingEngineService — dead fee rows (void/refunded)', () => {
+  async function service(prisma: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('ignores voided/refunded fee rows when deduping a re-raise', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const create = jest.fn().mockImplementation(({ data }) => ({ id: 'row', ...data }));
+    const prisma = {
+      system_settings: {
+        findUnique: jest.fn().mockResolvedValue({ value: { enabled: true, amount: 249 } }),
+      },
+      payment_installments: { findFirst },
+      $transaction: jest.fn().mockImplementation((cb: any) =>
+        cb({ price_snapshots: { create }, payment_installments: { create } }),
+      ),
+    };
+    const svc = await service(prisma);
+    const res = await svc.raiseMatchingFee('booking-1');
+
+    // The dedupe query must exclude rows that stopped being owed…
+    expect(findFirst.mock.calls[0][0].where.status).toEqual({
+      notIn: ['void', 'refunded'],
+    });
+    // …so with only a dead row present (findFirst → null), a fresh fee is raised.
+    expect(res?.amount).toBe(249);
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it('does not credit a voided/refunded fee against cycle 1', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const prisma = { payment_installments: { findFirst } };
+    const svc = await service(prisma);
+
+    // Private, but this is the single place the credit is decided.
+    const credit = await (svc as any).matchingFeeCreditFor('booking-1', 1);
+
+    expect(credit).toBe(0);
+    expect(findFirst.mock.calls[0][0].where.status).toEqual({
+      notIn: ['void', 'refunded'],
+    });
+  });
+
+  it('credits nothing for cycles after the first without querying', async () => {
+    const findFirst = jest.fn();
+    const svc = await service({ payment_installments: { findFirst } });
+    expect(await (svc as any).matchingFeeCreditFor('booking-1', 2)).toBe(0);
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Advancing the due date is calendar arithmetic on someone's bill. A raw
+ * setMonth overflowed short months (31 Jan → 3 Mar) and the drift never healed,
+ * misaligning the due date with the clamped cycleWindow forever.
+ */
+describe('PricingEngineService — advancing a payment plan', () => {
+  async function service(prisma: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  function tx(plan: any) {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    return {
+      payment_plans: { findUnique: jest.fn().mockResolvedValue(plan), updateMany },
+      updateMany,
+    };
+  }
+
+  it('clamps a month-end due date instead of overflowing into the next month', async () => {
+    const t = tx({
+      id: 'plan-1',
+      cycles_completed: 0,
+      total_cycles: 6,
+      next_due_date: new Date(2026, 0, 31), // 31 Jan
+    });
+    const svc = await service({});
+    expect(await svc.advancePaymentPlanTx(t as any, 'plan-1')).toBe(true);
+
+    const written = t.updateMany.mock.calls[0][0].data.next_due_date as Date;
+    expect(written.getMonth()).toBe(1); // February…
+    expect(written.getDate()).toBe(28); // …clamped to its last day, not 3 Mar.
+  });
+
+  it('advances at most once: the completed count is part of the WHERE clause', async () => {
+    const t = tx({
+      id: 'plan-1',
+      cycles_completed: 2,
+      total_cycles: 6,
+      next_due_date: new Date(2026, 3, 15),
+    });
+    const svc = await service({});
+    await svc.advancePaymentPlanTx(t as any, 'plan-1');
+    expect(t.updateMany.mock.calls[0][0].where).toEqual({
+      id: 'plan-1',
+      cycles_completed: 2,
+    });
+  });
+
+  it('refuses to advance when the caller expected a different cycle count', async () => {
+    const t = tx({ id: 'plan-1', cycles_completed: 3, total_cycles: 6, next_due_date: new Date() });
+    const svc = await service({});
+    expect(await svc.advancePaymentPlanTx(t as any, 'plan-1', 2)).toBe(false);
+    expect(t.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('PricingEngineService — plan creation and snapshot state', () => {
+  async function service(prisma: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('creates a payment plan atomically and never resets an existing one', async () => {
+    const upsert = jest.fn().mockResolvedValue({ id: 'plan-1' });
+    const svc = await service({ payment_plans: { upsert } });
+    const start = new Date('2026-09-01T00:00:00Z');
+
+    await svc.createPaymentPlan('booking-1', 6, start);
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.where).toEqual({ booking_id: 'booking-1' });
+    // Empty update arm: a re-confirmation must not zero cycles_completed.
+    expect(args.update).toEqual({});
+    expect(args.create.total_cycles).toBe(6);
+  });
+
+  it('never downgrades a charged snapshot back to failed/retryable', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const svc = await service({ price_snapshots: { updateMany } });
+
+    await svc.markSnapshotFailed('snap-1');
+
+    expect(updateMany.mock.calls[0][0].where).toEqual({
+      id: 'snap-1',
+      status: { not: 'charged' },
+    });
+  });
+});
+
+/**
+ * Publishing a rate card must take effect immediately and leave no instant with
+ * no card in force.
+ */
+describe('PricingEngineService — rate card publication', () => {
+  async function service(prisma: unknown) {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        PricingEngineService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ConfigService, useValue: { get: () => undefined } },
+      ],
+    }).compile();
+    return moduleRef.get(PricingEngineService);
+  }
+
+  it('closes the old card and opens the new one at the same instant', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const create = jest.fn().mockImplementation(({ data }) => ({ id: 'card-2', ...data }));
+    const prisma = {
+      $transaction: (cb: any) => cb({ rate_cards: { updateMany, create } }),
+      rate_cards: { findMany: jest.fn() },
+    };
+    const svc = await service(prisma);
+    await svc.createRateCard('svc-1', 120, 'admin-1');
+
+    const closedAt = updateMany.mock.calls[0][0].data.effective_to;
+    const openedFrom = create.mock.calls[0][0].data.effective_from;
+    // Identical instant: any gap, even milliseconds, is a window where
+    // getEffectiveRateCard finds no card at all and billing throws.
+    expect(closedAt).toBe(openedFrom);
+  });
+
+  it('drops the cached card list so the new rate is used immediately', async () => {
+    const oldCard = {
+      id: 'card-1',
+      hourly_rate: 100,
+      effective_from: new Date('2026-01-01'),
+      effective_to: null,
+    };
+    const newCard = {
+      id: 'card-2',
+      hourly_rate: 120,
+      effective_from: new Date('2026-06-01'),
+      effective_to: null,
+    };
+    const findMany = jest
+      .fn()
+      .mockResolvedValueOnce([oldCard])
+      .mockResolvedValueOnce([newCard]);
+    const prisma = {
+      rate_cards: { findMany },
+      $transaction: (cb: any) =>
+        cb({
+          rate_cards: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            create: jest.fn().mockResolvedValue(newCard),
+          },
+        }),
+    };
+    const svc = await service(prisma);
+
+    // Warm the cache with the old card…
+    expect((await svc.getEffectiveRateCard('svc-1')).id).toBe('card-1');
+    // …publish a new one…
+    await svc.createRateCard('svc-1', 120, 'admin-1');
+    // …and the very next lookup must re-query rather than serve the stale list.
+    expect((await svc.getEffectiveRateCard('svc-1')).id).toBe('card-2');
+    expect(findMany).toHaveBeenCalledTimes(2);
+  });
+});

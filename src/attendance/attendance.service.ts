@@ -50,6 +50,8 @@ interface RecordOptions {
   minutesDelta?: number | null;
   distanceMeters?: number | null;
   weight?: number;
+  /** Explicit idempotency key, for events whose uniqueness is not per-booking. */
+  dedupeKey?: string;
   source?: "app" | "system" | "admin";
   notes?: string;
   metadata?: Prisma.InputJsonValue;
@@ -88,9 +90,10 @@ export class AttendanceService {
   ) {
     const occurredAt = opts.occurredAt ?? new Date();
     const dedupeKey =
-      opts.bookingId && ONCE_PER_BOOKING_TYPES.includes(type)
+      opts.dedupeKey ??
+      (opts.bookingId && ONCE_PER_BOOKING_TYPES.includes(type)
         ? `${opts.bookingId}:${type}`
-        : null;
+        : null);
 
     try {
       return await this.prisma.nanny_attendance_events.create({
@@ -171,7 +174,13 @@ export class AttendanceService {
     // A no-show may already have been written by the sweeper for a caregiver who
     // turned up very late. She did attend, so the harsher outcome is withdrawn
     // rather than left to sit alongside the arrival contradicting it.
-    if (!onTime) await this.retractNoShow(booking.id);
+    //
+    // Retracted on *every* check-in, not just late ones: the sweeper reads a
+    // snapshot and can insert its NO_SHOW after this check-in has been recorded
+    // (or the check-in event can be delivered late), so an on-time arrival can
+    // coexist with a NO_SHOW row too. The retraction is a no-op when there is
+    // nothing to waive, so running it unconditionally costs nothing.
+    await this.retractNoShow(booking.id);
   }
 
   /** Departure, from `booking.completed`. */
@@ -252,6 +261,23 @@ export class AttendanceService {
   async recordNoShow(booking: bookings) {
     if (!this.isCaregiverAccountable(booking) || !booking.start_time) return;
 
+    // The sweeper hands us a snapshot taken before this call. A caregiver who
+    // checks in between that read and this write would be flagged as a no-show
+    // for a session she is standing inside — so re-read the live row and only
+    // proceed if the session is still unstarted and still hers to answer for.
+    const fresh = await this.prisma.bookings.findUnique({
+      where: { id: booking.id },
+      select: { status: true, nanny_id: true, actual_start_time: true },
+    });
+    if (
+      !fresh ||
+      fresh.actual_start_time !== null ||
+      fresh.status !== "CONFIRMED" ||
+      !this.isCaregiverAccountable(fresh)
+    ) {
+      return;
+    }
+
     const event = await this.record(booking.nanny_id!, "NO_SHOW", {
       bookingId: booking.id,
       scheduledStart: booking.start_time,
@@ -259,6 +285,19 @@ export class AttendanceService {
       notes: "No check-in recorded within the no-show window",
     });
     if (!event) return; // already flagged
+
+    // Close the residual race: a check-in that landed between the re-read above
+    // and the insert has already run its retraction against a NO_SHOW that did
+    // not exist yet. If the session has started by now, withdraw our own row —
+    // the caregiver attended, and the record must not say otherwise.
+    const recheck = await this.prisma.bookings.findUnique({
+      where: { id: booking.id },
+      select: { actual_start_time: true },
+    });
+    if (recheck?.actual_start_time) {
+      await this.retractNoShow(booking.id);
+      return;
+    }
 
     await Promise.all([
       this.notifications
@@ -394,6 +433,14 @@ export class AttendanceService {
         bookingId,
         scheduledStart: booking.start_time,
         distanceMeters: Math.round(currentDistance),
+        // The cooldown check above is read-then-write: two outside pings landing
+        // together both find no recent breach and both record, doubling the
+        // penalty. Keying the row to the cooldown bucket makes the database the
+        // arbiter — concurrent pings compute the same key and collide at the
+        // unique index, exactly like the once-per-booking events do.
+        dedupeKey: `${bookingId}:GEOFENCE_BREACH:${Math.floor(
+          now.getTime() / (GEOFENCE_BREACH_COOLDOWN_MINUTES * MINUTE_MS),
+        )}`,
         notes: `Outside the ${radius}m care area for over ${GEOFENCE_BREACH_MINUTES} minutes (currently ${Math.round(currentDistance)}m away)`,
       });
     } catch (err) {
@@ -667,14 +714,23 @@ export class AttendanceService {
     if (!event) throw new NotFoundException("Attendance event not found");
     if (event.waived_at) return event;
 
-    const updated = await this.prisma.nanny_attendance_events.update({
-      where: { id: eventId },
+    // Claim the waiver on the expected state instead of assuming the read above
+    // still holds. Two admins excusing the same event both pass the check;
+    // an unguarded `update` let both through, and both then refreshed the score
+    // and notified the caregiver twice. Exactly one claim wins here; the loser
+    // returns the settled row and owns no side effects.
+    const claimed = await this.prisma.nanny_attendance_events.updateMany({
+      where: { id: eventId, waived_at: null },
       data: {
         waived_at: new Date(),
         waived_by: adminId,
         waiver_reason: reason,
       },
     });
+    const updated = await this.prisma.nanny_attendance_events.findUnique({
+      where: { id: eventId },
+    });
+    if (claimed.count === 0) return updated!;
 
     await this.refreshScore(event.nanny_id);
     await this.notifications

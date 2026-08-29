@@ -47,6 +47,15 @@ export class AttendanceListeners {
     // unrecorded — she was available for all of them.
     if (!cancelledByUserId || cancelledByUserId !== booking.nanny_id) return;
 
+    // A no-show *report* also arrives here as a CANCELLED event, with the
+    // reporter as the actor. When the caregiver is the one reporting — the
+    // family never opened the door — the actor check above reads her as the
+    // canceller, and until this guard she was recorded with a LATE_CANCEL for
+    // a session she travelled to and stood outside of. `reportNoShow` tags the
+    // booking `noshow` inside the same transaction that cancels it, so the tag
+    // is always visible by the time the event fires.
+    if (booking.tags?.includes("noshow")) return;
+
     await this.attendance
       .recordNannyCancellation(booking, reason)
       .catch((err) => this.warn("cancellation", booking.id, err));

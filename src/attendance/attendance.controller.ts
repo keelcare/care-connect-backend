@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -41,6 +42,29 @@ export class AttendanceController {
     private readonly rollup: AttendanceRollupService,
   ) {}
 
+  /**
+   * `Number("abc")` is NaN, and NaN survives Math.min/Math.max — it used to flow
+   * straight into `new Date(NaN)` and surface as a Prisma 500 instead of a 400.
+   */
+  private parseWindow(days?: string): number {
+    if (days === undefined) return SCORE_WINDOW_DAYS;
+    const n = Number(days);
+    if (!Number.isFinite(n)) {
+      throw new BadRequestException("days must be a number");
+    }
+    return Math.min(Math.max(n, 7), 365);
+  }
+
+  /** ISO cursor validated here for the same reason — an invalid Date is a 500 in Prisma. */
+  private parseBefore(before?: string): Date | undefined {
+    if (!before) return undefined;
+    const d = new Date(before);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException("before must be an ISO timestamp");
+    }
+    return d;
+  }
+
   // ─── Caregiver's own record ───────────────────────────────────────────────
 
   @Get("me/summary")
@@ -48,16 +72,18 @@ export class AttendanceController {
   @ApiQuery({ name: "days", required: false, description: `Rolling window, default ${SCORE_WINDOW_DAYS}` })
   @ApiResponse({ status: 200, description: "Score, band, session counts, punctuality and day tallies" })
   async mySummary(@Request() req, @Query("days") days?: string) {
-    const windowDays = days ? Math.min(Math.max(Number(days), 7), 365) : SCORE_WINDOW_DAYS;
-    return this.attendance.getSummary(req.user.id, windowDays);
+    return this.attendance.getSummary(req.user.id, this.parseWindow(days));
   }
 
   @Get("me/calendar")
   @ApiOperation({ summary: "Day-by-day attendance for one month (YYYY-MM), for the calendar view" })
   async myCalendar(@Request() req, @Query("month") month?: string) {
+    // Default month derived from the IST calendar, not UTC — between midnight
+    // and 05:30 IST on the 1st, UTC is still in last month, and the app opened
+    // then showed the previous month's calendar with today missing from it.
     return this.attendance.getCalendar(
       req.user.id,
-      month ?? new Date().toISOString().slice(0, 7),
+      month ?? istDateOnly().toISOString().slice(0, 7),
     );
   }
 
@@ -70,7 +96,7 @@ export class AttendanceController {
   async myEvents(@Request() req, @Query() query: AttendanceEventsQueryDto) {
     return this.attendance.getEvents(req.user.id, {
       limit: query.limit,
-      before: query.before ? new Date(query.before) : undefined,
+      before: this.parseBefore(query.before),
     });
   }
 
@@ -92,9 +118,11 @@ export class AttendanceController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Caregivers whose attendance score has fallen into the at-risk band" })
   async atRisk(@Query("threshold") threshold?: string) {
-    return this.attendance.getAtRiskNannies(
-      threshold ? Number(threshold) : BAND_THRESHOLDS.NEEDS_IMPROVEMENT,
-    );
+    const parsed = threshold === undefined ? BAND_THRESHOLDS.NEEDS_IMPROVEMENT : Number(threshold);
+    if (!Number.isFinite(parsed)) {
+      throw new BadRequestException("threshold must be a number");
+    }
+    return this.attendance.getAtRiskNannies(parsed);
   }
 
   @Get("nanny/:nannyId/summary")
@@ -105,8 +133,7 @@ export class AttendanceController {
     @Param("nannyId", ParseUUIDPipe) nannyId: string,
     @Query("days") days?: string,
   ) {
-    const windowDays = days ? Math.min(Math.max(Number(days), 7), 365) : SCORE_WINDOW_DAYS;
-    return this.attendance.getSummary(nannyId, windowDays);
+    return this.attendance.getSummary(nannyId, this.parseWindow(days));
   }
 
   @Get("nanny/:nannyId/calendar")
@@ -117,9 +144,10 @@ export class AttendanceController {
     @Param("nannyId", ParseUUIDPipe) nannyId: string,
     @Query("month") month?: string,
   ) {
+    // Same IST-not-UTC defaulting as the caregiver's own calendar above.
     return this.attendance.getCalendar(
       nannyId,
-      month ?? new Date().toISOString().slice(0, 7),
+      month ?? istDateOnly().toISOString().slice(0, 7),
     );
   }
 
@@ -133,7 +161,7 @@ export class AttendanceController {
   ) {
     return this.attendance.getEvents(nannyId, {
       limit: query.limit,
-      before: query.before ? new Date(query.before) : undefined,
+      before: this.parseBefore(query.before),
     });
   }
 
@@ -150,7 +178,15 @@ export class AttendanceController {
     @Body() dto: WaiveEventDto,
     @Request() req,
   ) {
-    return this.attendance.waiveEvent(eventId, req.user.id, dto.reason);
+    const waived = await this.attendance.waiveEvent(eventId, req.user.id, dto.reason);
+    // The score refresh inside `waiveEvent` covers the number, but the day
+    // record is only rebuilt by the hourly/nightly crons — which never revisit
+    // past dates. Without this, waiving last week's NO_SHOW cleared the score
+    // yet left that day reading ABSENT on the roster and calendar forever.
+    // The roll-up is idempotent, so re-running it here for an already-waived
+    // event is harmless.
+    await this.rollup.rollUpDay(waived.attendance_date);
+    return waived;
   }
 
   @Post("nanny/:nannyId/day/:date/override")
@@ -179,6 +215,11 @@ export class AttendanceController {
       "For use after a correction. The roll-up derives from bookings and events and upserts, so re-running any past day is safe and produces what the original pass would have.",
   })
   async recompute(@Query("date") date?: string) {
+    // Validated like the other date params — an arbitrary string became
+    // `new Date("…T00:00:00.000Z")` = Invalid Date, which Prisma turns into a 500.
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException("date must be in YYYY-MM-DD format");
+    }
     const target = date ? new Date(`${date}T00:00:00.000Z`) : istDateOnly();
     const days = await this.rollup.rollUpDay(target);
     const scored = await this.rollup.refreshAllScores();

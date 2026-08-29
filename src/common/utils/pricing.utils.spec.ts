@@ -405,3 +405,56 @@ describe('cycleNumberFor', () => {
     expect(result.end).toBeInstanceOf(Date);
   });
 });
+
+/**
+ * Session counting must classify days on the IST calendar the bookings live on,
+ * not the server's. On UTC infrastructure the old local-calendar iteration put
+ * every pre-05:30-IST instant on the previous civil day, sliding the whole
+ * window one weekday over.
+ */
+describe('countSessionsBetween — IST calendar, wherever the server runs', () => {
+  const { countSessionsBetween } = require('./pricing.utils');
+
+  it('counts a weekday pattern off IST civil days', () => {
+    // 2026-09-04T00:00 IST (= 2026-09-03T18:30Z) is a Friday in IST but still
+    // Thursday in UTC. One week from that instant contains exactly one Friday.
+    const start = new Date('2026-09-03T18:30:00Z');
+    const end = new Date('2026-09-10T18:30:00Z');
+    expect(countSessionsBetween(start, end, 'WEEKLY', { days: ['Fri'] })).toBe(1);
+    // And no Thursday session materialises from the UTC-side reading.
+    expect(countSessionsBetween(start, end, 'WEEKLY', { days: ['Thu'] })).toBe(1);
+    expect(countSessionsBetween(start, end, 'WEEKLY', { days: ['Mon', 'Wed', 'Fri'] })).toBe(3);
+  });
+
+  it('matches SPECIFIC_DATES against the IST date of the instant', () => {
+    // 2026-09-30T20:00Z is already 1 Oct in IST: a "30th of the month" pattern
+    // over [that, +1 day) must therefore count zero sessions.
+    const start = new Date('2026-09-30T20:00:00Z');
+    const end = new Date('2026-10-01T20:00:00Z');
+    expect(countSessionsBetween(start, end, 'SPECIFIC_DATES', { dates: [30] })).toBe(0);
+    expect(countSessionsBetween(start, end, 'SPECIFIC_DATES', { dates: [1] })).toBe(1);
+  });
+
+  it('classifies the stored lowercase recurrence type the same as the uppercase one', () => {
+    // The DTO enum writes "specific_dates" (lowercase) to the column, but the
+    // old comparison was against 'SPECIFIC_DATES' — so every real
+    // specific-dates plan fell into the weekly branch with no weekday list and
+    // counted ZERO sessions per cycle. Entitlement then read 0, and a
+    // cancelling parent forfeited every session they had paid for.
+    const start = new Date('2026-09-01T00:00:00Z');
+    const end = new Date('2026-10-01T00:00:00Z');
+    expect(countSessionsBetween(start, end, 'specific_dates', { dates: [1, 15] })).toBe(2);
+    expect(countSessionsBetween(start, end, 'SPECIFIC_DATES', { dates: [1, 15] })).toBe(2);
+    expect(countSessionsBetween(start, end, 'weekly', { days: ['Fri'] })).toBe(
+      countSessionsBetween(start, end, 'WEEKLY', { days: ['Fri'] }),
+    );
+  });
+
+  it('returns 0 for an empty or malformed pattern', () => {
+    const start = new Date('2026-09-01T00:00:00Z');
+    const end = new Date('2026-10-01T00:00:00Z');
+    expect(countSessionsBetween(start, end, 'WEEKLY', {})).toBe(0);
+    expect(countSessionsBetween(start, end, 'WEEKLY', { days: ['Notaday'] })).toBe(0);
+    expect(countSessionsBetween(start, end, 'SPECIFIC_DATES', { dates: [] })).toBe(0);
+  });
+});

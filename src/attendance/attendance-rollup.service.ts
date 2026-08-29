@@ -349,7 +349,15 @@ export class AttendanceRollupService {
     const { scheduled, attended, late, missed, cancelled, onLeave } = input;
 
     if (scheduled === 0) return onLeave ? "LEAVE" : "OFF";
-    if (attended === 0) return "ABSENT";
+    // A day whose only outcomes were cancellations the caregiver gave notice
+    // for is not an absence. The score already treats an advance cancellation
+    // as near-neutral (+0.5) — marking the same day ABSENT on the roster would
+    // have the two records blaming her differently for one fact. It lands as
+    // PARTIAL, the same status a cancellation earns on a day she also worked.
+    // An unexcused no-show on the day still reads as ABSENT.
+    if (attended === 0) {
+      return missed === 0 && cancelled > 0 ? "PARTIAL" : "ABSENT";
+    }
     if (missed > 0 || cancelled > 0 || attended < scheduled) return "PARTIAL";
     return late > 0 ? "LATE" : "PRESENT";
   }

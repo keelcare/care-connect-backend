@@ -115,34 +115,47 @@ export class NannyOnboardingService {
       );
     }
 
-    await this.prisma.nanny_onboarding_details.update({
-      where: { user_id: userId },
-      data: { onboarding_completed_at: new Date() },
-    });
-
-    // Ensure a nanny_details row exists. The admin assignment / search query
-    // INNER JOINs nanny_details, so a completed caregiver with no row here is
-    // silently invisible to families. Create it with availability on; skills
-    // are assigned later via admin verification.
+    // "Onboarding is complete" is one fact spread across three tables
+    // (nanny_onboarding_details, nanny_details, profiles); a partial write
+    // leaves a caregiver who is stamped complete but invisible to the
+    // admin assignment query (no nanny_details row) or whose app keeps
+    // showing the onboarding wizard (profiles.onboarding_completed false).
+    // All three writes therefore commit or fail together.
     //
-    // Categories are carried over from the onboarding form — this is the only
-    // place they get set for a caregiver who signed up with Google (that flow
-    // never collected them), and completion happens once, so overwriting an
-    // existing row here cannot clobber an admin-approved category change.
-    await this.prisma.nanny_details.upsert({
-      where: { user_id: userId },
-      update: { categories: record.categories },
-      create: {
-        user_id: userId,
-        is_available_now: true,
-        categories: record.categories,
-      },
-    });
+    // Nothing stops the endpoint being called twice (double-tap, retry after
+    // a timeout), so the completion stamp is claimed atomically on
+    // onboarding_completed_at IS NULL. Categories are carried onto
+    // nanny_details only on that FIRST completion — this is the only place
+    // they get set for a caregiver who signed up with Google (that flow never
+    // collected them) — so a later re-submit can never clobber an
+    // admin-approved category change. Repeat calls just re-assert the
+    // profiles flag and return success (idempotent, not an error).
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.nanny_onboarding_details.updateMany({
+        where: { user_id: userId, onboarding_completed_at: null },
+        data: { onboarding_completed_at: new Date() },
+      });
+      const firstCompletion = claimed.count > 0;
 
-    const updated = await this.prisma.profiles.upsert({
-      where: { user_id: userId },
-      update: { onboarding_completed: true, updated_at: new Date() },
-      create: { user_id: userId, onboarding_completed: true },
+      // Ensure a nanny_details row exists. The admin assignment / search query
+      // INNER JOINs nanny_details, so a completed caregiver with no row here is
+      // silently invisible to families. Create it with availability on; skills
+      // are assigned later via admin verification.
+      await tx.nanny_details.upsert({
+        where: { user_id: userId },
+        update: firstCompletion ? { categories: record.categories } : {},
+        create: {
+          user_id: userId,
+          is_available_now: true,
+          categories: record.categories,
+        },
+      });
+
+      return tx.profiles.upsert({
+        where: { user_id: userId },
+        update: { onboarding_completed: true, updated_at: new Date() },
+        create: { user_id: userId, onboarding_completed: true },
+      });
     });
 
     return { onboardingCompleted: updated.onboarding_completed };

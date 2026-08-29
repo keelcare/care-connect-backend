@@ -211,13 +211,13 @@ export class AdminController {
   }
 
   @Put("reviews/:id/approve")
-  async approveReview(@Param("id") id: string) {
-    return this.adminService.approveReview(id);
+  async approveReview(@Param("id") id: string, @Req() req: any) {
+    return this.adminService.approveReview(id, req.user.id, getClientIp(req));
   }
 
   @Put("reviews/:id/reject")
-  async rejectReview(@Param("id") id: string) {
-    return this.adminService.rejectReview(id);
+  async rejectReview(@Param("id") id: string, @Req() req: any) {
+    return this.adminService.rejectReview(id, req.user.id, getClientIp(req));
   }
 
   // Matching Configuration

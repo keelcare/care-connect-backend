@@ -35,6 +35,10 @@ export class ReviewsService {
     }
 
     // 3. Determine reviewee (the other party) and reviewer's role
+    if (!booking.parent_id || !booking.nanny_id) {
+      throw new BadRequestException("Booking participants are incomplete");
+    }
+
     let revieweeId: string;
     let reviewerRole: string;
     if (reviewerId === booking.parent_id) {
@@ -45,6 +49,10 @@ export class ReviewsService {
       reviewerRole = "nanny";
     } else {
       throw new BadRequestException("User is not part of this booking");
+    }
+
+    if (revieweeId === reviewerId) {
+      throw new BadRequestException("You cannot review yourself");
     }
 
     // 4. Check if review already exists
@@ -60,6 +68,7 @@ export class ReviewsService {
     }
 
     // 5. Create review (nanny reviews of parents are held for moderation)
+    const isParentReview = reviewerRole === "parent";
     const review = await this.prisma.reviews.create({
       data: {
         booking_id: bookingId,
@@ -67,10 +76,10 @@ export class ReviewsService {
         reviewee_id: revieweeId,
         reviewer_role: reviewerRole,
         rating,
-        comment,
+        comment: comment?.trim() || null,
         // Nanny → Parent reviews require admin moderation before appearing on parent profile
-        is_approved: reviewerRole === "parent" ? true : false,
-        moderation_status: reviewerRole === "parent" ? "approved" : "pending",
+        is_approved: isParentReview ? true : false,
+        moderation_status: isParentReview ? "approved" : "pending",
       },
       include: {
         users_reviews_reviewee_idTousers: {
@@ -150,6 +159,9 @@ export class ReviewsService {
       where: { id: reviewId },
       data: {
         ...updateReviewDto,
+        ...(updateReviewDto.comment !== undefined
+          ? { comment: updateReviewDto.comment?.trim() || null }
+          : {}),
         ...(requiresRemoderation
           ? { is_approved: false, moderation_status: "pending" }
           : {}),
@@ -278,7 +290,10 @@ export class ReviewsService {
 
   async getReviewForBooking(bookingId: string) {
     return this.prisma.reviews.findMany({
-      where: { booking_id: bookingId },
+      where: {
+        booking_id: bookingId,
+        is_approved: true,
+      },
       include: {
         users_reviews_reviewer_idTousers: {
           select: {
@@ -330,6 +345,13 @@ export class ReviewsService {
       };
     }
 
+    if (!booking.parent_id || !booking.nanny_id || booking.parent_id === booking.nanny_id) {
+      return {
+        canReview: false,
+        reason: "Booking participants are incomplete",
+      };
+    }
+
     // 3. Check if booking is completed
     if (booking.status !== BookingStatus.COMPLETED) {
       return {
@@ -364,6 +386,7 @@ export class ReviewsService {
     return this.prisma.reviews.findMany({
       where: {
         reviewer_id: userId,
+        is_approved: true,
       },
       include: {
         users_reviews_reviewee_idTousers: {

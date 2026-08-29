@@ -124,31 +124,50 @@ export function countSessionsBetween(
 ): number {
   const p = (pattern ?? {}) as { days?: unknown; dates?: unknown };
 
+  // The column stores whatever the write path sent: the DTO enum is lowercase
+  // ("weekly" / "specific_dates"), older rows and tests carry uppercase. A
+  // case-sensitive compare against 'SPECIFIC_DATES' never matched the lowercase
+  // rows, so every specific-dates plan fell into the weekly branch with no
+  // weekday list and counted **zero** sessions per cycle — which zeroed
+  // entitlement and made cancellation forfeit everything the parent had paid for.
+  const isSpecificDates =
+    String(recurrenceType).toLowerCase() === 'specific_dates';
+
   const weekdays =
     Array.isArray(p.days)
       ? p.days.map((d) => DAY_INDEX[String(d)]).filter((d) => d !== undefined)
       : [];
   const monthDates = Array.isArray(p.dates) ? p.dates.map(Number) : [];
 
-  const matches =
-    recurrenceType === 'SPECIFIC_DATES'
-      ? (d: Date) => monthDates.includes(d.getDate())
-      : (d: Date) => weekdays.includes(d.getDay());
+  // Classified on the IST calendar, not the server's. Bookings are IST
+  // wall-clock instants (see TimeUtils.combineDateAndTime) and the patterns
+  // name IST weekdays/dates, but this used to read `getDay()`/`getDate()` off
+  // the server's local calendar — on UTC infrastructure every instant before
+  // 05:30 IST lands on the previous civil day, sliding the whole window one
+  // weekday over and miscounting sessions (the number entitlement pays out on).
+  // Shifting by the fixed +05:30 offset and reading the UTC fields yields the
+  // IST civil date regardless of where the process runs; India has no DST, so
+  // the fixed offset is exact (same reasoning as period.ts).
+  const matches = isSpecificDates
+    ? (d: Date) => monthDates.includes(d.getUTCDate())
+    : (d: Date) => weekdays.includes(d.getUTCDay());
 
-  if (recurrenceType === 'SPECIFIC_DATES' ? monthDates.length === 0 : weekdays.length === 0) {
+  if (isSpecificDates ? monthDates.length === 0 : weekdays.length === 0) {
     return 0;
   }
 
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
   // Iterate at midday so a DST shift can never move a date onto the day before.
-  const cursor = new Date(start);
-  cursor.setHours(12, 0, 0, 0);
-  const limit = new Date(end);
-  limit.setHours(12, 0, 0, 0);
+  const cursor = new Date(start.getTime() + IST_OFFSET_MS);
+  cursor.setUTCHours(12, 0, 0, 0);
+  const limit = new Date(end.getTime() + IST_OFFSET_MS);
+  limit.setUTCHours(12, 0, 0, 0);
 
   let count = 0;
   while (cursor < limit) {
     if (matches(cursor)) count++;
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return count;
 }

@@ -16,6 +16,8 @@ import {
   PriceInput,
   PricingMode,
 } from './utils/pricing.utils';
+import { TimeUtils } from './utils/time.utils';
+import { INSTALMENT_REFUNDED, INSTALMENT_VOID } from '../constants';
 
 /** `payment_installments.kind` for the one-off placement fee. */
 import { MATCHING_FEE_KIND } from '../constants';
@@ -708,7 +710,15 @@ export class PricingEngineService {
     if (cycleNumber !== 1) return 0;
 
     const fee = await this.prisma.payment_installments.findFirst({
-      where: { booking_id: bookingId, kind: MATCHING_FEE_KIND },
+      where: {
+        booking_id: bookingId,
+        kind: MATCHING_FEE_KIND,
+        // A voided or refunded fee stopped being owed (and, if refunded, the
+        // money went back to the parent). Crediting it against cycle 1 anyway
+        // would discount the cycle by a fee that was never actually kept —
+        // undercharging every re-confirmed booking by the fee amount.
+        status: { notIn: [INSTALMENT_VOID, INSTALMENT_REFUNDED] },
+      },
       select: { amount: true },
     });
 
@@ -735,8 +745,18 @@ export class PricingEngineService {
 
     // A parent who abandons checkout and comes back must not be charged for the
     // same placement twice, so an existing row wins over raising a new one.
+    // Voided/refunded rows do NOT count as existing: a fee voided at
+    // cancellation (or refunded) is no longer collectible, and treating it as
+    // the live fee would hand the caller an unpayable instalment id — the
+    // placement being re-confirmed genuinely owes a fresh fee. This mirrors
+    // `matchingFeeCreditFor`, which likewise ignores dead fee rows, so the fee
+    // raised and the credit taken can never disagree.
     const existing = await this.prisma.payment_installments.findFirst({
-      where: { booking_id: bookingId, kind: MATCHING_FEE_KIND },
+      where: {
+        booking_id: bookingId,
+        kind: MATCHING_FEE_KIND,
+        status: { notIn: [INSTALMENT_VOID, INSTALMENT_REFUNDED] },
+      },
       select: { id: true, price_snapshot_id: true, amount: true },
     });
     if (existing) {
@@ -822,10 +842,16 @@ export class PricingEngineService {
 
   /**
    * Mark a price snapshot as failed so it can be retried.
+   *
+   * Guarded updateMany rather than a bare update: the webhook and the verify
+   * endpoint both report on the same money, so a late/duplicate failure signal
+   * can arrive after the capture has already marked the snapshot charged.
+   * Downgrading `charged` → `failed` would put a settled cycle back on the
+   * retryable path and bill it a second time.
    */
   async markSnapshotFailed(snapshotId: string): Promise<void> {
-    await this.prisma.price_snapshots.update({
-      where: { id: snapshotId },
+    await this.prisma.price_snapshots.updateMany({
+      where: { id: snapshotId, status: { not: 'charged' } },
       data: { status: 'failed' },
     });
   }
@@ -841,13 +867,15 @@ export class PricingEngineService {
     totalCycles: number,
     startDate: Date,
   ) {
-    const existing = await this.prisma.payment_plans.findUnique({
+    // Upsert on the booking_id unique rather than find-then-create: assignment
+    // can be retried concurrently, and the read-then-write version threw P2002
+    // for the loser instead of returning the plan that already exists. The
+    // update arm is empty on purpose — an existing plan's progress must never
+    // be reset by a re-confirmation.
+    return this.prisma.payment_plans.upsert({
       where: { booking_id: bookingId },
-    });
-    if (existing) return existing;
-
-    return this.prisma.payment_plans.create({
-      data: {
+      update: {},
+      create: {
         booking_id: bookingId,
         total_cycles: totalCycles,
         cycles_completed: 0,
@@ -895,9 +923,12 @@ export class PricingEngineService {
     const nextCompleted = plan.cycles_completed + 1;
     const isComplete = nextCompleted >= plan.total_cycles;
 
-    // Next due date = advance by 1 month
-    const nextDue = new Date(plan.next_due_date);
-    nextDue.setMonth(nextDue.getMonth() + 1);
+    // Next due date = advance by 1 month. Clamped by TimeUtils.addMonths rather
+    // than a raw setMonth: a plan anchored on the 31st would otherwise overflow
+    // short months (31 Jan → 3 Mar) and the drifted day would never come back,
+    // permanently misaligning the due date with the cycleWindow the rest of the
+    // billing machinery computes (which clamps 31 Jan + 1 month to 28 Feb).
+    const nextDue = TimeUtils.addMonths(new Date(plan.next_due_date), 1);
 
     const { count } = await tx.payment_plans.updateMany({
       where: { id: planId, cycles_completed: plan.cycles_completed },
@@ -923,11 +954,17 @@ export class PricingEngineService {
     hourlyRate: number,
     adminId?: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    // One instant for both the close and the open. Two separate `new Date()`
+    // calls leave a milliseconds-wide window where the old card has ended
+    // (effective_to <= at) and the new one has not begun (effective_from > at),
+    // and `getEffectiveRateCard` throws NotFound for any lookup landing in it.
+    const now = new Date();
+
+    const card = await this.prisma.$transaction(async (tx) => {
       // Close the current active rate card
       await tx.rate_cards.updateMany({
         where: { service_id: serviceId, effective_to: null },
-        data: { effective_to: new Date() },
+        data: { effective_to: now },
       });
 
       // Create the new card effective now
@@ -935,12 +972,19 @@ export class PricingEngineService {
         data: {
           service_id: serviceId,
           hourly_rate: hourlyRate,
-          effective_from: new Date(),
+          effective_from: now,
           effective_to: null,
           created_by: adminId ?? null,
         },
       });
     });
+
+    // Drop the cached card list so a follow_current booking billed right after
+    // the admin publishes a new rate uses it immediately, rather than being
+    // charged at the superseded rate for up to REF_TTL_MS.
+    this.cache.delete(`ratecards:${serviceId}`);
+
+    return card;
   }
 
   /**

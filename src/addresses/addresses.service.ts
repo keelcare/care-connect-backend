@@ -57,12 +57,14 @@ export class AddressesService {
   }
 
   async create(userId: string, dto: CreateAddressDto) {
-    const existingCount = await this.prisma.addresses.count({
-      where: { user_id: userId, deleted_at: null },
-    });
-    const makeDefault = dto.isDefault || existingCount === 0;
-
     return this.prisma.$transaction(async (tx) => {
+      // Count inside the transaction so concurrent creates don't both observe
+      // 0 existing addresses and race to create multiple default addresses.
+      const existingCount = await tx.addresses.count({
+        where: { user_id: userId, deleted_at: null },
+      });
+      const makeDefault = dto.isDefault ?? existingCount === 0;
+
       if (makeDefault) {
         await tx.addresses.updateMany({
           where: { user_id: userId, is_default: true },

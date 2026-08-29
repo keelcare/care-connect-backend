@@ -9,6 +9,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { CreateTicketDto } from "./dto/create-ticket.dto";
 import { UpdateTicketDto } from "./dto/update-ticket.dto";
+import { classifyTicketPriority } from "./priority-classifier";
 
 // Include used to surface both booking parties (parent + nanny) on a ticket.
 const bookingParties = {
@@ -60,8 +61,16 @@ export class SupportService {
       }
     }
 
+    // Generate a collision-resistant unique ticket number with random entropy
+    // to prevent duplicate P2002 key collisions under concurrent creation.
+    const datePrefix = new Date().toISOString().slice(2, 10).replace(/-/g, "");
+    const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
     const ticketCount = await this.prisma.support_tickets.count();
-    const ticketNumber = `TIC-${1000 + ticketCount + 1}`;
+    const ticketNumber = `TIC-${datePrefix}-${(ticketCount + 1).toString().padStart(4, "0")}-${randomSuffix}`;
+
+    const priority =
+      dto.priority ||
+      classifyTicketPriority(dto.subject, dto.description, dto.category);
 
     const ticket = await this.prisma.support_tickets.create({
       data: {
@@ -72,14 +81,14 @@ export class SupportService {
         subject: dto.subject,
         description: dto.description,
         category: dto.category,
-        priority: dto.priority || "medium",
+        priority: priority,
       },
     });
 
     // Best-effort: a failed notification must never fail ticket creation.
     try {
       const admins = await this.prisma.users.findMany({
-        where: { role: "admin" },
+        where: { role: "admin", is_active: true, deleted_at: null },
         select: { id: true },
       });
       const bookingRef = dto.bookingId
@@ -89,8 +98,8 @@ export class SupportService {
         await this.notificationsService.createNotification(
           admin.id,
           `New support ticket ${ticketNumber}`,
-          `A ${role} raised a ${dto.priority || "medium"}-priority ${dto.category} ticket${bookingRef}: "${dto.subject}"`,
-          dto.priority === "high" || dto.priority === "critical"
+          `A ${role} raised a ${priority}-priority ${dto.category} ticket${bookingRef}: "${dto.subject}"`,
+          priority === "high" || priority === "critical"
             ? "warning"
             : "info",
           "support",
@@ -170,16 +179,51 @@ export class SupportService {
   }
 
   async updateTicket(id: string, dto: UpdateTicketDto) {
-    const data: any = { ...dto };
+    const existing = await this.prisma.support_tickets.findUnique({
+      where: { id },
+      select: { id: true, user_id: true, status: true, ticket_number: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Ticket with ID ${id} not found`);
+    }
+
+    const data: any = { ...dto, updated_at: new Date() };
 
     if (dto.status === "resolved" || dto.status === "closed") {
       data.resolved_at = new Date();
+    } else if (dto.status === "open" || dto.status === "in_progress") {
+      // Clear stale resolved_at on ticket reopen
+      data.resolved_at = null;
     }
 
-    return this.prisma.support_tickets.update({
+    const updated = await this.prisma.support_tickets.update({
       where: { id },
       data,
     });
+
+    // Notify ticket owner when ticket is resolved or closed
+    if (
+      (dto.status === "resolved" || dto.status === "closed") &&
+      existing.status !== dto.status
+    ) {
+      this.notificationsService
+        .createNotification(
+          existing.user_id,
+          `Support Ticket ${dto.status === "resolved" ? "Resolved" : "Closed"}`,
+          `Your support ticket ${existing.ticket_number} has been ${dto.status}. You can now provide satisfaction feedback.`,
+          "info",
+          "support",
+          id,
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to notify user ${existing.user_id} of ticket status change`,
+            err,
+          ),
+        );
+    }
+
+    return updated;
   }
 
   // Authorization helper: the ticket owner or an admin may read/write messages.
@@ -190,7 +234,14 @@ export class SupportService {
   ) {
     const ticket = await this.prisma.support_tickets.findUnique({
       where: { id: ticketId },
-      select: { id: true, user_id: true, status: true, first_response_at: true },
+      select: {
+        id: true,
+        user_id: true,
+        status: true,
+        first_response_at: true,
+        assigned_admin_id: true,
+        ticket_number: true,
+      },
     });
     if (!ticket) {
       throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
@@ -219,6 +270,12 @@ export class SupportService {
   ) {
     const ticket = await this.assertCanAccess(ticketId, senderId, isAdmin);
 
+    if (ticket.status === "closed") {
+      throw new BadRequestException(
+        "Cannot reply to a closed ticket. Please open a new ticket if you need further assistance.",
+      );
+    }
+
     const message = await this.prisma.support_ticket_messages.create({
       data: {
         ticket_id: ticketId,
@@ -231,15 +288,44 @@ export class SupportService {
 
     // Keep the ticket fresh; move an untouched ticket into "in_progress" when
     // an admin first replies, and stop the SLA first-response timer.
+    // If a user replies on a resolved ticket, reopen to in_progress and reset resolved_at.
     const firstAdminReply = isAdmin && !ticket.first_response_at;
+    const reopeningResolved = !isAdmin && ticket.status === "resolved";
+
     await this.prisma.support_tickets.update({
       where: { id: ticketId },
       data: {
         updated_at: new Date(),
         ...(isAdmin && ticket.status === "open" ? { status: "in_progress" } : {}),
+        ...(reopeningResolved ? { status: "in_progress", resolved_at: null } : {}),
         ...(firstAdminReply ? { first_response_at: new Date() } : {}),
       },
     });
+
+    // Notify the other party
+    try {
+      if (isAdmin) {
+        await this.notificationsService.createNotification(
+          ticket.user_id,
+          "New reply from Support",
+          `Support has replied to your ticket ${ticket.ticket_number}`,
+          "info",
+          "support",
+          ticketId,
+        );
+      } else if (ticket.assigned_admin_id) {
+        await this.notificationsService.createNotification(
+          ticket.assigned_admin_id,
+          "New reply on Support Ticket",
+          `User replied on ticket ${ticket.ticket_number}`,
+          "info",
+          "support",
+          ticketId,
+        );
+      }
+    } catch (err) {
+      this.logger.error("Failed to notify participant of ticket message", err);
+    }
 
     return message;
   }
@@ -247,10 +333,26 @@ export class SupportService {
   // Ops ownership: an admin claims (or reassigns) a ticket. Pass adminId=null to
   // release it back to the shared queue.
   async assignTicket(ticketId: string, adminId: string | null) {
-    await this.prisma.support_tickets.findUniqueOrThrow({
+    const ticket = await this.prisma.support_tickets.findUnique({
       where: { id: ticketId },
       select: { id: true },
     });
+    if (!ticket) {
+      throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
+    }
+
+    if (adminId !== null) {
+      const admin = await this.prisma.users.findFirst({
+        where: { id: adminId, role: "admin", is_active: true, deleted_at: null },
+        select: { id: true },
+      });
+      if (!admin) {
+        throw new BadRequestException(
+          "Target user is not an active administrator",
+        );
+      }
+    }
+
     return this.prisma.support_tickets.update({
       where: { id: ticketId },
       data: { assigned_admin_id: adminId, updated_at: new Date() },
@@ -269,7 +371,7 @@ export class SupportService {
     }
     const ticket = await this.prisma.support_tickets.findUnique({
       where: { id: ticketId },
-      select: { id: true, user_id: true, status: true },
+      select: { id: true, user_id: true, status: true, csat_rating: true },
     });
     if (!ticket || ticket.user_id !== userId) {
       throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
@@ -279,9 +381,28 @@ export class SupportService {
         "You can only rate a ticket once it has been resolved.",
       );
     }
-    return this.prisma.support_tickets.update({
-      where: { id: ticketId },
-      data: { csat_rating: rating, csat_comment: comment ?? null },
+    if (ticket.csat_rating !== null) {
+      throw new BadRequestException(
+        "CSAT feedback has already been submitted for this ticket.",
+      );
+    }
+
+    const updated = await this.prisma.support_tickets.updateMany({
+      where: {
+        id: ticketId,
+        user_id: userId,
+        status: { in: ["resolved", "closed"] },
+        csat_rating: null,
+      },
+      data: { csat_rating: rating, csat_comment: comment ?? null, updated_at: new Date() },
     });
+
+    if (updated.count === 0) {
+      throw new BadRequestException(
+        "CSAT feedback has already been submitted for this ticket.",
+      );
+    }
+
+    return this.prisma.support_tickets.findUnique({ where: { id: ticketId } });
   }
 }

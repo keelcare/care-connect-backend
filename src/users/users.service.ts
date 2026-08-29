@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, Logger } from "@nestjs/common";
+import { EventEmitter2 } from "@nestjs/event-emitter";
 import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { EncryptionService } from "../common/services/encryption.service";
@@ -7,6 +8,15 @@ import { Prisma } from "@prisma/client";
 import { users, profiles } from "@prisma/client";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { AddressesService } from "../addresses/addresses.service";
+import {
+  BookingStatus,
+  INSTALMENT_PENDING,
+  INSTALMENT_VOID,
+} from "../constants";
+import {
+  BOOKING_EVENTS,
+  BookingCancelledEvent,
+} from "../bookings/events/booking.events";
 
 @Injectable()
 export class UsersService {
@@ -18,6 +28,7 @@ export class UsersService {
     private encryptionService: EncryptionService,
     private storageService: SupabaseStorageService,
     private addressesService: AddressesService,
+    private eventEmitter: EventEmitter2,
   ) { }
 
   private decryptOnboardingDetails<T extends { nanny_onboarding_details?: any }>(
@@ -433,16 +444,21 @@ export class UsersService {
         availabilitySchedule,
       } = dto;
 
-      // Update basic profile info
+      // Update basic profile info.
+      //
+      // Presence checks must be `!== undefined`, not truthiness: `lat: 0`,
+      // `lng: 0` or an empty string are legitimate submitted values, and the
+      // old `firstName || lat || …` guard silently dropped the whole profile
+      // write when only such a value was sent.
       if (
-        firstName ||
-        lastName ||
-        phone ||
-        address ||
-        locationAddress ||
-        lat ||
-        lng ||
-        profileImageUrl
+        firstName !== undefined ||
+        lastName !== undefined ||
+        phone !== undefined ||
+        address !== undefined ||
+        locationAddress !== undefined ||
+        lat !== undefined ||
+        lng !== undefined ||
+        profileImageUrl !== undefined
       ) {
         await this.prisma.profiles.upsert({
           where: { user_id: id },
@@ -494,8 +510,16 @@ export class UsersService {
         }
       }
 
-      // Update nanny details if provided
-      if (skills || experienceYears || bio || availabilitySchedule) {
+      // Update nanny details if provided. `!== undefined` rather than truthy:
+      // `experienceYears: 0` is a real answer (a new caregiver), and the old
+      // truthy guard made it unsaveable when sent on its own — the request
+      // returned success while writing nothing.
+      if (
+        skills !== undefined ||
+        experienceYears !== undefined ||
+        bio !== undefined ||
+        availabilitySchedule !== undefined
+      ) {
         await this.prisma.nanny_details.upsert({
           where: { user_id: id },
           update: {
@@ -553,10 +577,24 @@ export class UsersService {
   }
 
   async updatePushToken(id: string, token: string, platform?: string) {
-    return this.prisma.users.update({
-      where: { id },
-      data: { fcm_token: token, ...(platform ? { push_platform: platform } : {}) },
-    });
+    // A push token identifies a *device*, not an account. On a shared device
+    // (log out → someone else logs in), the token re-registers under the new
+    // account but used to stay on the old account's row too — so the old
+    // account's notifications (booking updates, chat) kept landing on a device
+    // now owned by a different person. Evict the token from every other row in
+    // the same transaction that claims it, so exactly one account holds a given
+    // device token at any time.
+    const [, updated] = await this.prisma.$transaction([
+      this.prisma.users.updateMany({
+        where: { fcm_token: token, id: { not: id } },
+        data: { fcm_token: null },
+      }),
+      this.prisma.users.update({
+        where: { id },
+        data: { fcm_token: token, ...(platform ? { push_platform: platform } : {}) },
+      }),
+    ]);
+    return updated;
   }
 
   async completeOnboarding(userId: string) {
@@ -570,70 +608,151 @@ export class UsersService {
   async deleteMe(userId: string) {
     const user = await this.prisma.users.findUnique({
       where: { id: userId },
-      include: { profiles: true },
+      select: { id: true, role: true, deleted_at: true },
     });
 
     if (!user) {
       throw new NotFoundException("User not found");
     }
 
-    // 1. Cancel active bookings
-    const activeStatuses = ["requested", "accepted", "confirmed", "in_progress"];
-    let activeBookings = [];
-    if (user.role === "parent") {
-      activeBookings = await this.prisma.bookings.findMany({
-        where: {
-          parent_id: userId,
-          status: { in: activeStatuses },
-        },
-      });
+    const scheduledMessage =
+      "Account scheduled for deletion. It will be permanently deleted after 30 days. Contact support within 30 days to cancel.";
 
-      await this.prisma.bookings.updateMany({
-        where: {
-          parent_id: userId,
-          status: { in: activeStatuses },
-        },
-        data: {
-          status: "cancelled",
-          cancellation_reason: "Parent account deleted",
-        },
-      });
-
-      // Notify nannies
-      for (const booking of activeBookings) {
-        if (booking.nanny_id) {
-          await this.notificationsService.createNotification(
-            booking.nanny_id,
-            "Booking Cancelled",
-            "A booking was cancelled because the parent deleted their account.",
-            "warning"
-          );
-        }
-      }
+    // Already scheduled: return idempotently instead of re-running the write.
+    // Re-setting deleted_at would silently restart the 30-day retention window
+    // and re-clear deletion_notice_sent_at, deferring the DPDP purge forever
+    // for anyone who could reach this twice.
+    if (user.deleted_at) {
+      return { message: scheduledMessage };
     }
 
-    // 2. Soft delete: deactivate the account and start the 30-day retention
-    //    window. PII is retained (but locked, since is_active=false) so the
-    //    account can be restored by support within 30 days; the daily cleanup
-    //    cron permanently anonymises/purges it once the window elapses.
-    //    Only session/push credentials are cleared, to force the user out.
-    await this.prisma.users.update({
-      where: { id: userId },
-      data: {
-        is_active: false,
-        deleted_at: new Date(),
-        deletion_notice_sent_at: null,
-        oauth_access_token: null,
-        oauth_refresh_token: null,
-        fcm_token: null,
-        refresh_token_hash: null,
-      },
+    // Statuses that make a booking "live". These must be the BookingStatus
+    // enum values: the previous hand-written list ("accepted", "confirmed",
+    // "in_progress") matched neither CONFIRMED nor IN_PROGRESS (status values
+    // are case-sensitive) and included a status bookings never have — so
+    // account deletion left confirmed and in-progress bookings running, still
+    // assigned, and still billing.
+    const activeStatuses = [
+      BookingStatus.REQUESTED,
+      BookingStatus.CONFIRMED,
+      BookingStatus.IN_PROGRESS,
+    ];
+    // Both roles wind their side of the marketplace down — the old code only
+    // handled parents, leaving a deleted caregiver assigned to upcoming
+    // sessions the parent was never told would not happen.
+    const roleWhere =
+      user.role === "nanny" ? { nanny_id: userId } : { parent_id: userId };
+    const reason =
+      user.role === "nanny"
+        ? "Nanny account deleted"
+        : "Parent account deleted";
+
+    // Everything that makes this account deleted, in one transaction — the
+    // soft-delete claim, the booking cancellations, the instalment voiding and
+    // the request/assignment wind-down commit or roll back together, so a
+    // failure can't leave a deactivated account with live bookings (or vice
+    // versa). Events and notifications are emitted after commit, matching
+    // cancelRequest/cancelBooking.
+    const cancelledBookings = await this.prisma.$transaction(async (tx) => {
+      // Guarded claim on the account itself: two concurrent DELETE /users/me
+      // requests must not both run the cascade (double events, double
+      // notifications) — only the one that flips deleted_at proceeds.
+      const claim = await tx.users.updateMany({
+        where: { id: userId, deleted_at: null },
+        data: {
+          // Soft delete: deactivate and start the 30-day retention window.
+          // PII is retained (but locked, since is_active=false) so support can
+          // restore within 30 days; the daily cleanup cron anonymises/purges
+          // once the window elapses. Only session/push credentials are
+          // cleared, to force the user out.
+          is_active: false,
+          deleted_at: new Date(),
+          deletion_notice_sent_at: null,
+          oauth_access_token: null,
+          oauth_refresh_token: null,
+          fcm_token: null,
+          refresh_token_hash: null,
+        },
+      });
+      if (claim.count === 0) return [];
+
+      // Cancel live bookings with a per-booking guarded claim, so a booking
+      // that completed or cancelled between the read and the write keeps its
+      // real state instead of being stamped CANCELLED over it — and we only
+      // notify for bookings this call actually cancelled.
+      const active = await tx.bookings.findMany({
+        where: { ...roleWhere, status: { in: activeStatuses } },
+      });
+
+      const cancelled: typeof active = [];
+      for (const booking of active) {
+        const bookingClaim = await tx.bookings.updateMany({
+          where: { id: booking.id, status: { in: activeStatuses } },
+          data: { status: BookingStatus.CANCELLED, cancellation_reason: reason },
+        });
+        if (bookingClaim.count === 0) continue;
+
+        // Money that stopped being owed is voided, not left pending — same
+        // rule as cancelBooking. Without this, the cancelled bookings' pending
+        // instalments stayed collectible: a stale checkout could still settle
+        // one, and any query missing the booking-status filter would resurrect
+        // the balance. Paid instalments are untouched; refunds stay an admin
+        // decision.
+        await tx.payment_installments.updateMany({
+          where: { booking_id: booking.id, status: INSTALMENT_PENDING },
+          data: { status: INSTALMENT_VOID, updated_at: new Date() },
+        });
+
+        cancelled.push(
+          await tx.bookings.findUniqueOrThrow({ where: { id: booking.id } }),
+        );
+      }
+
+      // A deleting parent's open service requests must close too, or the
+      // matching cron keeps assigning caregivers to — and caregivers keep
+      // accepting work from — an account that no longer exists.
+      if (user.role !== "nanny") {
+        const openRequests = await tx.service_requests.findMany({
+          where: {
+            parent_id: userId,
+            status: { in: ["pending", "accepted", "assigned"] },
+          },
+          select: { id: true },
+        });
+        if (openRequests.length > 0) {
+          const requestIds = openRequests.map((r) => r.id);
+          await tx.assignments.updateMany({
+            where: {
+              request_id: { in: requestIds },
+              status: { in: ["pending", "accepted"] },
+            },
+            data: { status: "cancelled", responded_at: new Date() },
+          });
+          await tx.service_requests.updateMany({
+            where: {
+              id: { in: requestIds },
+              status: { in: ["pending", "accepted", "assigned"] },
+            },
+            data: { status: "CANCELLED" },
+          });
+        }
+      }
+
+      return cancelled;
     });
 
-    return {
-      message:
-        "Account scheduled for deletion. It will be permanently deleted after 30 days. Contact support within 30 days to cancel.",
-    };
+    // Post-commit side effects: BOOKING_EVENTS.CANCELLED feeds the listeners
+    // that notify/email the other party, emit SSE, void instalments (again,
+    // idempotently) and record attendance — the old inline notification loop
+    // covered only the push notification and only for parents.
+    for (const booking of cancelledBookings) {
+      this.eventEmitter.emit(
+        BOOKING_EVENTS.CANCELLED,
+        new BookingCancelledEvent(booking, reason, userId),
+      );
+    }
+
+    return { message: scheduledMessage };
   }
 
   /**

@@ -22,8 +22,10 @@ import {
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import {
   PLAN_STATUS,
+  PLAN_STATUSES_TERMINAL,
   isTerminalPlanStatus,
 } from "../common/constants/plan-status.enum";
+import { Prisma } from "@prisma/client";
 import { AddressesService } from "../addresses/addresses.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { EventEmitter2 } from "@nestjs/event-emitter";
@@ -48,6 +50,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function round2(value: number): number {
   return Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
 }
+
+/**
+ * Thrown inside the cancel transaction when the guarded claim finds the plan
+ * already closed by a concurrent caller; rolls the transaction (and any
+ * shortfall sessions written in it) back so the loser can answer idempotently.
+ */
+class PlanAlreadyClosedError extends Error {}
 
 /** Sessions still ahead of the parent: on the calendar, neither spent nor dropped. */
 const SCHEDULED_BOOKING_STATUSES = [
@@ -136,7 +145,13 @@ export class RecurringRequestsService {
     const limit = new Date(end);
     limit.setHours(12, 0, 0, 0);
 
-    if (recurrenceType === RecurrenceType.WEEKLY) {
+    // Same normalization as `countSessionsBetween`: the DTO enum is lowercase
+    // but callers hand this raw column values (and older rows/tests carry
+    // uppercase). Generation and entitlement must classify a pattern the same
+    // way, or the sessions written and the sessions paid for diverge.
+    const type = String(recurrenceType).toLowerCase();
+
+    if (type === RecurrenceType.WEEKLY) {
       const targetDays: string[] = pattern.days || [];
       const dayMap: Record<string, number> = {
         "Sun": 0, "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6
@@ -149,7 +164,7 @@ export class RecurringRequestsService {
         }
         current.setDate(current.getDate() + 1);
       }
-    } else if (recurrenceType === RecurrenceType.SPECIFIC_DATES) {
+    } else if (type === RecurrenceType.SPECIFIC_DATES) {
       const targetDates: number[] = pattern.dates || [];
       while (current < limit) {
         if (targetDates.includes(current.getDate())) {
@@ -186,6 +201,17 @@ export class RecurringRequestsService {
       throw new BadRequestException(
         "Add a saved address before requesting a caregiver.",
       );
+    }
+
+    // A plan starting on a day that has already passed generates sessions in the
+    // past that no caregiver can ever serve — and the unassigned-expiry cron then
+    // kills the plan the same night, after the matching fee has been raised. The
+    // same-day boundary is judged on the IST calendar, like every booking date.
+    if (new Date(dto.start_date) < TimeUtils.startOfDayIST()) {
+      throw new BadRequestException("The plan's start date cannot be in the past.");
+    }
+    if (dto.end_date && new Date(dto.end_date) < new Date(dto.start_date)) {
+      throw new BadRequestException("The plan's end date cannot be before its start date.");
     }
 
     const generatedDates = this.generateDates(
@@ -598,31 +624,6 @@ export class RecurringRequestsService {
       select: { id: true, start_time: true, nanny_id: true },
     });
 
-    // The parent has bought more sessions than are on the calendar. Generation
-    // only ever runs a cycle ahead, so this is rare — but clamping to what
-    // happens to be generated would quietly forfeit sessions they have paid for,
-    // which is the whole bug. Write the missing dates instead.
-    let generated: { id: string; start_time: Date; nanny_id: string | null }[] = [];
-    if (retainCount > futureBookings.length) {
-      generated = await this.generateShortfallSessions(
-        req,
-        futureBookings,
-        retainCount - futureBookings.length,
-        now,
-      );
-    }
-
-    const candidates = [...futureBookings, ...generated].sort(
-      (a, b) => a.start_time.getTime() - b.start_time.getTime(),
-    );
-    // Generation can still fall short (a plan at the end of its term simply has
-    // no more dates to give), so the retained set is what actually exists.
-    retainCount = Math.min(retainCount, candidates.length);
-
-    const retained = candidates.slice(0, retainCount);
-    const toCancel = candidates.slice(retainCount);
-    const toCancelIds = toCancel.map((b) => b.id);
-
     // Which cycles stop being owed for. See `cyclesToVoid` for why this is no
     // longer "every cycle after the last retained session": that rule kept
     // chasing the balance of a month the parent had just cancelled the sessions
@@ -633,58 +634,140 @@ export class RecurringRequestsService {
       deliveredByCycle,
     });
 
-    const nextStatus =
-      retainCount > 0 ? PLAN_STATUS.WINDING_DOWN : PLAN_STATUS.CANCELLED;
-
     // Read before the transaction voids anything, so the settlement statement can
     // say what was billed and paid as at cancellation rather than after it.
     const ledger = await this.planLedger(id, droppedCycles);
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.recurring_service_requests.update({
-        where: { id },
-        data: {
-          status: nextStatus,
-          // The caregiver stays attached while there are sessions left to serve;
-          // releasing them here would orphan the very sessions being retained.
-          // The wind-down cron clears it once the last one lands.
-          nanny_id: retainCount > 0 ? req.nanny_id : null,
-          cancellation_reason: cancellationReason,
-          cancelled_at: now,
-          sessions_entitled_at_cancellation: entitlement.sessionsEntitled,
-          updated_at: now,
-        },
-      });
+    // Everything that changes the world happens inside one transaction: the
+    // shortfall sessions, the plan's own state, the dropped bookings, and the
+    // voided instalments are one fact. Shortfall generation used to run *before*
+    // and *outside* the transaction — a write failure after it left brand-new
+    // CONFIRMED sessions attached to a plan whose cancellation never happened.
+    let outcome: {
+      retainCount: number;
+      retained: { id: string }[];
+      toCancelIds: string[];
+    };
+    try {
+      outcome = await this.prisma.$transaction(async (tx) => {
+        // The parent has bought more sessions than are on the calendar.
+        // Generation only ever runs a cycle ahead, so this is rare — but
+        // clamping to what happens to be generated would quietly forfeit
+        // sessions they have paid for, which is the whole bug. Write the
+        // missing dates instead; a rollback (including a lost claim below)
+        // takes them back out with everything else.
+        let generated: { id: string; start_time: Date; nanny_id: string | null }[] = [];
+        if (retainCount > futureBookings.length) {
+          generated = await this.generateShortfallSessions(
+            tx,
+            req,
+            futureBookings,
+            retainCount - futureBookings.length,
+            now,
+          );
+        }
 
-      if (toCancelIds.length > 0) {
-        await tx.bookings.updateMany({
-          where: { id: { in: toCancelIds } },
-          data: {
-            status: BookingStatus.CANCELLED,
-            cancellation_reason: cancellationReason,
-          },
-        });
-      }
+        const candidates = [...futureBookings, ...generated].sort(
+          (a, b) => a.start_time.getTime() - b.start_time.getTime(),
+        );
+        // Generation can still fall short (a plan at the end of its term simply
+        // has no more dates to give), so the retained set is what actually exists.
+        const effectiveRetain = Math.min(retainCount, candidates.length);
+        const retained = candidates.slice(0, effectiveRetain);
+        const toCancelIds = candidates.slice(effectiveRetain).map((b) => b.id);
 
-      // Money for care that will never be delivered stops being owed. This is
-      // keyed on the *cycle*, not on the cancelled bookings: every cycle of a
-      // plan is billed against one anchor booking, so voiding by booking id
-      // (as the per-booking cancellation listener does) would find nothing.
-      //
-      // The matching fee is excluded — it bought a placement that was made, and
-      // is not a share of any month's care.
-      if (droppedCycles.length > 0) {
-        await tx.payment_installments.updateMany({
+        const nextStatus =
+          effectiveRetain > 0 ? PLAN_STATUS.WINDING_DOWN : PLAN_STATUS.CANCELLED;
+
+        // Atomic claim, not a bare update: the status was validated on a read
+        // above, and in the gap a second cancel call, the wind-down cron or the
+        // stuck-generation flag may have moved the plan on. Guarding the write
+        // on "still cancellable" makes exactly one caller the canceller; the
+        // loser rolls back (shortfall included) and is answered idempotently.
+        const claimed = await tx.recurring_service_requests.updateMany({
           where: {
-            bookings: { recurring_request_id: id },
-            cycle_number: { in: droppedCycles },
-            kind: { not: MATCHING_FEE_KIND },
-            status: INSTALMENT_PENDING,
+            id,
+            status: { notIn: [...PLAN_STATUSES_TERMINAL, PLAN_STATUS.WINDING_DOWN] },
           },
-          data: { status: INSTALMENT_VOID, updated_at: now },
+          data: {
+            status: nextStatus,
+            // The caregiver stays attached while there are sessions left to
+            // serve; releasing them here would orphan the very sessions being
+            // retained. The wind-down cron clears it once the last one lands.
+            nanny_id: effectiveRetain > 0 ? req.nanny_id : null,
+            cancellation_reason: cancellationReason,
+            cancelled_at: now,
+            sessions_entitled_at_cancellation: entitlement.sessionsEntitled,
+            updated_at: now,
+          },
         });
+        if (claimed.count === 0) {
+          throw new PlanAlreadyClosedError();
+        }
+
+        if (toCancelIds.length > 0) {
+          await tx.bookings.updateMany({
+            where: { id: { in: toCancelIds } },
+            data: {
+              status: BookingStatus.CANCELLED,
+              cancellation_reason: cancellationReason,
+            },
+          });
+        }
+
+        // Money for care that will never be delivered stops being owed. This is
+        // keyed on the *cycle*, not on the cancelled bookings: every cycle of a
+        // plan is billed against one anchor booking, so voiding by booking id
+        // (as the per-booking cancellation listener does) would find nothing.
+        //
+        // The matching fee is excluded — it bought a placement that was made,
+        // and is not a share of any month's care.
+        if (droppedCycles.length > 0) {
+          await tx.payment_installments.updateMany({
+            where: {
+              bookings: { recurring_request_id: id },
+              cycle_number: { in: droppedCycles },
+              kind: { not: MATCHING_FEE_KIND },
+              status: INSTALMENT_PENDING,
+            },
+            data: { status: INSTALMENT_VOID, updated_at: now },
+          });
+        }
+
+        return { retainCount: effectiveRetain, retained, toCancelIds };
+      }, { timeout: 20000, maxWait: 5000 });
+    } catch (err) {
+      if (err instanceof PlanAlreadyClosedError) {
+        // Someone else closed the plan between our read and our claim. Answer
+        // exactly as the pre-read idempotency path would have.
+        const current = await this.prisma.recurring_service_requests.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        if (current?.status === PLAN_STATUS.WINDING_DOWN) {
+          const stillScheduled = await this.prisma.bookings.count({
+            where: {
+              recurring_request_id: id,
+              status: { in: SCHEDULED_BOOKING_STATUSES },
+            },
+          });
+          return {
+            success: true,
+            cancelledSessions: 0,
+            retainedSessions: stillScheduled,
+          };
+        }
+        throw new BadRequestException(
+          `This plan is already ${current?.status ?? "closed"}`,
+        );
       }
-    });
+      throw err;
+    }
+    retainCount = outcome.retainCount;
+    const retained = outcome.retained;
+    const toCancelIds = outcome.toCancelIds;
+    const nextStatus =
+      retainCount > 0 ? PLAN_STATUS.WINDING_DOWN : PLAN_STATUS.CANCELLED;
 
     // ── Freeze the settlement statement ────────────────────────────────────────
     // Outside the transaction on purpose: it renders a whole document, and the
@@ -906,6 +989,7 @@ export class RecurringRequestsService {
    * plan's caregiver and confirmed outright — this care is already bought.
    */
   private async generateShortfallSessions(
+    tx: Prisma.TransactionClient,
     req: {
       id: string;
       parent_id: string;
@@ -964,7 +1048,7 @@ export class RecurringRequestsService {
     for (const date of dates) {
       const dateStr = date.toISOString().split("T")[0];
       const startTimestamp = TimeUtils.combineDateAndTime(dateStr, startTimeStr);
-      const booking = await this.prisma.bookings.create({
+      const booking = await tx.bookings.create({
         data: {
           parent_id: req.parent_id,
           recurring_request_id: req.id,

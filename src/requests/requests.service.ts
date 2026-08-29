@@ -22,7 +22,18 @@ import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { AddressesService } from "../addresses/addresses.service";
 
-import { CATEGORY_SKILL_MAP } from "../constants";
+import {
+  CATEGORY_SKILL_MAP,
+  INSTALMENT_PENDING,
+  INSTALMENT_VOID,
+  CANCELLATION_FEE_NONE,
+  CANCELLATION_FEE_OWED,
+} from "../constants";
+import { EventEmitter2 } from "@nestjs/event-emitter";
+import {
+  BOOKING_EVENTS,
+  BookingCancelledEvent,
+} from "../bookings/events/booking.events";
 
 @Injectable()
 export class RequestsService {
@@ -37,6 +48,7 @@ export class RequestsService {
     private availabilityService: AvailabilityService,
     private pricingService: PricingEngineService,
     private addressesService: AddressesService,
+    private eventEmitter: EventEmitter2,
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -262,9 +274,57 @@ export class RequestsService {
       );
     }
 
-    // 1. Cancel any pending or accepted assignments
-    if (request.assignments.length > 0) {
-      await this.prisma.assignments.updateMany({
+    const activeBooking =
+      request.bookings && request.bookings.status !== BookingStatus.CANCELLED
+        ? request.bookings
+        : null;
+
+    // A session that has already started (or finished) is a bookings-module
+    // fact — it must go through completeBooking/cancelBooking, which handle
+    // payouts and attendance. The request-status check above can't see this:
+    // the request still reads "accepted" while its booking is IN_PROGRESS,
+    // so without this guard a parent could cancel care mid-session for free.
+    if (
+      activeBooking &&
+      [BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED].includes(
+        activeBooking.status as BookingStatus,
+      )
+    ) {
+      throw new BadRequestException(
+        "This booking has already started. Cancel it from the booking itself.",
+      );
+    }
+
+    // Cancellation fee — same policy as BookingsService.cancelBooking. This
+    // endpoint used to cancel the booking directly with NO fee at all, so a
+    // parent could dodge the <24h fee simply by cancelling the *request*
+    // instead of the booking. Mirrors cancelBooking's gating (parent-initiated,
+    // <24h before start), computed before the transaction so a pricing failure
+    // aborts before anything is written; additionally gated on a caregiver
+    // actually being attached — the fee compensates a caregiver whose slot was
+    // pulled late, and an unmatched REQUESTED booking has nobody to compensate.
+    let cancellationFee = 0;
+    let feeStatus = CANCELLATION_FEE_NONE;
+    if (parentId && activeBooking?.nanny_id && activeBooking.start_time) {
+      const hoursUntilStart =
+        (activeBooking.start_time.getTime() - Date.now()) / (1000 * 60 * 60);
+      if (hoursUntilStart < 24) {
+        const { appliedRate: hourlyRate } =
+          await this.pricingService.calculateCost(request.category || "CC", 1);
+        cancellationFee = hourlyRate;
+        feeStatus = CANCELLATION_FEE_OWED;
+      }
+    }
+
+    // Assignments, booking, instalments and request flip together or not at
+    // all. This used to be four sequential writes on the main client — a crash
+    // midway left a cancelled booking under a live request (or vice versa),
+    // and pending instalments (including the matching fee raised at request
+    // creation) were never voided, so a "cancelled" request kept a collectible
+    // balance that a stale checkout could still settle.
+    const { result, cancelledBooking } = await this.prisma.$transaction(async (tx) => {
+      // 1. Cancel any pending or accepted assignments
+      await tx.assignments.updateMany({
         where: {
           request_id: requestId,
           status: { in: ["pending", "accepted"] },
@@ -274,26 +334,80 @@ export class RequestsService {
           responded_at: new Date(),
         },
       });
-    }
 
-    // 2. Cancel associated booking if exists
-    if (request.bookings && request.bookings.status !== BookingStatus.CANCELLED) {
-      await this.prisma.bookings.update({
-        where: { id: request.bookings.id },
-        data: {
-          status: BookingStatus.CANCELLED,
-          cancellation_reason: "Request cancelled by parent",
-        },
+      // 2. Cancel associated booking — guarded claim, so a booking that
+      // started or completed between the read above and this write cannot be
+      // stamped CANCELLED over its real state.
+      let cancelledBooking = null as typeof activeBooking;
+      if (activeBooking) {
+        const claim = await tx.bookings.updateMany({
+          where: {
+            id: activeBooking.id,
+            status: {
+              in: [BookingStatus.REQUESTED, BookingStatus.CONFIRMED],
+            },
+          },
+          data: {
+            status: BookingStatus.CANCELLED,
+            cancellation_reason: "Request cancelled by parent",
+            cancellation_fee: cancellationFee,
+            cancellation_fee_status: feeStatus,
+          },
+        });
+        if (claim.count === 0) {
+          throw new BadRequestException(
+            "The booking's status changed while cancelling. Please retry.",
+          );
+        }
+        cancelledBooking = await tx.bookings.findUniqueOrThrow({
+          where: { id: activeBooking.id },
+        });
+
+        // 2b. Money that stopped being owed is voided, not left pending —
+        // same rule as cancelBooking. The matching fee raised at request
+        // creation lives here too. Paid instalments are untouched; refunds
+        // are an admin decision.
+        await tx.payment_installments.updateMany({
+          where: { booking_id: activeBooking.id, status: INSTALMENT_PENDING },
+          data: { status: INSTALMENT_VOID, updated_at: new Date() },
+        });
+      }
+
+      // 3. Update request status — guarded so a concurrent accept (which
+      // claims status "pending" → "accepted") and this cancellation can't
+      // both win silently.
+      const requestClaim = await tx.service_requests.updateMany({
+        where: { id: requestId, status: { in: allowedStatuses } },
+        data: { status: "CANCELLED" },
       });
-    }
+      if (requestClaim.count === 0) {
+        throw new BadRequestException(
+          "The request's status changed while cancelling. Please retry.",
+        );
+      }
+      const result = await tx.service_requests.findUniqueOrThrow({
+        where: { id: requestId },
+      });
 
-    // 3. Update request status
-    const result = await this.prisma.service_requests.update({
-      where: { id: requestId },
-      data: { status: "CANCELLED" },
+      return { result, cancelledBooking };
     });
 
-    // 4. Notify Parent of successful cancellation
+    // 4. Post-commit side effects. Emitting BOOKING_EVENTS.CANCELLED is what
+    // this path always skipped: the listeners it feeds notify/email the
+    // assigned caregiver and re-void instalments — so a nanny whose confirmed
+    // booking evaporated via request-cancellation was never told.
+    if (cancelledBooking) {
+      this.eventEmitter.emit(
+        BOOKING_EVENTS.CANCELLED,
+        new BookingCancelledEvent(
+          cancelledBooking,
+          "Request cancelled by parent",
+          parentId ?? request.parent_id,
+        ),
+      );
+    }
+
+    // Notify Parent of successful cancellation
     await this.notificationsService.createNotification(
       request.parent_id,
       "Request Cancelled",
@@ -541,6 +655,22 @@ export class RequestsService {
 
     if (!request) throw new NotFoundException("Request not found");
 
+    // Only a request still waiting for a caregiver is matchable. Every caller
+    // of triggerMatching is asynchronous relative to the request's lifecycle —
+    // the fire-and-forget kickoff on creation, the rejection re-match, and the
+    // timeout cron — so by the time we run, the parent may have cancelled or
+    // another path may have already confirmed a nanny. Without this guard a
+    // re-match could create a fresh assignment (and confirm the booking) on a
+    // CANCELLED request, or assign a second nanny to an already-accepted one,
+    // and the fall-through below sent the parent a "No Matches Found" warning
+    // for a request they had just cancelled.
+    if (request.status !== "pending") {
+      this.logger.log(
+        `[Matching] Skipping matching for request ${requestId}: status is '${request.status}', not 'pending'.`,
+      );
+      return null;
+    }
+
     // Skip auto-matching for Shadow Teacher and Special Needs categories
     // These will be manually assigned by admins
     if (request.category === "ST" || request.category === "SN") {
@@ -640,14 +770,22 @@ export class RequestsService {
               return { assignment, booking: null };
             }
 
-            // 3. Update request status to accepted
-            await transaction.service_requests.update({
-              where: { id: requestId },
+            // 3. Update request status to accepted — GUARDED. The outer status
+            // check read the request before the (possibly long) candidate scan;
+            // the parent can cancel in that window. The claim makes the
+            // cancellation and this assignment mutually exclusive: zero rows
+            // means the request is no longer matchable and the whole
+            // transaction (including the assignment row) rolls back.
+            const requestClaim = await transaction.service_requests.updateMany({
+              where: { id: requestId, status: "pending" },
               data: {
                 status: "accepted",
                 current_assignment_id: assignment.id,
               },
             });
+            if (requestClaim.count === 0) {
+              throw new Error("REQUEST_NOT_MATCHABLE");
+            }
 
             // 4. Update associated booking to CONFIRMED
             const updatedBooking = await transaction.bookings.update({
@@ -676,7 +814,7 @@ export class RequestsService {
               break; // Success
             } catch (err) {
               // Known business errors should immediately bubble to the outer catch
-              if (err.message === "NANNY_BUSY" || err.code === "P2002") {
+              if (err.message === "NANNY_BUSY" || err.message === "REQUEST_NOT_MATCHABLE" || err.code === "P2002") {
                 throw err;
               }
               // Catch Prisma deadlock or write conflict errors
@@ -812,6 +950,13 @@ export class RequestsService {
         } catch (error) {
           if (error.message === "NANNY_BUSY") {
             continue; // Try the next best nanny
+          }
+          if (error.message === "REQUEST_NOT_MATCHABLE") {
+            // The request was cancelled (or otherwise left 'pending') while we
+            // were scanning candidates. Nothing to match any more — and the
+            // parent must NOT get the "No Matches Found" notification below.
+            this.logger.log(`[Matching] Request ${requestId} became unmatchable mid-run. Stopping.`);
+            return null;
           }
           if (error.code === "P2002") {
             this.logger.warn(`[Matching] Race condition: Assignment already exists for request ${requestId}.`);

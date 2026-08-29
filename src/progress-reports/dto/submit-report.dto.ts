@@ -1,4 +1,15 @@
-import { IsString, IsNotEmpty, IsArray, ValidateNested, IsOptional, IsInt, IsUUID } from "class-validator";
+import {
+  IsString,
+  IsNotEmpty,
+  IsArray,
+  ValidateNested,
+  IsOptional,
+  IsInt,
+  IsUUID,
+  Min,
+  Max,
+  ArrayMinSize,
+} from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
@@ -15,6 +26,8 @@ export class AnswerDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
+  @Min(1)
+  @Max(5)
   answer_rating?: number;
 
   @ApiPropertyOptional()
@@ -27,6 +40,7 @@ export class AnswerDto {
 export class SubmitReportDto {
   @ApiProperty({ type: [AnswerDto] })
   @IsArray()
+  @ArrayMinSize(1, { message: "Answers cannot be empty" })
   @ValidateNested({ each: true })
   @Type(() => AnswerDto)
   answers: AnswerDto[];

@@ -13,6 +13,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AttendanceService } from "../attendance/attendance.service";
 import { TokenBlacklistService } from "../auth/token-blacklist.service";
+import { BookingStatus } from "../constants";
 
 @WebSocketGateway({
   namespace: "/location",
@@ -40,6 +41,14 @@ export class LocationGateway implements OnGatewayConnection {
 
   @WebSocketServer()
   server: Server;
+
+  // Last time a geofence *notification* (the persistent, badge-and-push kind)
+  // was sent to the parent, per booking. The live `geofence:alert` socket event
+  // is intentionally uncapped — it drives the map — but position pings arrive
+  // every few seconds, so an un-throttled createNotification turned one walk to
+  // the corner shop into dozens of warning notifications.
+  private readonly lastGeofenceNotify = new Map<string, number>();
+  private readonly GEOFENCE_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000;
 
   constructor(
     private prisma: PrismaService,
@@ -187,11 +196,31 @@ export class LocationGateway implements OnGatewayConnection {
     const { bookingId, lat, lng } = data;
     const uid = this.userId(client);
 
+    // Socket payloads bypass the HTTP ValidationPipe entirely, so lat/lng
+    // arrive exactly as the client sent them — strings, objects, NaN,
+    // out-of-range values. Unchecked, a bad value either throws inside the
+    // Decimal(10,8) insert or persists garbage that later renders as a NaN
+    // distance, which compares false against the radius and reads as "inside
+    // the geofence". Validate here, like the REST DTO does.
+    if (
+      typeof lat !== "number" ||
+      typeof lng !== "number" ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      return { error: "Invalid coordinates" };
+    }
+
     const booking = await this.prisma.bookings.findUnique({
       where: { id: bookingId },
       select: {
         nanny_id: true,
         parent_id: true,
+        status: true,
         care_location_lat: true,
         care_location_lng: true,
         geofence_radius: true,
@@ -204,6 +233,16 @@ export class LocationGateway implements OnGatewayConnection {
     // Only the assigned nanny may publish location for a booking.
     if (uid !== booking.nanny_id) {
       return { error: "Only the assigned caregiver can share location" };
+    }
+    // Only a live booking accepts position reports. Without this, a client
+    // still streaming after a session completed (or was cancelled) kept
+    // writing trail rows and — worse — kept firing geofence alerts at the
+    // parent about a caregiver who was rightly on their way home.
+    if (
+      booking.status !== BookingStatus.CONFIRMED &&
+      booking.status !== BookingStatus.IN_PROGRESS
+    ) {
+      return { error: "Booking is not active" };
     }
 
     // Persist the point
@@ -250,12 +289,16 @@ export class LocationGateway implements OnGatewayConnection {
         message: "Caregiver is outside the designated care location",
       });
 
-      await this.notificationsService.createNotification(
-        booking.parent_id,
-        "Geofence Alert",
-        `The nanny has moved ${Math.round(distance)}m away from the care location (allowed: ${radius}m)`,
-        "warning",
-      );
+      const lastNotified = this.lastGeofenceNotify.get(bookingId) ?? 0;
+      if (Date.now() - lastNotified >= this.GEOFENCE_NOTIFY_COOLDOWN_MS) {
+        this.lastGeofenceNotify.set(bookingId, Date.now());
+        await this.notificationsService.createNotification(
+          booking.parent_id,
+          "Geofence Alert",
+          `The nanny has moved ${Math.round(distance)}m away from the care location (allowed: ${radius}m)`,
+          "warning",
+        );
+      }
 
       // The alert above fires on every outside ping, which is right for a live
       // map and wrong for a record — stepping out to the school gate is ordinary
@@ -281,16 +324,26 @@ export class LocationGateway implements OnGatewayConnection {
 
   /** Nanny signals they've stopped sharing (session ended / paused). */
   @SubscribeMessage("location:stop")
-  handleStop(
+  async handleStop(
     @MessageBody() data: { bookingId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    if (this.userId(client)) {
-      this.server.to(`booking:${data.bookingId}`).emit("location:stopped", {
-        bookingId: data.bookingId,
-        timestamp: new Date(),
-      });
+    // Only the assigned caregiver may announce "stopped sharing" — the same
+    // check location:update makes. Previously any authenticated user could
+    // broadcast location:stopped into any booking's room, blanking the
+    // parent's live map mid-session.
+    const uid = this.userId(client);
+    const booking = await this.prisma.bookings.findUnique({
+      where: { id: data.bookingId },
+      select: { nanny_id: true },
+    });
+    if (!booking || uid !== booking.nanny_id) {
+      return { error: "Only the assigned caregiver can stop sharing" };
     }
+    this.server.to(`booking:${data.bookingId}`).emit("location:stopped", {
+      bookingId: data.bookingId,
+      timestamp: new Date(),
+    });
     return { success: true };
   }
 

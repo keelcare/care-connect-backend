@@ -574,6 +574,9 @@ export class AdminService {
         throw new BadRequestException(`Booking is already ${booking.status}`);
 
       request = {
+        // The SSE/side-effect code below keys off `request.id`; for a single
+        // recurring session the plan id is the thing dashboards refresh on.
+        id: booking.recurring_request_id ?? booking.id,
         category: "Recurring", // Fallback or fetch from recurring_service_requests
         date: booking.start_time,
         start_time: booking.start_time,
@@ -641,6 +644,22 @@ export class AdminService {
     if (!nanny || nanny.role !== "nanny")
       throw new NotFoundException("Nanny not found");
 
+    // SAFETY: the candidate list (getAvailableNanniesForRequest) already applies
+    // this bar, but the assign endpoint takes a raw nannyId, so an admin could
+    // POST an id that never appeared on that list. Manual assignment is still an
+    // assignment to a child — an unverified, banned or deleted caregiver must
+    // never be attachable this way.
+    if (nanny.identity_verification_status !== "verified") {
+      throw new BadRequestException(
+        "Nanny is not identity-verified and cannot be assigned",
+      );
+    }
+    if (!nanny.is_active || nanny.deleted_at) {
+      throw new BadRequestException(
+        "Nanny account is inactive or deleted and cannot be assigned",
+      );
+    }
+
     // --- Availability precheck (read-only, so it stays OUT of the transaction) ---
     // A recurring plan can hold dozens of sessions; checking them one-by-one used
     // to run 3 queries per session and blow the 5s interactive-transaction budget.
@@ -702,15 +721,26 @@ export class AdminService {
           assignmentId = assignment.id;
         }
 
-        // 3. Update Request or Booking Status
+        // 3. Update Request or Booking Status.
+        // RACE: the status/nanny checks above ran on a pre-transaction read, so a
+        // concurrent actor (a second admin tab, or the nanny-acceptance flow) can
+        // claim the same request in the gap. Each write below is therefore a
+        // guarded updateMany whose WHERE re-asserts the claimable state; a count
+        // of 0 means someone else won and the whole transaction rolls back
+        // instead of silently overwriting their nanny_id.
         if (requestId && !isRecurring) {
-          await tx.service_requests.update({
-            where: { id: requestId },
+          const claimed = await tx.service_requests.updateMany({
+            where: { id: requestId, status: { in: ["pending", "active"] } },
             data: {
               status: "accepted",
               current_assignment_id: assignmentId,
             },
           });
+          if (claimed.count === 0) {
+            throw new BadRequestException(
+              "Request was assigned or closed by another process; refresh and retry",
+            );
+          }
 
           await tx.bookings.updateMany({
             where: {
@@ -727,10 +757,22 @@ export class AdminService {
           // happen to exist today — the rolling generator reads this so future
           // sessions come out already staffed. The plan also goes live only now
           // that someone is serving it.
-          await tx.recurring_service_requests.update({
-            where: { id: requestId },
+          // Guarded claim: only an unstaffed, still-generating plan is
+          // assignable — a plan a concurrent assignment just staffed (nanny_id
+          // set) or that was cancelled in the gap must not be re-staffed here.
+          const claimedPlan = await tx.recurring_service_requests.updateMany({
+            where: {
+              id: requestId,
+              status: { in: PLAN_STATUSES_GENERATING },
+              nanny_id: null,
+            },
             data: { status: PLAN_STATUS.ACTIVE, nanny_id: nannyId },
           });
+          if (claimedPlan.count === 0) {
+            throw new BadRequestException(
+              "Plan was assigned or closed by another process; refresh and retry",
+            );
+          }
           await tx.bookings.updateMany({
             where: {
               recurring_request_id: requestId,
@@ -740,13 +782,25 @@ export class AdminService {
             data: { nanny_id: nannyId, status: BookingStatus.CONFIRMED },
           });
         } else if (bookingId) {
-          await tx.bookings.update({
-            where: { id: bookingId },
+          // Same guarded-claim shape: only a still-unassigned session in an
+          // assignable state can be taken. The pre-transaction status check is
+          // advisory; this WHERE is the actual gate.
+          const claimedBooking = await tx.bookings.updateMany({
+            where: {
+              id: bookingId,
+              nanny_id: null,
+              status: { in: ["requested", "pending_assignment"] },
+            },
             data: {
               nanny_id: nannyId,
               status: BookingStatus.CONFIRMED,
             },
           });
+          if (claimedBooking.count === 0) {
+            throw new BadRequestException(
+              "Booking was assigned or closed by another process; refresh and retry",
+            );
+          }
         }
 
         // 4.5 Create Recurring Booking Record if subscription
@@ -769,7 +823,19 @@ export class AdminService {
     // non-fatal: a pricing problem must not undo a placement that has already
     // been communicated to the caregiver.
     if (isRecurring) {
-      await this.paymentsService.openFirstCycleForPlan(requestId);
+      try {
+        await this.paymentsService.openFirstCycleForPlan(requestId);
+      } catch (e) {
+        // The comment above promises non-fatal, so it must actually be caught:
+        // an uncaught throw here 500s the request AFTER the placement committed,
+        // skips every email/chat/notification below, and an admin retry then
+        // fails the status check — the assignment looks broken when only billing
+        // is. Billing can be opened again from the payments side.
+        this.logger.error(
+          `Manual Assignment: placement committed but opening first billing cycle failed for plan ${requestId}`,
+          (e as Error)?.stack,
+        );
+      }
     }
 
     // Send Confirmation Emails (Outside transaction but after success)
@@ -822,10 +888,17 @@ export class AdminService {
     // --- Side Effects (Outside Transaction) ---
 
     // Fetch the updated booking for chat creation
+    // In the bookingId path `requestId` is undefined, and Prisma drops an
+    // undefined filter entirely — the old `{ request_id: undefined, status:
+    // CONFIRMED }` matched an ARBITRARY confirmed booking platform-wide and
+    // attached the new chat to it. The assigned booking's id is already known
+    // in that path, so look it up directly.
     const updatedBooking = await this.prisma.bookings.findFirst({
-      where: isRecurring
-        ? { recurring_request_id: requestId, status: BookingStatus.CONFIRMED }
-        : { request_id: requestId, status: BookingStatus.CONFIRMED },
+      where: bookingId
+        ? { id: bookingId }
+        : isRecurring
+          ? { recurring_request_id: requestId, status: BookingStatus.CONFIRMED }
+          : { request_id: requestId, status: BookingStatus.CONFIRMED },
     });
 
     if (updatedBooking) {
@@ -1467,15 +1540,28 @@ export class AdminService {
   }
 
   async getPaymentStats() {
+    // Same "money that actually settled" filter as getAdvancedStats and
+    // RevenueService.collectedWhere(). The unfiltered aggregate this used to run
+    // also summed abandoned checkouts (`created`), failed/refunded charges and
+    // `manual_pending` completion placeholders, so this card quoted a different
+    // (inflated) total than the revenue screen for the same money.
+    const collectedWhere = {
+      provider: { not: MANUAL_PENDING_PROVIDER },
+      status: { in: EARNING_STATUSES },
+    };
     const [totalPayments, totalAmount, pendingPayments] = await Promise.all([
-      this.prisma.payments.count(),
-      this.prisma.payments.aggregate({ _sum: { amount: true } }),
+      this.prisma.payments.count({ where: collectedWhere }),
+      this.prisma.payments.aggregate({
+        where: collectedWhere,
+        _sum: { amount: true },
+      }),
       this.prisma.payments.count({ where: { status: "pending_release" } }),
     ]);
 
     return {
       totalPayments,
-      totalAmount: totalAmount._sum.amount || 0,
+      // Decimal serializes as a string; clients expect a number.
+      totalAmount: Number(totalAmount._sum.amount ?? 0),
       pendingPayments,
     };
   }
@@ -1569,24 +1655,47 @@ export class AdminService {
     };
   }
 
-  async approveReview(id: string) {
-    return this.prisma.reviews.update({
+  // Review moderation changes what the public sees about a caregiver, so it
+  // belongs in the same audit trail as every other admin mutation — it was the
+  // only admin write that left no record of who acted.
+  async approveReview(id: string, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.reviews.update({
       where: { id },
       data: {
         is_approved: true,
         moderation_status: "approved",
       },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "APPROVE_REVIEW",
+        targetType: "review",
+        targetId: id,
+        ipAddress,
+      });
+    }
+    return result;
   }
 
-  async rejectReview(id: string) {
-    return this.prisma.reviews.update({
+  async rejectReview(id: string, adminId?: string, ipAddress?: string) {
+    const result = await this.prisma.reviews.update({
       where: { id },
       data: {
         is_approved: false,
         moderation_status: "rejected",
       },
     });
+    if (adminId) {
+      await this.auditService.logAction({
+        adminId,
+        action: "REJECT_REVIEW",
+        targetType: "review",
+        targetId: id,
+        ipAddress,
+      });
+    }
+    return result;
   }
 
   // Matching Configuration

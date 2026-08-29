@@ -10,6 +10,7 @@ import {
 import { ProgressReportsService } from "./progress-reports.service";
 import { TransparentJwtAuthGuard } from "../auth/guards/transparent-jwt-auth.guard";
 import { RolesGuard } from "../auth/guards/roles.guard";
+import { ActiveUserGuard } from "../common/guards/active-user.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
 import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
 
@@ -20,7 +21,7 @@ import { UserRole } from "../auth/dto/signup.dto";
 @ApiTags("Progress Reports")
 @ApiBearerAuth()
 @Controller("progress-reports")
-@UseGuards(TransparentJwtAuthGuard, RolesGuard)
+@UseGuards(TransparentJwtAuthGuard, RolesGuard, ActiveUserGuard)
 export class ProgressReportsController {
   constructor(private readonly progressReportsService: ProgressReportsService) {}
 

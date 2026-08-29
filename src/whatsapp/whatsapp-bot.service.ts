@@ -43,16 +43,26 @@ export class WhatsAppBotService {
       return;
     }
 
-    // Log inbound message
-    await this.prisma.whatsapp_messages.create({
-      data: {
-        phone_number: phoneNumber,
-        direction: WhatsAppMessageDirection.INBOUND,
-        message_body: messageText,
-        message_id: messageId,
-        raw_payload: rawPayload,
-      },
-    });
+    // Log inbound message (handling P2002 unique constraint race if duplicate webhooks arrive concurrently)
+    try {
+      await this.prisma.whatsapp_messages.create({
+        data: {
+          phone_number: phoneNumber,
+          direction: WhatsAppMessageDirection.INBOUND,
+          message_body: messageText,
+          message_id: messageId,
+          raw_payload: rawPayload,
+        },
+      });
+    } catch (err: any) {
+      if (err.code === "P2002") {
+        this.logger.warn(
+          `Duplicate webhook event for message_id ${messageId} on create, skipping.`,
+        );
+        return;
+      }
+      throw err;
+    }
 
     // Get or create conversation
     let conversation = await this.prisma.whatsapp_conversations.findUnique({
@@ -109,7 +119,7 @@ export class WhatsAppBotService {
         await this.advance(
           phoneNumber,
           WhatsAppConversationStep.COLLECT_PHONE,
-          { name: text },
+          { name: `NAME:${text}` },
         );
         await this.sendAndLog(
           phoneNumber,
@@ -219,16 +229,26 @@ export class WhatsAppBotService {
   ): Promise<void> {
     // Parse stored context from name field (temporary encoding)
     const context = conversation.name ?? "";
-    const parts: Record<string, string> = {};
-    context.split("|").forEach((part: string) => {
-      const [key, ...val] = part.split(":");
-      if (key && val.length) parts[key] = val.join(":");
-    });
+    const segments = context.split("|");
+    let name = "Unknown";
+    let email: string | null = null;
+    let category = "Other";
+    let collectedPhone = phoneNumber;
 
-    const name = parts[""] ?? parts["NAME"] ?? "Unknown";
-    const email = parts["EMAIL"] === "skip" ? null : (parts["EMAIL"] ?? null);
-    const category = parts["CATEGORY"] ?? "Other";
-    const collectedPhone = parts["PHONE"] ?? phoneNumber;
+    for (const segment of segments) {
+      if (segment.startsWith("PHONE:")) {
+        collectedPhone = segment.substring(6);
+      } else if (segment.startsWith("EMAIL:")) {
+        const val = segment.substring(6);
+        email = val === "skip" ? null : val;
+      } else if (segment.startsWith("CATEGORY:")) {
+        category = segment.substring(9);
+      } else if (segment.startsWith("NAME:")) {
+        name = segment.substring(5);
+      } else if (!segment.includes(":") && segment.trim().length > 0) {
+        name = segment.trim();
+      }
+    }
 
     await this.prisma.whatsapp_enquiries.create({
       data: {
@@ -252,7 +272,7 @@ export class WhatsAppBotService {
     await this.sendAndLog(phoneNumber, thankYouMsg);
 
     this.logger.log(
-      `Enquiry created for phone ${phoneNumber} (category: ${category})`,
+      `Enquiry created for phone ${phoneNumber} (name: ${name}, category: ${category})`,
     );
   }
 

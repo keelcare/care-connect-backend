@@ -34,6 +34,19 @@ export class DisputesService {
       );
     }
 
+    // One open dispute per user per booking: without this, repeated taps on
+    // "raise dispute" (or deliberate spam) floods the admin queue with rows
+    // that each independently carry refund power once resolved.
+    const existing = await this.prisma.disputes.findFirst({
+      where: { booking_id: dto.bookingId, raised_by: userId, status: "open" },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        "You already have an open dispute for this booking",
+      );
+    }
+
     return this.prisma.disputes.create({
       data: {
         booking_id: dto.bookingId,
@@ -92,8 +105,40 @@ export class DisputesService {
       throw new BadRequestException("Dispute is already resolved");
     }
 
-    const updated = await this.prisma.disputes.update({
-      where: { id },
+    // Financial outcome, taken from the explicit `outcome` field rather than
+    // sniffed out of the resolution text — see DisputeOutcome for why.
+    //
+    // The payment to act on is the CAPTURED one, not `payments[0]`: a booking
+    // accumulates a `payments` row per checkout attempt (`created` orders that
+    // were opened and abandoned, `failed` attempts), so the first row in
+    // unspecified order was frequently not the money actually held. When it
+    // wasn't, the old `payments[0].status === captured` guard failed silently
+    // and a REFUND outcome resolved the dispute with no money moved.
+    const payment =
+      dispute.bookings?.payments?.find(
+        (p) => p.status === PaymentStatus.CAPTURED,
+      ) ?? null;
+
+    // An admin who explicitly chose a financial outcome must not get a silent
+    // no-op. If there is nothing captured to refund or release, refuse and say
+    // so — the admin can re-resolve with `no_action` if that is the truth.
+    if (
+      (dto.outcome === DisputeOutcome.REFUND ||
+        dto.outcome === DisputeOutcome.RELEASE) &&
+      !payment
+    ) {
+      throw new BadRequestException(
+        `Cannot ${dto.outcome} — this booking has no captured payment. ` +
+          `Resolve with outcome "no_action" if no money should move.`,
+      );
+    }
+
+    // Atomic claim on the open status. The read-check above is advisory only:
+    // two admins resolving concurrently would both pass it, and with a bare
+    // `update` both would then trigger the financial branch — a double refund.
+    // Only the caller whose updateMany actually flips open→resolved proceeds.
+    const claim = await this.prisma.disputes.updateMany({
+      where: { id, status: "open" },
       data: {
         status: "resolved",
         resolution: dto.resolution,
@@ -101,13 +146,13 @@ export class DisputesService {
         updated_at: new Date(),
       },
     });
+    if (claim.count === 0) {
+      throw new BadRequestException("Dispute is already resolved");
+    }
 
-    // Financial outcome, taken from the explicit `outcome` field rather than
-    // sniffed out of the resolution text — see DisputeOutcome for why.
-    const payment = dispute.bookings?.payments?.[0];
     let financialResult: string | null = null;
 
-    if (payment && payment.status === PaymentStatus.CAPTURED) {
+    if (payment) {
       switch (dto.outcome) {
         case DisputeOutcome.REFUND: {
           // Perform the refund for real. This previously wrote a
@@ -126,8 +171,9 @@ export class DisputesService {
               `Dispute ${id}: refund of payment ${payment.id} failed: ${err.message}`,
               err.stack,
             );
-            await this.prisma.disputes.update({
-              where: { id },
+            // Guarded rollback: only reopen the row this call resolved.
+            await this.prisma.disputes.updateMany({
+              where: { id, status: "resolved" },
               data: { status: "open", resolution: null, resolved_by: null },
             });
             throw new BadRequestException(
@@ -138,10 +184,26 @@ export class DisputesService {
         }
 
         case DisputeOutcome.RELEASE: {
-          await this.prisma.payments.update({
-            where: { id: payment.id },
+          // Guarded claim, not a bare update: the payment was read before the
+          // dispute was claimed, and in that gap a refund webhook (or another
+          // flow) may have moved it off `captured`. Overwriting `refunded`
+          // with `pending_release` would queue a payout for money already
+          // returned to the parent — paid out twice, once to each side.
+          const released = await this.prisma.payments.updateMany({
+            where: { id: payment.id, status: PaymentStatus.CAPTURED },
             data: { status: PaymentStatus.PENDING_RELEASE },
           });
+          if (released.count === 0) {
+            // Payment changed underneath us — reopen the dispute and surface it.
+            await this.prisma.disputes.updateMany({
+              where: { id, status: "resolved" },
+              data: { status: "open", resolution: null, resolved_by: null },
+            });
+            throw new BadRequestException(
+              "Dispute not resolved: the payment is no longer in a releasable " +
+                "state (it may have been refunded concurrently). Re-check and retry.",
+            );
+          }
           financialResult = "Payment released for payout to the caregiver.";
           break;
         }
@@ -170,6 +232,7 @@ export class DisputesService {
       );
     }
 
-    return updated;
+    // Re-read after the claim: updateMany returns no row.
+    return this.prisma.disputes.findUnique({ where: { id } });
   }
 }
