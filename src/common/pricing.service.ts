@@ -153,7 +153,7 @@ export class PricingEngineService {
   }
 
   /** The rate to hand the pure calculator: the configured rate, or 0 when off. */
-  private effectiveGstPercent(): number {
+  effectiveGstPercent(): number {
     const { enabled, percent } = this.getGstConfig();
     return enabled ? percent : 0;
   }

@@ -150,9 +150,9 @@ describe("RecurringRequestsCron", () => {
   describe("handleRollingGeneration — end of term", () => {
     const DAY = 24 * 60 * 60 * 1000;
 
-    /** A one-month plan started 60 days ago whose last session was `daysAgo` days in the past. */
+    /** A one-month plan started 75 days ago whose last session was `daysAgo` days in the past. */
     function exhaustedPlan(daysAgo: number, over: Record<string, unknown> = {}) {
-      const start = new Date(Date.now() - 60 * DAY);
+      const start = new Date(Date.now() - 75 * DAY);
       return {
         id: "plan-1",
         parent_id: "parent-1",

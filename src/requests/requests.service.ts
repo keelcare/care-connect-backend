@@ -18,12 +18,17 @@ import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
 import { PricingEngineService, MATCHING_FEE_CYCLE, MATCHING_FEE_KIND } from "../common/pricing.service";
-import { resolveDaysPerWeek, round2 } from "../common/utils/pricing.utils";
+import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { AddressesService } from "../addresses/addresses.service";
 import { PaymentGatewayService } from "../payments/payment-gateway.service";
 import { PaymentAuditService } from "../payments/payment-audit.service";
 import { DocumentIssuerService } from "../invoices/document-issuer.service";
+
+/** Money is Decimal(12,2); float sums leave a tail that formats a rupee out. */
+function round2(value: number): number {
+  return Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
+}
 
 import {
   CATEGORY_SKILL_MAP,

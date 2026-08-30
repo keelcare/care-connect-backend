@@ -17,6 +17,7 @@ describe("PaymentsService", () => {
   const mockPrisma = {
     payments: {
       findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
       create: jest.fn(),
       findFirst: jest.fn(),
@@ -100,6 +101,7 @@ describe("PaymentsService", () => {
     calculateAndSnapshot: jest.fn(),
     advancePaymentPlanTx: jest.fn(),
     getAdvancePaymentConfig: jest.fn(),
+    getMatchingFeeConfig: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -163,6 +165,15 @@ describe("PaymentsService", () => {
       amount: 1000,
       status: "created",
     });
+
+    mockPrisma.payment_installments.findFirst.mockResolvedValue({
+      id: "inst_123",
+      booking_id: bookingId,
+      status: "pending",
+      installment_no: 1,
+      total_installments: 1,
+    });
+    mockPrisma.payment_installments.updateMany.mockResolvedValue({ count: 1 });
 
     mockPrisma.bookings.findUnique.mockResolvedValue({
       id: bookingId,
@@ -650,6 +661,33 @@ describe("PaymentsService", () => {
       expect(mockPrisma.price_snapshots.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: feeSnapshotId, status: "pending" } }),
       );
+    });
+
+    describe("createMatchingFeeOrder", () => {
+      it("returns required: false when matching fee is disabled", async () => {
+        mockPricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: false, amount: 0 });
+
+        const result = await service.createMatchingFeeOrder("parent-1");
+
+        expect(result).toEqual({ required: false, amount: 0 });
+      });
+
+      it("creates a Razorpay order when matching fee is enabled", async () => {
+        mockPricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: true, amount: 249 });
+        mockPaymentGatewayService.createOrder.mockResolvedValue({ id: "order_mfee_123" });
+
+        const result = await service.createMatchingFeeOrder("parent-1");
+
+        expect(result.required).toBe(true);
+        expect(result.orderId).toBe("order_mfee_123");
+        expect(result.amount).toBe(249);
+        expect(result.amount_due).toBe(24900);
+        expect(mockPaymentGatewayService.createOrder).toHaveBeenCalledWith(
+          24900,
+          expect.stringContaining("mfee_"),
+          expect.objectContaining({ purpose: "matching_fee", parent_id: "parent-1" }),
+        );
+      });
     });
   });
 });

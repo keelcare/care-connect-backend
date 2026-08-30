@@ -706,6 +706,11 @@ model users {
   attendance_days            nanny_attendance_days[]   @relation("attendance_days_nanny")
   attendance_days_overridden nanny_attendance_days[]   @relation("attendance_days_overridden_by")
 
+  special_educator_profile special_educators?
+  keel_shadow_assignments  keel_child_assignments[]  @relation("ShadowAssignments")
+  keel_shadow_logs         keel_log_entries[]        @relation("ShadowLogs")
+  keel_guardian_check_ins  keel_parent_check_ins[]   @relation("GuardianCheckIns")
+
   @@unique([oauth_provider, oauth_provider_id])
 }
 
@@ -991,8 +996,15 @@ model children {
   deleted_at        DateTime?          @db.Timestamptz(6)
   created_at        DateTime?          @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?          @default(now()) @db.Timestamptz(6)
-  booking_children  booking_children[]
-  users             users              @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  booking_children        booking_children[]
+  users                   users                     @relation(fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  keel_assignments        keel_child_assignments[]
+  keel_goals              keel_goals[]
+  keel_passage_plans      keel_passage_plans[]
+  keel_log_entries        keel_log_entries[]
+  keel_rater_observations keel_rater_observations[]
+  keel_parent_check_ins   keel_parent_check_ins[]
+  keel_bearings           keel_bearings[]
 
   @@index([parent_id])
 }
@@ -1578,4 +1590,237 @@ model recurring_service_requests {
   plan_settlements plan_settlements?
 
   @@index([nanny_id])
+}
+
+// ----------------------------------------------------
+// ENUMS FOR KEEL COURSE
+// ----------------------------------------------------
+
+enum keel_domain {
+  communication
+  social_interaction
+  academic_engagement
+  self_regulation
+  independence
+}
+
+enum keel_goal_status {
+  active
+  met
+  retired
+}
+
+enum keel_day_marker {
+  green
+  amber
+  red
+}
+
+enum keel_zero_opportunity_reason {
+  absent
+  no_natural_opportunity
+  exam_or_event_day
+}
+
+enum keel_passage_plan_status {
+  draft
+  active
+  superseded
+}
+
+enum keel_bearing_status {
+  draft
+  issued
+}
+
+// ----------------------------------------------------
+// CORE ENTITIES & RELATIONS FOR KEEL COURSE
+// ----------------------------------------------------
+
+model special_educators {
+  id                      String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id                 String                  @unique @db.Uuid
+  name                    String                  @db.VarChar(255)
+  rci_registration_number String                  @unique @db.VarChar(100)
+  created_at              DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                @default(now()) @db.Timestamptz(6)
+
+  users                   users                   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  assignments             keel_child_assignments[]
+  passage_plans           keel_passage_plans[]
+  rater_observations      keel_rater_observations[]
+}
+
+model keel_child_assignments {
+  id                 String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id           String             @db.Uuid
+  shadow_teacher_id  String             @db.Uuid
+  educator_id        String             @db.Uuid
+  start_date         DateTime           @db.Date
+  end_date           DateTime?          @db.Date
+  created_at         DateTime           @default(now()) @db.Timestamptz(6)
+
+  children           children           @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  shadow_teacher     users              @relation("ShadowAssignments", fields: [shadow_teacher_id], references: [id], onDelete: Cascade)
+  special_educator   special_educators  @relation(fields: [educator_id], references: [id], onDelete: Cascade)
+
+  @@index([child_id, end_date])
+  @@index([shadow_teacher_id, end_date])
+  @@index([educator_id, end_date])
+}
+
+model keel_goals {
+  id                          String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id                    String                    @db.Uuid
+  domain                      keel_domain
+  title                       String                    @db.VarChar(255)
+  smart_statement             String                    @db.Text
+  opportunity_definition      String                    @db.Text
+  status                      keel_goal_status          @default(active)
+  created_in_passage_plan_id  String?                   @db.Uuid
+  retired_in_passage_plan_id  String?                   @db.Uuid
+  created_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at                  DateTime                  @default(now()) @db.Timestamptz(6)
+
+  children                    children                  @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  created_in_plan             keel_passage_plans?       @relation("CreatedGoals", fields: [created_in_passage_plan_id], references: [id], onDelete: SetNull)
+  retired_in_plan             keel_passage_plans?       @relation("RetiredGoals", fields: [retired_in_passage_plan_id], references: [id], onDelete: SetNull)
+  log_entry_goals             keel_log_entry_goals[]
+  rater_observation_goals     keel_rater_observation_goals[]
+
+  @@index([child_id, status])
+}
+
+model keel_passage_plans {
+  id                      String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id                String                    @db.Uuid
+  quarter_label           String                    @db.VarChar(50)
+  created_by_educator_id  String                    @db.Uuid
+  domain_scores           Json
+  strategy_notes          Json
+  materials               Json
+  status                  keel_passage_plan_status  @default(draft)
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
+
+  children                children                  @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  educator                special_educators         @relation(fields: [created_by_educator_id], references: [id], onDelete: Cascade)
+  goals_created           keel_goals[]              @relation("CreatedGoals")
+  goals_retired           keel_goals[]              @relation("RetiredGoals")
+
+  @@index([child_id, status])
+}
+
+model keel_log_entries {
+  id                                  String                        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id                            String                        @db.Uuid
+  shadow_teacher_id                   String                        @db.Uuid
+  session_date                        DateTime                      @db.Date
+  session_start                       DateTime                      @db.Timestamptz(6)
+  session_end                         DateTime                      @db.Timestamptz(6)
+  escalations_count                   Int                           @default(0)
+  longest_escalation_recovery_minutes Int?
+  longest_on_task_minutes             Int                           @default(0)
+  peer_initiated_interactions_count   Int                           @default(0)
+  day_marker                          keel_day_marker
+  note                                String?                       @db.Text
+  zero_opportunity_reason             keel_zero_opportunity_reason?
+  weekly_narrative                    Json?
+  is_unverified                       Boolean                       @default(false)
+  time_from_screen_open_to_submit_ms  Int?
+  submitted_at                        DateTime                      @db.Timestamptz(6)
+  synced_at                           DateTime                      @default(now()) @db.Timestamptz(6)
+  dedupe_key                          String                        @unique @db.VarChar(160)
+
+  children                            children                      @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  shadow_teacher                      users                         @relation("ShadowLogs", fields: [shadow_teacher_id], references: [id], onDelete: Cascade)
+  goals                               keel_log_entry_goals[]
+
+  @@index([child_id, session_date])
+  @@index([shadow_teacher_id, session_date])
+}
+
+model keel_log_entry_goals {
+  id                          String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  log_entry_id                String             @db.Uuid
+  goal_id                     String             @db.Uuid
+  opportunities_presented     Int                @default(0)
+  opportunities_independent   Int                @default(0)
+  highest_prompt_level        Int?
+  context_tag                 String?            @db.VarChar(100)
+
+  log_entry                   keel_log_entries   @relation(fields: [log_entry_id], references: [id], onDelete: Cascade)
+  goal                        keel_goals         @relation(fields: [goal_id], references: [id], onDelete: Cascade)
+
+  @@unique([log_entry_id, goal_id])
+  @@index([goal_id])
+}
+
+model keel_rater_observations {
+  id                      String                        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id                String                        @db.Uuid
+  educator_id             String                        @db.Uuid
+  session_date            DateTime                      @db.Date
+  observed_at             DateTime                      @default(now()) @db.Timestamptz(6)
+  agreement_pct           Decimal?                      @db.Decimal(5, 2)
+  notes                   String?                       @db.Text
+
+  children                children                      @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  educator                special_educators             @relation(fields: [educator_id], references: [id], onDelete: Cascade)
+  goals                   keel_rater_observation_goals[]
+
+  @@unique([child_id, session_date, educator_id])
+  @@index([child_id, session_date])
+}
+
+model keel_rater_observation_goals {
+  id              String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  observation_id  String                  @db.Uuid
+  goal_id         String                  @db.Uuid
+  prompt_level    Int
+
+  observation     keel_rater_observations @relation(fields: [observation_id], references: [id], onDelete: Cascade)
+  goal            keel_goals              @relation(fields: [goal_id], references: [id], onDelete: Cascade)
+
+  @@unique([observation_id, goal_id])
+}
+
+model keel_parent_check_ins {
+  id                String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id          String          @db.Uuid
+  guardian_id       String          @db.Uuid
+  month             String          @db.VarChar(7)
+  five_item_scores  Int[]
+  submitted_at      DateTime        @default(now()) @db.Timestamptz(6)
+
+  children          children        @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  guardian          users           @relation("GuardianCheckIns", fields: [guardian_id], references: [id], onDelete: Cascade)
+  bearings          keel_bearings[]
+
+  @@unique([child_id, guardian_id, month])
+  @@index([child_id, month])
+}
+
+model keel_bearings {
+  id                                  String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  child_id                            String              @db.Uuid
+  month                               String              @db.VarChar(7)
+  headway_score                       Decimal?            @db.Decimal(5, 2)
+  headway_change_vs_last_month        Decimal?            @db.Decimal(5, 2)
+  headway_suppressed                  Boolean             @default(false)
+  per_domain_narrative                Json
+  delivery_record                     Json
+  rater_agreement_pct                 Decimal?            @db.Decimal(5, 2)
+  rater_agreement_override_reason     String?             @db.Text
+  parent_check_in_id                  String?             @db.Uuid
+  flags_for_discussion                String              @db.Text
+  status                              keel_bearing_status @default(draft)
+  drafted_at                          DateTime            @default(now()) @db.Timestamptz(6)
+  issued_at                           DateTime?           @db.Timestamptz(6)
+
+  children                            children            @relation(fields: [child_id], references: [id], onDelete: Cascade)
+  parent_check_in                     keel_parent_check_ins? @relation(fields: [parent_check_in_id], references: [id], onDelete: SetNull)
+
+  @@unique([child_id, month])
+  @@index([child_id, status])
 }

@@ -302,4 +302,110 @@ describe("RequestsService", () => {
       expect(notificationsService.createNotification).not.toHaveBeenCalled();
     });
   });
+
+  describe("create", () => {
+    const validDto: any = {
+      date: "2026-09-01",
+      start_time: "10:00:00",
+      duration_hours: 4,
+      num_children: 1,
+      category: "CC",
+      address_id: "addr-1",
+    };
+
+    it("creates a request directly when matching fee is not required", async () => {
+      pricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: false, amount: 0 });
+
+      const result = await service.create("parent-1", validDto);
+
+      expect(result).toBeDefined();
+      expect(result.matching_fee).toBeNull();
+      expect(tx.service_requests.create).toHaveBeenCalled();
+      expect(tx.bookings.create).toHaveBeenCalled();
+      expect(tx.payment_installments.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects booking creation when matching fee is enabled but no payment is provided", async () => {
+      pricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: true, amount: 249 });
+
+      await expect(service.create("parent-1", validDto)).rejects.toThrow(
+        /Matching fee payment is required/,
+      );
+      expect(tx.service_requests.create).not.toHaveBeenCalled();
+      expect(tx.bookings.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects booking creation when payment signature is invalid", async () => {
+      pricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: true, amount: 249 });
+      paymentGateway.verifySignature.mockReturnValue(false);
+
+      const dtoWithPayment = {
+        ...validDto,
+        payment: {
+          razorpay_order_id: "ord-1",
+          razorpay_payment_id: "pay-1",
+          razorpay_signature: "invalid-sig",
+        },
+      };
+
+      await expect(service.create("parent-1", dtoWithPayment)).rejects.toThrow(
+        /Invalid payment signature/,
+      );
+      expect(tx.service_requests.create).not.toHaveBeenCalled();
+    });
+
+    it("creates booking and marks matching fee as paid when payment is verified", async () => {
+      pricingService.getMatchingFeeConfig.mockResolvedValue({ enabled: true, amount: 249 });
+      paymentGateway.verifySignature.mockReturnValue(true);
+
+      const dtoWithPayment = {
+        ...validDto,
+        payment: {
+          razorpay_order_id: "ord-1",
+          razorpay_payment_id: "pay-1",
+          razorpay_signature: "valid-sig",
+        },
+      };
+
+      const result = await service.create("parent-1", dtoWithPayment);
+
+      expect(result).toBeDefined();
+      expect(result.matching_fee).toEqual({
+        bookingId: "bk-1",
+        installmentId: "inst-1",
+        amount: 249,
+        paid: true,
+      });
+      expect(tx.service_requests.create).toHaveBeenCalled();
+      expect(tx.bookings.create).toHaveBeenCalled();
+      expect(tx.price_snapshots.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            final_amount: 249,
+            status: "charged",
+          }),
+        }),
+      );
+      expect(tx.payment_installments.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            amount: 249,
+            status: "paid",
+            kind: "matching_fee",
+          }),
+        }),
+      );
+      expect(tx.payments.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            amount: 249,
+            status: "captured",
+            order_id: "ord-1",
+            payment_id: "pay-1",
+          }),
+        }),
+      );
+      expect(documents.issueForInstallment).toHaveBeenCalledWith("inst-1", prisma, expect.any(Date));
+    });
+  });
 });

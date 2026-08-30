@@ -1964,7 +1964,7 @@ export class PaymentsService {
     const matchingFeePayout = share(
       sum(
         allTime.filter((p) =>
-          p.payment_installments.some((i) => i.kind === MATCHING_FEE_KIND),
+          p.payment_installments?.some((i) => i.kind === MATCHING_FEE_KIND),
         ),
       ),
     );

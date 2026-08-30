@@ -8,6 +8,9 @@ import { PlanEntitlementService } from '../common/plan-entitlement.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { SseService } from '../sse/sse.service';
 import { DocumentIssuerService } from '../invoices/document-issuer.service';
+import { PaymentGatewayService } from '../payments/payment-gateway.service';
+import { PaymentAuditService } from '../payments/payment-audit.service';
+import { MailService } from '../mail/mail.service';
 import { RecurrenceType } from './dto/create-recurring-request.dto';
 
 describe('RecurringRequestsService', () => {
@@ -88,6 +91,9 @@ describe('RecurringRequestsService', () => {
         { provide: EventEmitter2, useValue: mockEmitter },
         { provide: SseService, useValue: mockSse },
         { provide: DocumentIssuerService, useValue: mockDocuments },
+        { provide: PaymentGatewayService, useValue: { verifySignature: jest.fn().mockReturnValue(true) } },
+        { provide: PaymentAuditService, useValue: { writeLog: jest.fn().mockResolvedValue(undefined) } },
+        { provide: MailService, useValue: { sendPaymentReceiptEmail: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile();
 
