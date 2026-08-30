@@ -600,6 +600,49 @@ export class PaymentsService {
   }
 
   /**
+   * Create a Razorpay order for the matching fee before a booking/request is confirmed.
+   *
+   * The matching fee is required to initiate the matching process. The booking
+   * is only created after this payment is verified.
+   */
+  async createMatchingFeeOrder(requestingUserId: string) {
+    const config = await this.pricingService.getMatchingFeeConfig();
+    if (!config.enabled || config.amount <= 0) {
+      return { required: false, amount: 0 };
+    }
+
+    if (!this.configService.get("RAZORPAY_KEY_ID")) {
+      throw new BadRequestException("Payment service is currently unavailable");
+    }
+
+    const feeRupees = config.amount;
+    const feePaise = Math.round(feeRupees * RAZORPAY_PAISE_MULTIPLIER);
+    if (feePaise < RAZORPAY_MIN_AMOUNT_PAISE) {
+      throw new BadRequestException(`Amount too low to create order: ₹${feeRupees} INR`);
+    }
+
+    const order = await this.gateway.createOrder(
+      feePaise,
+      `mfee_${Date.now().toString().slice(-8)}_${requestingUserId.substring(0, 4)}`,
+      { purpose: "matching_fee", parent_id: requestingUserId },
+    );
+
+    return {
+      required: true,
+      orderId: order.id,
+      order_id: order.id,
+      amount: feeRupees,
+      amount_due: feePaise,
+      currency: "INR" as const,
+      key: this.configService.get("RAZORPAY_KEY_ID"),
+      key_id: this.configService.get("RAZORPAY_KEY_ID"),
+      name: "Care Connect",
+      description: "Matching fee",
+      kind: "matching_fee",
+    };
+  }
+
+  /**
    * Open a checkout for a cancellation fee.
    *
    * The fee is recorded on the booking as `cancellation_fee_status: "owed"` at

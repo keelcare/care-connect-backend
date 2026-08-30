@@ -39,9 +39,14 @@ import {
   INSTALMENT_PAID,
   INSTALMENT_PENDING,
   INSTALMENT_VOID,
+  PaymentStatus,
   MATCHING_FEE_KIND,
 } from "../constants";
 import { DocumentIssuerService } from "../invoices/document-issuer.service";
+import { PaymentGatewayService } from "../payments/payment-gateway.service";
+import { PaymentAuditService } from "../payments/payment-audit.service";
+import { MailService } from "../mail/mail.service";
+import { MATCHING_FEE_CYCLE } from "../common/pricing.service";
 
 /** One day, used only to make an inclusive end date exclusive. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -77,6 +82,9 @@ export class RecurringRequestsService {
     private eventEmitter: EventEmitter2,
     private sseService: SseService,
     private documents: DocumentIssuerService,
+    private paymentGateway: PaymentGatewayService,
+    private paymentAudit: PaymentAuditService,
+    private mailService: MailService,
   ) {}
 
   /**
@@ -239,6 +247,46 @@ export class RecurringRequestsService {
     // Convert start time string to DateTime for schema
     const startTimeObj = TimeUtils.combineDateAndTime(dto.start_date, dto.start_time);
 
+    // Check matching fee requirement
+    const matchingFeeConfig = await this.pricingService.getMatchingFeeConfig();
+    const feeRequired = matchingFeeConfig.enabled && matchingFeeConfig.amount > 0;
+    const feeAmount = feeRequired ? matchingFeeConfig.amount : 0;
+
+    if (feeRequired) {
+      if (!dto.payment) {
+        throw new BadRequestException(
+          "Matching fee payment is required before creating a recurring plan.",
+        );
+      }
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+        dto.payment;
+
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        throw new BadRequestException("Invalid payment details provided.");
+      }
+
+      const isValidSignature = this.paymentGateway.verifySignature(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+      );
+      if (!isValidSignature) {
+        throw new BadRequestException("Invalid payment signature.");
+      }
+
+      const existingPayment = await this.prisma.payments.findFirst({
+        where: {
+          OR: [
+            { order_id: razorpay_order_id },
+            { payment_id: razorpay_payment_id },
+          ],
+        },
+      });
+      if (existingPayment) {
+        throw new BadRequestException("Payment has already been processed.");
+      }
+    }
+
     // 2. Transaction to create the master request and all daily bookings
     const result = await this.prisma.$transaction(async (tx) => {
       const recurringReq = await tx.recurring_service_requests.create({
@@ -317,33 +365,152 @@ export class RecurringRequestsService {
         createdBookings[0],
       );
 
+      let matchingFeeInstallment: any = null;
+      let matchingFeePayment: any = null;
+
+      if (feeRequired && dto.payment && anchorBooking) {
+        const gstPercent = this.pricingService.effectiveGstPercent();
+        const subtotal = round2(feeAmount / (1 + gstPercent / 100));
+        const gst = round2(feeAmount - subtotal);
+        const capturedAt = new Date();
+
+        const snapshot = await tx.price_snapshots.create({
+          data: {
+            booking_id: anchorBooking.id,
+            cycle_number: MATCHING_FEE_CYCLE,
+            base_hourly_rate_used: 0,
+            hours_billed: 0,
+            custom_price_applied: false,
+            subtotal_amount: subtotal,
+            gst_percent_used: gstPercent,
+            gst_amount: gst,
+            final_amount: feeAmount,
+            calculation_breakdown: {
+              kind: MATCHING_FEE_KIND,
+              note: "One-off placement fee, deducted from the first billing cycle.",
+              amount: feeAmount,
+            } as any,
+            status: "charged",
+            razorpay_payment_id: dto.payment.razorpay_payment_id,
+          },
+        });
+
+        const paymentRecord = await tx.payments.create({
+          data: {
+            booking_id: anchorBooking.id,
+            nanny_id: null,
+            amount: feeAmount,
+            currency: "INR",
+            provider: "razorpay",
+            order_id: dto.payment.razorpay_order_id,
+            payment_id: dto.payment.razorpay_payment_id,
+            signature: dto.payment.razorpay_signature,
+            status: PaymentStatus.CAPTURED,
+          },
+        });
+
+        const installment = await tx.payment_installments.create({
+          data: {
+            booking_id: anchorBooking.id,
+            price_snapshot_id: snapshot.id,
+            cycle_number: MATCHING_FEE_CYCLE,
+            installment_no: 1,
+            total_installments: 1,
+            kind: MATCHING_FEE_KIND,
+            amount: feeAmount,
+            subtotal_amount: subtotal,
+            gst_amount: gst,
+            due_date: capturedAt,
+            paid_at: capturedAt,
+            status: INSTALMENT_PAID,
+            payment_id: paymentRecord.id,
+          },
+        });
+
+        await tx.price_snapshots.update({
+          where: { id: snapshot.id },
+          data: { payment_id: paymentRecord.id },
+        });
+
+        await this.paymentAudit.writeLog(
+          tx,
+          paymentRecord.id,
+          dto.payment.razorpay_order_id,
+          null,
+          PaymentStatus.CAPTURED,
+          "api:create_recurring_request:matching_fee",
+          dto.payment.razorpay_payment_id,
+          { amount: feeAmount, currency: "INR" },
+        );
+
+        matchingFeeInstallment = installment;
+        matchingFeePayment = paymentRecord;
+      }
+
       return {
         recurringReq,
         generatedBookingsCount: createdBookings.length,
         anchorBookingId: anchorBooking?.id ?? null,
+        matchingFeeInstallment,
+        matchingFeePayment,
       };
     }, {
       timeout: 20000, // Increase timeout to 20s for bulk inserts
       maxWait: 5000,
     });
 
-    // The matching fee is charged now, at confirmation — the parent has just
-    // agreed to the plan, and it is deducted from the first cycle rather than
-    // added on top. Raised outside the transaction so a pricing problem cannot
-    // roll back a plan the parent has already committed to; without a fee row the
-    // first cycle simply bills in full.
-    const matchingFee = result.anchorBookingId
-      ? await this.pricingService.raiseMatchingFee(result.anchorBookingId)
-      : null;
+    if (result.matchingFeeInstallment && result.matchingFeePayment) {
+      const capturedAt = result.matchingFeeInstallment.paid_at || new Date();
+      await this.documents
+        .issueForInstallment(result.matchingFeeInstallment.id, this.prisma, capturedAt)
+        .catch((err) =>
+          this.logger.error(
+            `Captured matching fee payment ${result.matchingFeePayment.id} but could not issue invoice`,
+            err as Error,
+          ),
+        );
+
+      try {
+        const parentUser = await this.prisma.users.findUnique({
+          where: { id: parentId },
+          include: { profiles: true },
+        });
+        if (parentUser?.email) {
+          const parentName = parentUser.profiles?.first_name
+            ? `${parentUser.profiles.first_name} ${parentUser.profiles.last_name || ""}`.trim()
+            : "Parent";
+          const gstPercent = this.pricingService.effectiveGstPercent();
+          const subtotal = round2(feeAmount / (1 + gstPercent / 100));
+          const gst = round2(feeAmount - subtotal);
+
+          this.mailService
+            .sendPaymentReceiptEmail(parentUser.email, parentName, {
+              amount: feeAmount,
+              currency: "INR",
+              date: capturedAt.toLocaleDateString(),
+              receiptId: result.matchingFeePayment.order_id,
+              bookingDetails: `Recurring Plan #${result.recurringReq.id.substring(0, 8)} — Matching Fee`,
+              subtotal,
+              gstPercent,
+              gstAmount: gst,
+            })
+            .catch((err) =>
+              this.logger.error("Failed to send receipt email", err),
+            );
+        }
+      } catch (err) {
+        this.logger.error("Failed to load parent for receipt email", err as Error);
+      }
+    }
 
     return {
       ...result,
-      /** Present only when a fee applies — the client charges it immediately. */
-      matching_fee: matchingFee
+      matching_fee: result.matchingFeeInstallment
         ? {
             bookingId: result.anchorBookingId,
-            installmentId: matchingFee.installmentId,
-            amount: matchingFee.amount,
+            installmentId: result.matchingFeeInstallment.id,
+            amount: Number(result.matchingFeeInstallment.amount),
+            paid: true,
           }
         : null,
     };

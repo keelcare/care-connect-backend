@@ -12,10 +12,37 @@ import {
   Min,
   Max,
   MaxLength,
+  ValidateNested,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
+
+export class PaymentVerificationDto {
+  @ApiProperty({
+    example: "order_123456789",
+    description: "Razorpay order ID",
+  })
+  @IsNotEmpty()
+  @IsString()
+  razorpay_order_id: string;
+
+  @ApiProperty({
+    example: "pay_123456789",
+    description: "Razorpay payment ID",
+  })
+  @IsNotEmpty()
+  @IsString()
+  razorpay_payment_id: string;
+
+  @ApiProperty({
+    example: "signature_hash_hex",
+    description: "Razorpay payment signature HMAC SHA256",
+  })
+  @IsNotEmpty()
+  @IsString()
+  razorpay_signature: string;
+}
 
 /**
  * SECURITY: Service request DTO with comprehensive validation
@@ -194,4 +221,13 @@ export class CreateRequestDto {
   @IsOptional()
   @IsBoolean()
   use_installments?: boolean;
+
+  @ApiPropertyOptional({
+    description: "Payment verification for matching fee (required when matching fee is enabled)",
+    type: PaymentVerificationDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PaymentVerificationDto)
+  payment?: PaymentVerificationDto;
 }

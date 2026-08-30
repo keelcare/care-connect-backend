@@ -10,6 +10,8 @@ import { FavoritesModule } from "../favorites/favorites.module";
 import { AvailabilityModule } from "../availability/availability.module";
 import { MailModule } from "../mail/mail.module";
 import { AddressesModule } from "../addresses/addresses.module";
+import { PaymentsModule } from "../payments/payments.module";
+import { InvoicesModule } from "../invoices/invoices.module";
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { AddressesModule } from "../addresses/addresses.module";
     AddressesModule,
     PassportModule,
     JwtModule.register({}),
+    PaymentsModule,
+    InvoicesModule,
   ],
   controllers: [RequestsController],
   providers: [RequestsService],

@@ -9,12 +9,16 @@ import { AddressesModule } from '../addresses/addresses.module';
 import { CommonModule } from '../common/common.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { InvoicesModule } from '../invoices/invoices.module';
+import { MailModule } from '../mail/mail.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
     PrismaModule,
     AuthModule,
+    UsersModule,
     NotificationsModule,
+    MailModule,
     AddressesModule,
     CommonModule,
     // The nightly cron opens each plan's next billing cycle before its month begins.

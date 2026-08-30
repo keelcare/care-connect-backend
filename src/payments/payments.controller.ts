@@ -28,6 +28,18 @@ import { NannyEarningsAnalyticsQueryDto } from "./dto/nanny-earnings-analytics-q
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
+  @Post("matching-fee-order")
+  @UseGuards(AuthGuard("jwt"))
+  @ApiOperation({
+    summary: "Create a Razorpay order to pay the matching fee before booking creation",
+    description:
+      "When matching fee is enabled, the parent pays the matching fee upfront before the booking and request are created.",
+  })
+  @ApiResponse({ status: 201, description: "Order created successfully" })
+  async createMatchingFeeOrder(@Req() req: any) {
+    return this.paymentsService.createMatchingFeeOrder(req.user.id);
+  }
+
   @Post("create-order")
   @UseGuards(AuthGuard("jwt"))
   @ApiOperation({ summary: "Create a new Razorpay order for a booking" })

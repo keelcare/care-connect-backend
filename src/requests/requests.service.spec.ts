@@ -13,6 +13,10 @@ import { AddressesService } from "../addresses/addresses.service";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { BOOKING_EVENTS } from "../bookings/events/booking.events";
 
+import { PaymentGatewayService } from "../payments/payment-gateway.service";
+import { PaymentAuditService } from "../payments/payment-audit.service";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
+
 describe("RequestsService", () => {
   let service: RequestsService;
   let prisma: any;
@@ -20,6 +24,9 @@ describe("RequestsService", () => {
   let notificationsService: any;
   let eventEmitter: any;
   let pricingService: any;
+  let paymentGateway: any;
+  let paymentAudit: any;
+  let documents: any;
 
   const futureStart = (hours: number) =>
     new Date(Date.now() + hours * 60 * 60 * 1000);
@@ -41,20 +48,35 @@ describe("RequestsService", () => {
         findUniqueOrThrow: jest
           .fn()
           .mockResolvedValue({ id: "bk-1", status: "CANCELLED", nanny_id: "nanny-1", parent_id: "parent-1" }),
+        create: jest.fn().mockResolvedValue({ id: "bk-1", status: "requested" }),
       },
       payment_installments: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({ id: "inst-1", amount: 249, status: "paid" }),
+      },
+      price_snapshots: {
+        create: jest.fn().mockResolvedValue({ id: "snap-1" }),
+        update: jest.fn().mockResolvedValue({ id: "snap-1" }),
+      },
+      payments: {
+        create: jest.fn().mockResolvedValue({ id: "pay-1", order_id: "ord-1", status: "captured" }),
+      },
+      booking_children: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       service_requests: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest
           .fn()
           .mockResolvedValue({ id: "req-1", status: "CANCELLED", parent_id: "parent-1" }),
+        create: jest.fn().mockResolvedValue({ id: "req-1", status: "pending" }),
       },
     };
     prisma = {
       service_requests: { findUnique: jest.fn() },
       bookings: { findUnique: jest.fn() },
+      services: { findUnique: jest.fn().mockResolvedValue({ name: "CC" }) },
+      payments: { findFirst: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn().mockImplementation((cb) => cb(tx)),
     };
     notificationsService = { createNotification: jest.fn() };
@@ -63,14 +85,34 @@ describe("RequestsService", () => {
       calculateCost: jest
         .fn()
         .mockResolvedValue({ totalAmount: 1000, appliedRate: 500 }),
+      getMatchingFeeConfig: jest.fn().mockResolvedValue({ enabled: false, amount: 0 }),
+      effectiveGstPercent: jest.fn().mockReturnValue(18),
       raiseMatchingFee: jest.fn().mockResolvedValue(null),
+    };
+    paymentGateway = {
+      verifySignature: jest.fn().mockReturnValue(true),
+    };
+    paymentAudit = {
+      writeLog: jest.fn().mockResolvedValue(undefined),
+    };
+    documents = {
+      issueForInstallment: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RequestsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: UsersService, useValue: { findOne: jest.fn() } },
+        {
+          provide: UsersService,
+          useValue: {
+            findOne: jest.fn().mockResolvedValue({
+              id: "parent-1",
+              profiles: { lat: 12.97, lng: 77.59, first_name: "Test" },
+              email: "test@example.com",
+            }),
+          },
+        },
         { provide: NotificationsService, useValue: notificationsService },
         {
           provide: FavoritesService,
@@ -80,14 +122,26 @@ describe("RequestsService", () => {
           provide: SseService,
           useValue: { emitToUser: jest.fn(), emitToUsers: jest.fn() },
         },
-        { provide: MailService, useValue: {} },
+        { provide: MailService, useValue: { sendPaymentReceiptEmail: jest.fn().mockResolvedValue(undefined) } },
         {
           provide: AvailabilityService,
           useValue: { doesBlockOverlap: jest.fn() },
         },
         { provide: PricingEngineService, useValue: pricingService },
-        { provide: AddressesService, useValue: { resolveForUser: jest.fn() } },
+        {
+          provide: AddressesService,
+          useValue: {
+            resolveForUser: jest.fn().mockResolvedValue({
+              id: "addr-1",
+              lat: 12.97,
+              lng: 77.59,
+            }),
+          },
+        },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: PaymentGatewayService, useValue: paymentGateway },
+        { provide: PaymentAuditService, useValue: paymentAudit },
+        { provide: DocumentIssuerService, useValue: documents },
       ],
     }).compile();
 

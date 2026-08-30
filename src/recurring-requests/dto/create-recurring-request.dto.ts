@@ -12,10 +12,16 @@ import {
   Min,
   Max,
   MaxLength,
+  ValidateNested,
 } from "class-validator";
+import { Type } from "class-transformer";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Sanitize } from "../../common/decorators/sanitize.decorator";
-import { ServiceCategory, SubscriptionPlanType } from "../../requests/dto/create-request.dto";
+import {
+  PaymentVerificationDto,
+  ServiceCategory,
+  SubscriptionPlanType,
+} from "../../requests/dto/create-request.dto";
 
 export enum RecurrenceType {
   WEEKLY = "weekly",
@@ -181,4 +187,13 @@ export class CreateRecurringRequestDto {
   @IsOptional()
   @IsUUID("4", { message: "address_id must be a valid UUID" })
   address_id?: string;
+
+  @ApiPropertyOptional({
+    description: "Payment verification for matching fee (required when matching fee is enabled)",
+    type: PaymentVerificationDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PaymentVerificationDto)
+  payment?: PaymentVerificationDto;
 }

@@ -367,7 +367,7 @@ export class BookingsService {
       const summary = at(row.booking_id);
       const isFee = row.kind === MATCHING_FEE_KIND;
 
-      if (isFee) summary.feeCredit += Number(row.amount);
+      if (isFee && row.status === INSTALMENT_PAID) summary.feeCredit += Number(row.amount);
 
       if (row.status === INSTALMENT_PENDING) {
         summary.outstanding = true;

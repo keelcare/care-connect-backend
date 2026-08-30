@@ -17,15 +17,20 @@ import { MailService } from "../mail/mail.service";
 import { TimeUtils } from "../common/utils/time.utils";
 import { AvailabilityService } from "../availability/availability.service";
 import { BookingStatus } from "../common/constants/booking-status.enum";
-import { PricingEngineService } from "../common/pricing.service";
-import { resolveDaysPerWeek } from "../common/utils/pricing.utils";
+import { PricingEngineService, MATCHING_FEE_CYCLE, MATCHING_FEE_KIND } from "../common/pricing.service";
+import { resolveDaysPerWeek, round2 } from "../common/utils/pricing.utils";
 import { MATCHING_RADIUS_KM, ASSIGNMENT_RESPONSE_DEADLINE_MS } from "../common/constants/constants";
 import { AddressesService } from "../addresses/addresses.service";
+import { PaymentGatewayService } from "../payments/payment-gateway.service";
+import { PaymentAuditService } from "../payments/payment-audit.service";
+import { DocumentIssuerService } from "../invoices/document-issuer.service";
 
 import {
   CATEGORY_SKILL_MAP,
   INSTALMENT_PENDING,
+  INSTALMENT_PAID,
   INSTALMENT_VOID,
+  PaymentStatus,
   CANCELLATION_FEE_NONE,
   CANCELLATION_FEE_OWED,
 } from "../constants";
@@ -49,6 +54,9 @@ export class RequestsService {
     private pricingService: PricingEngineService,
     private addressesService: AddressesService,
     private eventEmitter: EventEmitter2,
+    private paymentGateway: PaymentGatewayService,
+    private paymentAudit: PaymentAuditService,
+    private documents: DocumentIssuerService,
   ) {}
 
   async create(parentId: string, createRequestDto: CreateRequestDto) {
@@ -79,55 +87,102 @@ export class RequestsService {
       sessionsPerMonth: createRequestDto.sessions_per_month,
     });
 
+    // Check matching fee requirement
+    const matchingFeeConfig = await this.pricingService.getMatchingFeeConfig();
+    const feeRequired = matchingFeeConfig.enabled && matchingFeeConfig.amount > 0;
+    const feeAmount = feeRequired ? matchingFeeConfig.amount : 0;
+
+    if (feeRequired) {
+      if (!createRequestDto.payment) {
+        throw new BadRequestException(
+          "Matching fee payment is required before creating a booking.",
+        );
+      }
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+        createRequestDto.payment;
+
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        throw new BadRequestException("Invalid payment details provided.");
+      }
+
+      const isValidSignature = this.paymentGateway.verifySignature(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+      );
+      if (!isValidSignature) {
+        throw new BadRequestException("Invalid payment signature.");
+      }
+
+      const existingPayment = await this.prisma.payments.findFirst({
+        where: {
+          OR: [
+            { order_id: razorpay_order_id },
+            { payment_id: razorpay_payment_id },
+          ],
+        },
+      });
+      if (existingPayment) {
+        throw new BadRequestException("Payment has already been processed.");
+      }
+    }
+
     try {
       // 2. Wrap creation in a transaction to ensure atomicity
-      const { request, booking, totalAmount, hourlyRate } =
-        await this.prisma.$transaction(async (tx) => {
-          // Create the service request
-          const startTimeStr = createRequestDto.start_time;
+      const {
+        request,
+        booking,
+        totalAmount,
+        hourlyRate,
+        matchingFeeInstallment,
+        matchingFeePayment,
+      } = await this.prisma.$transaction(async (tx) => {
+        // Create the service request
+        const startTimeStr = createRequestDto.start_time;
 
-          // Fetch service details for pricing
-          const serviceSettings = await this.prisma.services.findUnique({
-            where: { name: createRequestDto.category },
-          });
+        // Fetch service details for pricing
+        const serviceSettings = await this.prisma.services.findUnique({
+          where: { name: createRequestDto.category },
+        });
 
-          if (!serviceSettings) {
-            throw new BadRequestException(
-              `Service category '${createRequestDto.category}' not found.`,
-            );
-          }
-
-          const bookingStartTime = TimeUtils.combineDateAndTime(
-            createRequestDto.date,
-            startTimeStr,
+        if (!serviceSettings) {
+          throw new BadRequestException(
+            `Service category '${createRequestDto.category}' not found.`,
           );
-          const bookingEndTime = TimeUtils.getEndTime(
-            bookingStartTime,
-            Number(createRequestDto.duration_hours),
-          );
+        }
 
-          const request = await tx.service_requests.create({
-            data: {
-              parent_id: parentId,
-              date: new Date(createRequestDto.date),
-              start_time: bookingStartTime,
-              duration_hours: createRequestDto.duration_hours,
-              num_children: createRequestDto.num_children,
-              children_ages: createRequestDto.children_ages || [],
-              special_requirements: createRequestDto.special_requirements,
-              required_skills: createRequestDto.required_skills || [],
-              location_lat: lat,
-              location_lng: lng,
-              category: createRequestDto.category,
-              status: "pending",
-              plan_type: createRequestDto.plan_type || "ONE_TIME",
-              plan_duration_months: createRequestDto.plan_duration_months || 1,
-              sessions_per_month: createRequestDto.sessions_per_month || null,
-              days_per_week: daysPerWeek,
-            } as any,
-          });
+        const bookingStartTime = TimeUtils.combineDateAndTime(
+          createRequestDto.date,
+          startTimeStr,
+        );
+        const bookingEndTime = TimeUtils.getEndTime(
+          bookingStartTime,
+          Number(createRequestDto.duration_hours),
+        );
 
-          const { totalAmount, appliedRate: hourlyRate } = await this.pricingService.calculateCost(
+        const request = await tx.service_requests.create({
+          data: {
+            parent_id: parentId,
+            date: new Date(createRequestDto.date),
+            start_time: bookingStartTime,
+            duration_hours: createRequestDto.duration_hours,
+            num_children: createRequestDto.num_children,
+            children_ages: createRequestDto.children_ages || [],
+            special_requirements: createRequestDto.special_requirements,
+            required_skills: createRequestDto.required_skills || [],
+            location_lat: lat,
+            location_lng: lng,
+            category: createRequestDto.category,
+            status: "pending",
+            plan_type: createRequestDto.plan_type || "ONE_TIME",
+            plan_duration_months: createRequestDto.plan_duration_months || 1,
+            sessions_per_month: createRequestDto.sessions_per_month || null,
+            days_per_week: daysPerWeek,
+          } as any,
+        });
+
+        const { totalAmount, appliedRate: hourlyRate } =
+          await this.pricingService.calculateCost(
             createRequestDto.category,
             Number(createRequestDto.duration_hours),
             Number(createRequestDto.plan_duration_months || 1),
@@ -135,45 +190,169 @@ export class RequestsService {
             daysPerWeek,
           );
 
-          // Create initial booking (Pending Assignment)
-          const booking = await tx.bookings.create({
+        // Create initial booking (Pending Assignment)
+        const booking = await tx.bookings.create({
+          data: {
+            job_id: null,
+            request_id: request.id,
+            parent_id: parentId,
+            nanny_id: null,
+            status: BookingStatus.REQUESTED,
+            start_time: bookingStartTime,
+            end_time: bookingEndTime,
+            tags: createRequestDto.use_installments ? ["use_installments"] : [],
+            hours_per_day: createRequestDto.duration_hours,
+            days_per_week: daysPerWeek,
+            plan_duration_months: createRequestDto.plan_duration_months || 1,
+          },
+        });
+
+        if (
+          createRequestDto.child_ids &&
+          createRequestDto.child_ids.length > 0
+        ) {
+          await tx.booking_children.createMany({
+            data: createRequestDto.child_ids.map((childId) => ({
+              booking_id: booking.id,
+              child_id: childId,
+            })),
+          });
+        }
+
+        let matchingFeeInstallment: any = null;
+        let matchingFeePayment: any = null;
+
+        if (feeRequired && createRequestDto.payment) {
+          const gstPercent = this.pricingService.effectiveGstPercent();
+          const subtotal = round2(feeAmount / (1 + gstPercent / 100));
+          const gst = round2(feeAmount - subtotal);
+          const capturedAt = new Date();
+
+          const snapshot = await tx.price_snapshots.create({
             data: {
-              job_id: null,
-              request_id: request.id,
-              parent_id: parentId,
-              nanny_id: null,
-              status: BookingStatus.REQUESTED,
-              start_time: bookingStartTime,
-              end_time: bookingEndTime,
-              tags: createRequestDto.use_installments ? ["use_installments"] : [],
-              hours_per_day: createRequestDto.duration_hours,
-              days_per_week: daysPerWeek,
-              plan_duration_months: createRequestDto.plan_duration_months || 1,
+              booking_id: booking.id,
+              cycle_number: MATCHING_FEE_CYCLE,
+              base_hourly_rate_used: 0,
+              hours_billed: 0,
+              custom_price_applied: false,
+              subtotal_amount: subtotal,
+              gst_percent_used: gstPercent,
+              gst_amount: gst,
+              final_amount: feeAmount,
+              calculation_breakdown: {
+                kind: MATCHING_FEE_KIND,
+                note: "One-off placement fee, deducted from the first billing cycle.",
+                amount: feeAmount,
+              } as any,
+              status: "charged",
+              razorpay_payment_id: createRequestDto.payment.razorpay_payment_id,
             },
           });
 
-          if (
-            createRequestDto.child_ids &&
-            createRequestDto.child_ids.length > 0
-          ) {
-            await tx.booking_children.createMany({
-              data: createRequestDto.child_ids.map((childId) => ({
-                booking_id: booking.id,
-                child_id: childId,
-              })),
-            });
+          const paymentRecord = await tx.payments.create({
+            data: {
+              booking_id: booking.id,
+              nanny_id: null,
+              amount: feeAmount,
+              currency: "INR",
+              provider: "razorpay",
+              order_id: createRequestDto.payment.razorpay_order_id,
+              payment_id: createRequestDto.payment.razorpay_payment_id,
+              signature: createRequestDto.payment.razorpay_signature,
+              status: PaymentStatus.CAPTURED,
+            },
+          });
+
+          const installment = await tx.payment_installments.create({
+            data: {
+              booking_id: booking.id,
+              price_snapshot_id: snapshot.id,
+              cycle_number: MATCHING_FEE_CYCLE,
+              installment_no: 1,
+              total_installments: 1,
+              kind: MATCHING_FEE_KIND,
+              amount: feeAmount,
+              subtotal_amount: subtotal,
+              gst_amount: gst,
+              due_date: capturedAt,
+              paid_at: capturedAt,
+              status: INSTALMENT_PAID,
+              payment_id: paymentRecord.id,
+            },
+          });
+
+          await tx.price_snapshots.update({
+            where: { id: snapshot.id },
+            data: { payment_id: paymentRecord.id },
+          });
+
+          await this.paymentAudit.writeLog(
+            tx,
+            paymentRecord.id,
+            createRequestDto.payment.razorpay_order_id,
+            null,
+            PaymentStatus.CAPTURED,
+            "api:create_request:matching_fee",
+            createRequestDto.payment.razorpay_payment_id,
+            { amount: feeAmount, currency: "INR" },
+          );
+
+          matchingFeeInstallment = installment;
+          matchingFeePayment = paymentRecord;
+        }
+
+        return {
+          request,
+          booking,
+          totalAmount,
+          hourlyRate,
+          matchingFeeInstallment,
+          matchingFeePayment,
+        };
+      });
+
+      if (matchingFeeInstallment && matchingFeePayment) {
+        const capturedAt = matchingFeeInstallment.paid_at || new Date();
+        await this.documents
+          .issueForInstallment(matchingFeeInstallment.id, this.prisma, capturedAt)
+          .catch((err) =>
+            this.logger.error(
+              `Captured matching fee payment ${matchingFeePayment.id} but could not issue invoice`,
+              err as Error,
+            ),
+          );
+
+        try {
+          if (parent?.email) {
+            const parentName = parent.profiles?.first_name
+              ? `${parent.profiles.first_name} ${parent.profiles.last_name || ""}`.trim()
+              : "Parent";
+            const gstPercent = this.pricingService.effectiveGstPercent();
+            const subtotal = round2(feeAmount / (1 + gstPercent / 100));
+            const gst = round2(feeAmount - subtotal);
+
+            this.mailService
+              .sendPaymentReceiptEmail(parent.email, parentName, {
+                amount: feeAmount,
+                currency: "INR",
+                date: capturedAt.toLocaleDateString(),
+                receiptId: matchingFeePayment.order_id,
+                bookingDetails: `Booking #${booking.id.substring(0, 8)} — Matching Fee`,
+                subtotal,
+                gstPercent,
+                gstAmount: gst,
+              })
+              .catch((err) =>
+                this.logger.error("Failed to send receipt email", err),
+              );
           }
-
-          // Payment Installments and Plan are now initialized when a nanny is successfully assigned
-
-          return { request, booking, totalAmount, hourlyRate };
-        });
-
-      // The matching fee is charged now, at confirmation — the parent has just
-      // agreed to the booking, and it is deducted from what they owe rather than
-      // added on top. Outside the transaction so a pricing problem cannot roll
-      // back a booking the parent has already committed to.
-      const matchingFee = await this.pricingService.raiseMatchingFee(booking.id);
+        } catch (err) {
+          this.logger.error(
+            "Failed to load parent for receipt email",
+            err as Error,
+          );
+        }
+      }
 
       // 4. Notify Parent about matching in progress
       await this.notificationsService.createNotification(
@@ -191,23 +370,23 @@ export class RequestsService {
       });
 
       // 3. Trigger auto-matching AFTER the transaction has committed.
-      // Running it inside the transaction caused it to exceed Prisma's 5 s interactive
-      // transaction timeout (matching does multiple queries + its own Serializable tx).
-      // Fire-and-forget — same pattern used in assignments.service.ts on rejection.
       this.triggerMatching(request.id).catch((err) =>
-        this.logger.error(`Error triggering matching for request ${request.id}`, err),
+        this.logger.error(
+          `Error triggering matching for request ${request.id}`,
+          err,
+        ),
       );
 
       return {
         ...request,
         hourly_rate: hourlyRate,
         total_amount: totalAmount,
-        /** Present only when a fee applies — the client charges it immediately. */
-        matching_fee: matchingFee
+        matching_fee: matchingFeeInstallment
           ? {
               bookingId: booking.id,
-              installmentId: matchingFee.installmentId,
-              amount: matchingFee.amount,
+              installmentId: matchingFeeInstallment.id,
+              amount: Number(matchingFeeInstallment.amount),
+              paid: true,
             }
           : null,
       };
